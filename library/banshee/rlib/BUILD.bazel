@@ -1,0 +1,34 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//cyclone:build_defs.bzl", "MACHINE")
+
+cc_library(
+    name = "rlib",
+    srcs = [
+        "alloc.inc",
+        "pages.inc",
+        "regions.c",
+        "serialize.inc",
+    ],
+    hdrs = [
+        "linkage.h",
+        "regions.h",
+    ],
+    copts = [
+        "-DBANSHEE_ROLLBACK",
+        "-Ddeletes=",
+        "-Dtraditional=",
+        "-Dsameregion=",
+        "-Dparentptr=",
+        "-Wfatal-errors",
+        "-Werror",
+        "-Wno-ignored-qualifiers",
+        "-Wno-incompatible-pointer-types",
+        "-Wno-int-to-pointer-cast",
+        "-Wno-return-type",
+        "-Wno-unused",
+        MACHINE,
+    ],
+    linkopts = [MACHINE],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)

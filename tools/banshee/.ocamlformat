@@ -1,0 +1,7 @@
+align-cases = true
+break-cases = all
+if-then-else = fit-or-vertical
+let-and = sparse
+module-item-spacing = preserve
+space-around-lists = false
+type-decl = sparse

@@ -1,0 +1,7 @@
+(executable
+  (name banshee)
+  (libraries str)
+  (flags (:standard -w -7-27-32-35)))
+(ocamllex lexer)
+(ocamlyacc
+  (modules parser))

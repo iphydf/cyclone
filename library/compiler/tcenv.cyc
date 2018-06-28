@@ -1,0 +1,674 @@
+/* Type environments.
+   Copyright (C) 2001 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+/* An identifier can have at most one binding in each of the following:
+   1) namespaces (after "namespace" or "using")
+   2) structure tags (after "struct")
+   3) union tags (after "union")
+   4) structure or union members (after "." or "->")
+   5) datatype tags (after "datatype")
+   7) labels (after "goto", before ":")
+   8) typedef names (in types)
+   9) ordinary identifiers (the catch-all case)
+
+   The ordinary identifiers include structure tags and datatype constructors.
+
+   The environment data structures below follow from this directly.
+   Structure and union members must be resolved on a
+   per-structure/per-union basis (e.g., two structs can have members
+   with the same names) so their bindings don't belong in our environments.
+*/
+#include <string.h>
+//#include "rgnorder.h"
+#include "absyn.h"
+#include "absynpp.h"
+#include "currgn.h"
+#include "kinds.h"
+#include "tcenv.h"
+#include "tcutil.h"
+#include "warn.h"
+using Absyn;
+using List;
+using Tcutil;
+// using RgnOrder;
+namespace Tcenv;
+
+datatype exn{Env_error};
+datacon(exn, Env_error);
+
+`a env_err(string_t msg) __attribute__((noreturn)) { throw &Env_error_val; }
+
+/////////////////////////// Type Definitions /////////////////////////////////
+
+// Type environments
+struct Tenv {
+  list_t<var_t> ns;        // current namespace
+  genv_t ae;               // absolute identifiers -- now 5 big dicts
+  struct Fenv *le;         // local environment
+  bool allow_valueof : 1;  // controls whether we allow valueof(T) in an expr
+  bool in_extern_c_include : 1;
+  bool in_tempest : 1;
+  bool tempest_generalize : 1;
+  bool in_extern_c_inc_repeat : 1;
+};
+
+// Global environments -- what's declared in a global scope
+struct Genv {
+  Dict::dict_t<qvar_t, aggrdecl_t @> aggrdecls;
+  Dict::dict_t<qvar_t, datatypedecl_t @> datatypedecls;
+  Dict::dict_t<qvar_t, enumdecl_t @> enumdecls;
+  Dict::dict_t<qvar_t, typedefdecl_t> typedefs;
+  // bool for tree-shaking, binding_t for interface.cyc (FIX)
+  Dict::dict_t<qvar_t, $(binding_t, bool) @> ordinaries;
+};
+
+typedef $(switch_clause_t, list_t<tvar_t>, list_t<type_t>) const *ftclause_t;
+
+// This part is shared throughout type-checking of a function.
+// Hence mutations are seen by all subsequent type-checking, which is easier
+// than threading labels which must be function-wide unique anyway.
+static struct SharedFenv {
+  type_t return_typ;
+  // cap,eff,equality constraints at the time of the check ... new ones may be
+  // introduced by subsequent unpacks etc.
+  list_t<$(type_t, type_t, list_t<effconstr_t>, seg_t) @> delayed_effect_checks;
+  // single/disjoint constraints on effects, constraint environment at time of
+  // check
+  list_t<$(list_t<effconstr_t>, list_t<effconstr_t>, seg_t) @> delayed_constraint_checks;
+};
+
+// flags for local function environments
+struct FenvFlags {
+  enum NewStatus in_new;
+  bool in_notreadctxt : 1;  // true when in an exp that might read
+  bool in_lhs : 1;          // true when we're in a lhs exp
+  bool abstract_ok : 1;     // true when an expression can be abstract
+  bool in_stmt_exp : 1;     // true when in a statement-expression ({ s })
+};
+
+// Computing disjoint constraints is messy; here's how it works:
+// When typechecking a function with effect {`ei}, add each `ei to the
+// environment as a list<type_t> within an InitialConstraint. The first
+// region<`r> declaration introduces a constraint `r|{`ei} into the env and this
+// is also maintained in the lastconstraint field of Fenv. Each succeeding
+// region<`s> declaration asserts `e|{`r,`ei} where `r|{`ei} was the last
+// constraint. StoreConstraintEnv is used to maintain this context of disjoint
+// constraints
+typedef datatype StoreConstraintEnv {
+  InitialConstraint(list_t<type_t>);
+  LastConstraint(effconstr_t);
+}
+@storeconstraint_t, *storeconstraint_opt_t;
+
+// Local function environments -- local variables are already bound
+abstract struct Fenv {
+  struct SharedFenv @shared;
+  list_t<tvar_t> type_vars;  // type variables that can occur free
+  //  rgn_po_opt_t            region_order; // partial order on region variables
+  aqualbnds_t aquals_bounds;  // need this to decide the bounds of aquals(`a)
+  ftclause_t ctrl_env;
+  type_t capability;
+  type_t curr_rgn;       // current block's region
+  type_t curr_lifo_rgn;  // top of LIFO region stack
+  struct FenvFlags flags;
+  storeconstraint_t lastconstraint;  // disjoint constraint context
+  list_t<effconstr_t> effconstr;     // single,disjoint,equality constraints on effects
+};
+
+//////////////////////// Top-level Environment Manipulation //////////////////
+tenv_t tc_init() {
+  // Set up initial environment so that datatype exn, etc. is defined
+  let ae            = new Genv{.aggrdecls     = Dict::empty(qvar_cmp),
+                    .datatypedecls = Dict::empty(qvar_cmp),
+                    .enumdecls     = Dict::empty(qvar_cmp),
+                    .typedefs      = Dict::empty(qvar_cmp),
+                    .ordinaries    = Dict::empty(qvar_cmp)};
+  ae->datatypedecls = Dict::insert(ae->datatypedecls, exn_name, new exn_tud());
+  return new Tenv(NULL, ae, NULL, false, false, false, false, false);
+}
+binding_t lookup_ordinary_global(tenv_t te, seg_t loc, qvar_t q, bool is_use) {
+  let ans = Dict::lookup(te->ae->ordinaries, q);
+  if (is_use)
+    (*ans)[1] = true;
+  return (*ans)[0];
+}
+aggrdecl_t @lookup_aggrdecl(tenv_t te, seg_t loc, qvar_t q) {
+  return Dict::lookup(te->ae->aggrdecls, q);
+}
+datatypedecl_t @lookup_datatypedecl(tenv_t te, seg_t loc, qvar_t q) {
+  return Dict::lookup(te->ae->datatypedecls, q);
+}
+datatypedecl_t @ *`r lookup_xdatatypedecl(region_t<`r> r, tenv_t te, seg_t loc, qvar_t q) {
+  return rnew(r) Dict::lookup(te->ae->datatypedecls, q);
+}
+enumdecl_t @lookup_enumdecl(tenv_t te, seg_t loc, qvar_t q) {
+  return Dict::lookup(te->ae->enumdecls, q);
+}
+typedefdecl_t lookup_typedefdecl(tenv_t te, seg_t loc, qvar_t q) {
+  return Dict::lookup(te->ae->typedefs, q);
+}
+
+//////////////////// Function Environment Manipulation //////////////////////
+
+static fenv_t get_fenv(tenv_t te, const char ?err_msg) {
+  let le = te->le;
+  if (le == NULL)
+    env_err(err_msg);
+  return le;
+}
+static tenv_t put_fenv(tenv_t te, fenv_t fe) {
+  if (te->le == NULL)
+    env_err("put_fenv");  // DJG: unnecessary but okay
+  let ans = new *te;
+  ans->le = fe;
+  return ans;
+}
+static tenv_t put_emptyfenv(tenv_t te) {
+  let ans = new *te;
+  ans->le = NULL;
+  return ans;
+}
+
+type_t return_typ(tenv_t te) { return get_fenv(te, "return_typ")->shared->return_typ; }
+
+list_t<tvar_t> lookup_type_vars(tenv_t te) {
+  let le = te->le;
+  if (te->le == NULL)
+    return NULL;
+  return le->type_vars;
+}
+Core::opt_t<list_t<tvar_t>> lookup_opt_type_vars(tenv_t te) {
+  return new Core::Opt(lookup_type_vars(te));
+}
+
+tenv_t add_type_vars(seg_t loc, tenv_t te, list_t<tvar_t> tvs) {
+  let fe = new *get_fenv(te, "add_type_vars");
+  add_tvar_identities(tvs);
+  let new_tvs = append(tvs, fe->type_vars);
+  check_unique_tvars(loc, new_tvs);  // DJG: wasteful, old were unique
+  fe->type_vars = new_tvs;
+  return put_fenv(te, fe);
+}
+
+tenv_t set_new_status(enum NewStatus status, tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans           = new *le;
+  ans->flags.in_new = status;
+  return put_fenv(te, ans);
+}
+enum NewStatus new_status(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return NoneNew;
+  return le->flags.in_new;
+}
+bool abstract_val_ok(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return false;
+  return le->flags.abstract_ok;
+}
+tenv_t enter_abstract_val_ok(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans                = new *le;
+  ans->flags.abstract_ok = true;
+  return put_fenv(te, ans);
+}
+tenv_t clear_abstract_val_ok(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans                = new *le;
+  ans->flags.abstract_ok = false;
+  return put_fenv(te, ans);
+}
+tenv_t enter_notreadctxt(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans                   = new *le;
+  ans->flags.in_notreadctxt = true;
+  return put_fenv(te, ans);
+}
+tenv_t clear_notreadctxt(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans                   = new *le;
+  ans->flags.in_notreadctxt = false;
+  return put_fenv(te, ans);
+}
+bool in_notreadctxt(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return false;
+  return le->flags.in_notreadctxt;
+}
+tenv_t enter_lhs(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans           = new *le;
+  ans->flags.in_lhs = true;
+  return put_fenv(te, ans);
+}
+tenv_t clear_lhs(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans           = new *le;
+  ans->flags.in_lhs = false;
+  return put_fenv(te, ans);
+}
+bool in_lhs(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return false;
+  return le->flags.in_lhs;
+}
+tenv_t enter_stmt_exp(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return put_emptyfenv(te);
+  let ans                = new *le;
+  ans->flags.in_stmt_exp = true;
+  return put_fenv(te, ans);
+}
+bool in_stmt_exp(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return false;
+  return le->flags.in_stmt_exp;
+}
+
+// do not stop setting clauseopt -- JumpAnalysis needs it!
+$(switch_clause_t, list_t<tvar_t>, list_t<type_t>)
+const *const process_fallthru(tenv_t te, stmt_t s, switch_clause_t *`H @clauseopt) {
+  let ans = get_fenv(te, "process_fallthru")->ctrl_env;
+  if (ans != NULL)
+    *clauseopt = new (*ans)[0];
+  return ans;
+}
+
+tenv_t set_fallthru(tenv_t te, list_t<tvar_t,`H> new_tvs, list_t<vardecl_t> vds,
+                    switch_clause_t clause) {
+  list_t<type_t> ft_typ = NULL;
+  for (; vds != NULL; vds = vds->tl)
+    ft_typ = new List(vds->hd->type, ft_typ);
+  let new_ctrl_env = new $(clause, new_tvs, imp_rev(ft_typ));
+  let new_fe       = new *get_fenv(te, "set_fallthru");
+  new_fe->ctrl_env = new_ctrl_env;
+  return put_fenv(te, new_fe);
+}
+// fallthru is illegal in the last case
+tenv_t clear_fallthru(tenv_t te) {
+  fenv_t fe    = new *get_fenv(te, "clear_fallthru");
+  fe->ctrl_env = NULL;
+  return put_fenv(te, fe);
+}
+
+tenv_t allow_valueof(tenv_t te) {
+  let fe             = (te->le == NULL) ? NULL : new * te->le;
+  let ans            = new *te;
+  ans->allow_valueof = true;
+  return ans;
+}
+tenv_t enter_extern_c_include(tenv_t te) {
+  let fe                   = (te->le == NULL) ? NULL : new * te->le;
+  let ans                  = new *te;
+  ans->in_extern_c_include = true;
+  return ans;
+}
+tenv_t enter_tempest(tenv_t te) {
+  let fe          = (te->le == NULL) ? NULL : new * te->le;
+  let ans         = new *te;
+  ans->in_tempest = true;
+  return ans;
+}
+tenv_t clear_tempest(tenv_t te) {
+  let fe          = (te->le == NULL) ? NULL : new * te->le;
+  let ans         = new *te;
+  ans->in_tempest = false;
+  return ans;
+}
+bool in_tempest(tenv_t te) { return te->in_tempest; }
+tenv_t add_region(tenv_t te, type_t rgn, bool opened, bool lifo) {
+  let ans         = new *get_fenv(te, "add_region");
+  ans->capability = join_eff(new List(rgn, new List(ans->capability, NULL)));
+  // FIX: add || opened to support dynamic regions
+  if (lifo) {
+    ans->curr_lifo_rgn = rgn;
+    if (!opened) {  // this should be redundant for now, ...
+      //... but will be necessary if dyn regions are ever to be `C
+      // fresh regions can be treated as single(`r)
+      effconstr_opt_t dj = NULL;
+      switch (ans->lastconstraint) {
+        case &InitialConstraint(l):
+          dj                  = new DisjointConstraint(rgn, join_eff(l));
+          ans->lastconstraint = new LastConstraint(dj);  // initialize the context
+          break;
+        case &LastConstraint(*c):
+          switch (*c) {
+            case &DisjointConstraint(e, &AppType(&JoinCon, l)):
+              dj = new DisjointConstraint(rgn, join_eff(new List(e, l)));
+              *c = dj;  // update the dijoint constraint context
+              break;
+            default:
+              break;
+          }
+          break;
+      }
+      ans->effconstr = new List{new SingleConstraint(rgn), new List{dj, ans->effconstr}};
+    }
+  }
+  return put_fenv(te, ans);
+}
+
+tenv_t new_named_block(seg_t loc, tenv_t te, tvar_t block_rgn) {
+  let ans        = new *get_fenv(te, "new_named_block");
+  let block_typ  = new VarType(block_rgn);
+  ans->type_vars = new List(block_rgn, ans->type_vars);
+  check_unique_tvars(loc, ans->type_vars);  // DJG: FIX -- very wasteful
+  //  ans->region_order = add_youngest(ans->region_order, block_rgn, false);
+  ans->capability = join_eff(new List(block_typ, new List(ans->capability, NULL)));
+  ans->curr_rgn   = block_typ;
+  return put_fenv(te, ans);
+}
+
+static datatype KindBound.Eq_kb eff_kb = Eq_kb(&Kinds::ek);
+
+tenv_t new_block(seg_t loc, tenv_t te) {
+  tvar_t t = new_tvar(&eff_kb);
+  add_tvar_identity(t);
+  return new_named_block(loc, te, t);
+}
+
+tenv_t new_effect_constraints(tenv_t te, list_t<effconstr_t,`H> ecs, seg_t loc) {
+  let ans        = new *get_fenv(te, "new_effect_equalities");
+  ans->effconstr = List::append(ans->effconstr, ecs);
+  return put_fenv(te, ans);
+}
+
+type_opt_t glob_curr_rgn = NULL;
+type_t curr_rgn(tenv_t te) {
+  let le = te->le;
+  if (le == NULL) {
+    glob_curr_rgn = heap_rgn_type;
+    return heap_rgn_type;
+  }
+  glob_curr_rgn = le->curr_rgn;
+  return le->curr_rgn;
+}
+type_t curr_lifo_rgn(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return heap_rgn_type;
+  return le->curr_lifo_rgn;
+}
+
+list_t<effconstr_t> curr_effect_constraints(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return NULL;
+  return le->effconstr;
+}
+aqualbnds_t curr_aquals_bounds(tenv_t te) {
+  let le = te->le;
+  if (le == NULL)
+    return NULL;
+  return le->aquals_bounds;
+}
+static void print_aquals_bound(aqualbnds_t aqb) {
+  for (_ i = aqb; i != NULL; i = i->tl) {
+    let &$(tv, b) = i->hd;
+    fprintf(stderr, " (%s, %s) ", Absynpp::typ2string(tv), Absynpp::typ2string(b));
+  }
+}
+tenv_t add_aquals_bound(tenv_t te, type_t aq, type_t bnd) {
+  let ans = new *get_fenv(te, "add_aquals_bound");
+  let aqb = ans->aquals_bounds;
+  try {
+    let found = List::assoc_cmp(Tcutil::typecmp, aqb, aq);
+    return te;
+  } catch {
+    case &Core::Not_found:
+      break;
+  }
+  ans->aquals_bounds = new List{new $(aq, bnd), aqb};
+  return put_fenv(te, ans);
+}
+
+// Check that rgn_typ is currently accessible:  the heap region is always
+// accessible, and a region variable r is accessible if it appears in the
+// capability or outlives something in the capability.
+void check_effect_accessible_nodelay(tenv_t te, seg_t loc, type_t rgn) {
+  // we allow all effects in static expressions -- this may be unsound!
+  if (te->allow_valueof)
+    return;
+  fenv_t fe = get_fenv(te, "check_rgn_accessible");
+  if (subset_effect(false, rgn, fe->capability) || subset_effect(true, rgn, fe->capability))
+    return;
+  // In the case of existentials we will need to use the equality
+  // constraints to decide if the value is accessible
+  // But, typically this should be handled by check_effect_accessible
+  if (check_eff_in_cap(loc, false, rgn, fe->effconstr, fe->capability) ||
+      check_eff_in_cap(loc, true, rgn, fe->effconstr, fe->capability))
+    return;
+  /*   if(eff_outlives_eff(loc,
+   * fe->region_order,access_eff(rgn),fe->capability)) */
+  /*     return; */
+  Warn::err2(loc, "Expression accesses unavailable region ", rgn);
+}
+
+// Check that a function call's effect is contained in the current capability.
+// Do not constrain evars -- delay the check instead.
+void check_effect_accessible(tenv_t te, seg_t loc, type_t eff) {
+  // we allow all effects in static expressions -- this may be unsound!
+  if (te->allow_valueof)
+    return;
+  let &Fenv{.capability = capability, .shared = shared, .effconstr = effc, ...} =
+      get_fenv(te, "check_effect_accessible");
+  if (subset_effect(false, eff, capability))
+    return;
+  if (check_eff_in_cap(loc, false, eff, effc, capability))
+    return;
+  shared->delayed_effect_checks =
+      new List(new $(capability, eff, effc, loc), shared->delayed_effect_checks);
+}
+void check_delayed_effects(tenv_t te) {
+  let checks = get_fenv(te, "check_delayed_constraints")->shared->delayed_effect_checks;
+  for (; checks != NULL; checks = checks->tl) {
+    let &$(capability, eff, constr, loc) = checks->hd;
+    if (subset_effect(true, eff, capability))
+      continue;
+    if (check_eff_in_cap(loc, true, eff, constr, capability))
+      continue;
+    Warn::err2(loc, "Capability \n", capability, "\ndoes not cover function's effect\n", eff);
+  }
+}
+void print_delayed_checks(list_t<$(list_t<effconstr_t>, list_t<effconstr_t>, seg_t) @> dcc);
+void check_effect_constraints(tenv_t te, seg_t loc, list_t<effconstr_t,`H> ec) {
+  if (te->le == NULL) {
+    if (!satisfies_effect_constraints(loc, ec, NULL)) {
+      Warn::err2(loc, "the effect constraints are not satisfied here");
+    }
+    return;
+  }
+  let Fenv{.effconstr = env_ec, .shared = shared, ...} = *te->le;
+  if (!satisfies_effect_constraints(loc, ec, env_ec)) {
+    shared->delayed_constraint_checks =
+        new List(new $(ec, env_ec, loc), shared->delayed_constraint_checks);
+  }
+}
+
+void check_delayed_constraints(tenv_t te) {
+  let checks = get_fenv(te, "check_delayed_constraints")->shared->delayed_constraint_checks;
+  for (; checks != NULL; checks = checks->tl) {
+    let &$(ec, env_ec, loc) = checks->hd;
+    if (!satisfies_effect_constraints(loc, ec, env_ec))
+      Warn::err2(loc, "the effect constraints are not satisfied here");
+  }
+}
+
+static struct SharedFenv @`H new_shared_fenv(type_t ret) {
+  return new SharedFenv{
+      .return_typ = ret, .delayed_effect_checks = NULL, .delayed_constraint_checks = NULL};
+}
+
+storeconstraint_t make_init_store_constraint(list_t<tvar_t> tvs, storeconstraint_opt_t sc) {
+  list_t<type_t> es = NULL;
+  for (; tvs != NULL; tvs = tvs->tl) {
+    let Core::Opt{k} = Kinds::tvar_kind_opt(tvs->hd);
+    if (k == (struct Kind *)&Kinds::ek)
+      es = new List(var_type(tvs->hd), es);
+  }
+  switch (sc) {
+    case &InitialConstraint(ll):
+      es = List::imp_append(es, ll);
+      break;
+    case &LastConstraint(&DisjointConstraint(r, &AppType(&JoinCon, l))):
+      es = List::imp_append(es, l);
+      es = new List(r, es);
+      break;
+    default:
+      break;
+  }
+  return new InitialConstraint(es);
+}
+
+fenv_t new_fenv(seg_t loc, fndecl_t fd) {
+  tvar_t rgn0 = new Tvar(new ((string_t)aprintf("`%s", *(*fd->name)[1])), new_tvar_id(), &eff_kb,
+                         NULL);  // this has always been ::rk
+  //   let $(tvs1,cap,ret_t,f_rgn_po) = CurRgn::add_curr_tvar(fd);
+  let $(tvs1, cap, ret_t) =
+      $(new List(CurRgn::curr_rgn_tvar(), fd->i.tvars),
+        join_eff(new List(CurRgn::curr_rgn_type(), new List((type_t)fd->i.effect, NULL))),
+        fd->i.ret_type);
+  let tvs = new List(rgn0, tvs1);
+  Tcutil::check_unique_tvars(loc, tvs);
+  storeconstraint_t init_store_constraint = make_init_store_constraint(tvs, NULL);
+  //  let rgn_po = initial_fn_po(tvs1,f_rgn_po,cap,rgn0,loc);
+  type_t param_rgn = new VarType(rgn0);
+  for (let vds = fd->param_vardecls->v; vds != NULL; vds = vds->tl)
+    vds->hd->rgn = param_rgn;
+  if (fd->i.cyc_varargs != NULL) {
+    let VarargInfo(n, tq, t, i) = *fd->i.cyc_varargs;
+    // name-resolution did not set param_rgn for the cyc_varargs array
+    for (let vds = fd->param_vardecls->v; vds != NULL; vds = vds->tl) {
+      let vd = vds->hd;
+      if (strptrcmp((*vd->name)[1], (var_t)n) == 0) {
+        vd->type = fatptr_type(t, param_rgn, al_qual_type, tq, false_type, false_type);
+        break;
+      }
+    }
+  }
+
+  return new Fenv{.shared    = new_shared_fenv(ret_t),
+                  .type_vars = tvs,
+                  //         .region_order  = rgn_po,
+                  .aquals_bounds  = Tcutil::get_aquals_bounds(fd),
+                  .ctrl_env       = NULL,
+                  .capability     = join_eff(new List(param_rgn, new List(cap, NULL))),
+                  .curr_rgn       = param_rgn,
+                  .curr_lifo_rgn  = CurRgn::curr_rgn_type(),
+                  .flags          = FenvFlags{NoneNew, false, false, false, false},
+                  .lastconstraint = init_store_constraint,
+                  .effconstr      = fd->i.effconstr};
+}
+
+fenv_t nested_fenv(seg_t loc, fenv_t old_fenv, fndecl_t fd) {
+  let &Fenv{.aquals_bounds  = aqb,
+            .type_vars      = type_vars,
+            .shared         = shared,
+            .lastconstraint = lc,
+            .effconstr      = ec_old,
+            ...} = old_fenv;
+
+  tvar_t rgn0 =
+      new Tvar(new ((string_t)aprintf("`%s", *(*fd->name)[1])), new_tvar_id(), &eff_kb, NULL);
+  let tvs = new List(rgn0, append(fd->i.tvars, type_vars));
+  check_unique_tvars(loc, tvs);
+  storeconstraint_t initconstr = make_init_store_constraint(tvs, lc);
+  type_t param_rgn             = new VarType(rgn0);
+  for (let vds = fd->param_vardecls->v; vds != NULL; vds = vds->tl)
+    vds->hd->rgn = param_rgn;
+  if (fd->i.cyc_varargs != NULL) {
+    let VarargInfo(n, tq, t, i) = *fd->i.cyc_varargs;
+    // name-resolution did not set param_rgn for the cyc_varargs array
+    for (let vds = fd->param_vardecls->v; vds != NULL; vds = vds->tl) {
+      let vd = vds->hd;
+      if (strptrcmp((*vd->name)[1], (var_t)n) == 0) {
+        vd->type = fatptr_type(t, param_rgn, al_qual_type, tq, false_type, false_type);
+        break;
+      }
+    }
+  }
+  return new Fenv{.shared    = new_shared_fenv(fd->i.ret_type),
+                  .type_vars = tvs,
+                  //      .region_order = rgn_po,
+                  .aquals_bounds = aqb,
+                  .ctrl_env      = NULL,
+                  .capability = join_eff(new List(param_rgn, new List((type_t)fd->i.effect, NULL))),
+                  .curr_rgn   = param_rgn,
+                  .curr_lifo_rgn  = CurRgn::curr_rgn_type(),
+                  .flags          = FenvFlags{NoneNew, false, false, false, false},
+                  .lastconstraint = initconstr,
+                  .effconstr      = List::append(fd->i.effconstr, ec_old)};
+}
+
+fenv_t bogus_fenv(type_t ret_type, list_t<$(var_opt_t, tqual_t, type_t) @> args) {
+  tvar_t rgn0 = new Tvar(new "bogus", new_tvar_id(), &eff_kb, NULL);
+  let tvs     = new List(rgn0, NULL);
+  //  let rgn_po = initial_fn_po(NULL,NULL,join_eff(NULL),rgn0,0);
+  type_t param_rgn = new VarType(rgn0);
+  return new Fenv{.shared    = new_shared_fenv(ret_type),
+                  .type_vars = tvs,
+                  //         .region_order = rgn_po,
+                  .aquals_bounds  = NULL,
+                  .ctrl_env       = NULL,
+                  .capability     = join_eff(new List(param_rgn, NULL)),
+                  .curr_rgn       = param_rgn,
+                  .curr_lifo_rgn  = CurRgn::curr_rgn_type(),
+                  .flags          = FenvFlags{NoneNew, false, false, false, false},
+                  .lastconstraint = new InitialConstraint(NULL),
+                  .effconstr      = NULL};
+}
+
+tenv_t copy_tenv_dicts(tenv_t te) {
+  let ans                = new *te;
+  ans->ae                = new * te->ae;
+  ans->ae->aggrdecls     = Dict::copy(te->ae->aggrdecls);
+  ans->ae->enumdecls     = Dict::copy(te->ae->enumdecls);
+  ans->ae->datatypedecls = Dict::copy(te->ae->datatypedecls);
+  ans->ae->typedefs      = Dict::copy(te->ae->typedefs);
+  ans->ae->ordinaries    = Dict::copy(te->ae->ordinaries);
+  ans->le                = NULL;
+  return ans;
+}
+
+void print_delayed_checks(list_t<$(list_t<effconstr_t>, list_t<effconstr_t>, seg_t) @> dcc) {
+  for (_ c = dcc; c != NULL; c = c->tl) {
+    let &$(ec1, env, _) = c->hd;
+    fprintf(stderr, " (%s , %s)\n", Absynpp::effconstr2string(ec1), Absynpp::effconstr2string(env));
+  }
+}

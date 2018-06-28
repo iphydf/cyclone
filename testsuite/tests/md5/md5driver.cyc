@@ -1,0 +1,88 @@
+/***********************************************************************
+ ** md5driver.cyc -- sample routines to test (Cyclone Version)        **
+ ** Derived from RSA Data Security, Inc.                              **
+ ** MD5 Message Digest Algorithm.                                     **
+ ** Created: May 10 2003                                              **
+ ** Creator: I-Hsuan Huang <ihhuang@acm.org>                          **
+ ***********************************************************************/
+
+/*
+ ************************************************************************
+ * Copyright (C) 2003 I-Hsuan Huang <ihhuang@acm.org>                   *
+ *                                                                      *
+ * This Program is free software; you can redistribute it and/or modify *
+ * it under the terms of the GNU Gereral Public License as publisded by *
+ * the Free Software Foundation; eigher version 2 of the License, or    *
+ * (at your option) any laterversion.                                   *
+ *                                                                      *
+ * This program is distributed in the hope that it will be useful,      *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of       *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the        *
+ * GNU General Public License for more details.                         *
+ *                                                                      *
+ * You should have received a copy of the GNU General Public License    *
+ * along with this program; if not, write to the Free Software          *
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston,               *
+ * MA 02111-1307, USA.                                                  *
+ ************************************************************************
+ */
+
+#include <stdio.h>
+#include <assert.h>
+#include "md5.h"
+#include "cyclone/testsuite/cyctest.h"
+
+CT_SUITE_BEGIN(MD5)
+
+void begin() {}
+void end() {}
+
+/* Prints message digest buffer in mdContext as 32 hexadecimal digits.
+   Order is from low-order byte to high-order byte of digest.
+   Each byte is printed with high-order hexadecimal digit first.
+ */
+static mstring_t<`r> MDPrint(region_t r, MD5_CTX *mdContext) {
+  int i;
+  char ?buf = rmalloc(r, 34);
+  for (i = 0; i < 16; i++) {
+    sprintf(&buf[i * 2], "%02x", mdContext->digest[i]);
+  }
+  return buf;
+}
+
+/* Computes the message digest for string inString concatenated with
+   itself n times.  Checks that the computed digest equals the expected one.
+ */
+static void MDString(char ?inString, unsigned int n, string_t expectedDigest) {
+  MD5_CTX mdContext;
+  unsigned int len = strlen(inString);
+
+  MD5Init(&mdContext);
+  for (unsigned i = 0; i < n; i++) {
+    MD5Update(&mdContext, (unsigned char ?@nozeroterm)inString, len);
+  }
+  MD5Final(&mdContext);
+
+  region r;
+  let digest = MDPrint(r, &mdContext);
+  printf("%d copies of \"%s\" yields digest: %s (expected %s)\n", n, inString, digest, expectedDigest);
+  CT_ASSERT(!strcmp(digest, expectedDigest));
+}
+
+void md5_test1() { MDString(strdup("abcdefg"), 1, "7ac66c0f148de9519b8bd264312c4d64"); }
+void md5_test2() { MDString(strdup(""), 1, "d41d8cd98f00b204e9800998ecf8427e"); }
+void md5_test3() { MDString(strdup("ABCDEFG"), 1, "bb747b3df3130fe1ca4afa93fb7d97c9"); }
+void md5_test4() {
+  MDString(strdup("for you the blind who once could see"), 1, "9b0f9cf8531954d5f1d1d15dbb7ada51");
+}
+
+CT_SUITE_INIT
+CT_ADD_TEST(md5_test1)
+CT_ADD_TEST(md5_test2)
+CT_ADD_TEST(md5_test3)
+CT_ADD_TEST(md5_test4)
+CT_SUITE_END
+
+CT_MAIN_BEGIN(print_level)
+CT_SUITE_REGISTER(MD5);
+CT_MAIN_END(print_level)

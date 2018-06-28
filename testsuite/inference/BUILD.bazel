@@ -1,0 +1,30 @@
+load("@rules_cc//cc:defs.bzl", "cc_test")
+load("//cyclone:build_defs.bzl", "MACHINE")
+
+genrule(
+    name = "sample_srcs",
+    srcs = [
+        "sample.cyc",
+        "//cyclone/library/std/cyc-lib:cycspecs",
+    ],
+    outs = ["sample.c"],
+    cmd = " ".join([
+        "$(location //cyclone/tools/cyclone)",
+        #"  --inf",
+        "  $(location sample.cyc)",
+        "  -o $(location sample.c)",
+    ]),
+    tools = ["//cyclone/tools/cyclone"],
+)
+
+cc_test(
+    name = "sample",
+    size = "small",
+    srcs = [":sample_srcs"],
+    copts = [MACHINE],
+    linkopts = [MACHINE],
+    deps = [
+        "//cyclone/library/runtime",
+        "//cyclone/library/std/cyc-lib",
+    ],
+)

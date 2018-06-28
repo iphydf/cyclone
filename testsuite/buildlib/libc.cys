@@ -1,0 +1,14 @@
+link.h:
+cpp {
+#define _GNU_SOURCE 1
+}
+include {
+  ElfW
+  dl_phdr_info
+}
+hstub dl_iterate_phdr {
+  extern "C"
+  int dl_iterate_phdr (int (*__callback)(struct dl_phdr_info *, size_t, `a),
+                       `a data);
+}
+;

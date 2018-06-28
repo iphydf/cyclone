@@ -1,0 +1,15 @@
+load("//cyclone:build_defs.bzl", "cyc_test")
+
+cyc_test(
+    name = "md5",
+    size = "small",
+    srcs = [
+        "md5.cyc",
+        "md5.h",
+        "md5driver.cyc",
+    ],
+    deps = [
+        "//cyclone/library/std",
+        "//cyclone/testsuite:cyctest",
+    ],
+)

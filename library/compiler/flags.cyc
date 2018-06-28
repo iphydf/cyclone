@@ -1,0 +1,75 @@
+/* Compiler flags
+   Copyright (C) 2004 Dan Grossman, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+// see flags.h for descriptions
+
+#include "flags.h"
+
+namespace Flags;
+
+bool verbose                        = false;
+bool warn_alias_coerce              = false;
+bool warn_region_coerce             = false;
+enum C_Compilers c_compiler         = Gcc_c;
+bool porting_c_code                 = false;
+bool no_regions                     = false;
+bool no_reaps                       = false;
+bool override_fat                   = false;
+bool resolve                        = false;
+bool interproc                      = false;
+bool no_merge                       = true;
+bool no_register                    = false;
+bool noexpand_r                     = false;
+bool warn_bounds_checks             = false;
+bool warn_all_null_deref            = false;
+bool warn_override                  = false;
+bool warn_lose_unique               = false;
+bool tc_aggressive_warn             = false;
+enum Cyclone_Passes stop_after_pass = AllPasses;
+bool print_parser_state_and_token   = false;
+bool allpaths                       = true;
+bool debug_assn                     = false;
+bool print_unprovable               = false;
+bool warn_assert                    = false;
+unsigned int max_vc_summary         = 500;
+unsigned int max_vc_paths           = 33;
+unsigned int max_vc_term_size       = 100000;
+bool better_widen                   = false;
+
+void set_all_warnings() {
+  warn_bounds_checks  = true;
+  warn_all_null_deref = true;
+  warn_lose_unique    = true;
+  warn_alias_coerce   = true;
+  warn_region_coerce  = true;
+  tc_aggressive_warn  = true;
+  warn_override       = true;
+  warn_assert         = true;
+}
+
+void set_parseonly() { stop_after_pass = stop_after_pass < Parsing ? stop_after_pass : Parsing; }
+void set_crgnonly() {
+  stop_after_pass = stop_after_pass < CurrentRegion ? stop_after_pass : CurrentRegion;
+}
+void set_tconly() {
+  stop_after_pass = stop_after_pass < TypeChecking ? stop_after_pass : TypeChecking;
+}
+void set_cfonly() {
+  stop_after_pass = stop_after_pass < FlowAnalysis ? stop_after_pass : FlowAnalysis;
+}

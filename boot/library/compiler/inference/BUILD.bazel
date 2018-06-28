@@ -1,0 +1,17 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//cyclone:build_defs.bzl", "MACHINE")
+
+cc_library(
+    name = "inference",
+    srcs = ["cycinf.c"],
+    copts = [
+        "-Ddeletes=",
+        "-Dtraditional=",
+        "-Dsameregion=",
+        "-Dparentptr=",
+        MACHINE,
+    ],
+    linkopts = [MACHINE],
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/banshee","//cyclone/library/banshee/rlib"],
+)

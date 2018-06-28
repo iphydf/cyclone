@@ -1,0 +1,21 @@
+load("//cyclone:build_defs.bzl", "cyc_library", "cyclex", "cycyacc")
+
+cyclex(
+    name = "xmlscan",
+)
+
+cycyacc(
+    name = "xmlparse_tab",
+    src = "xmlparse.cyy",
+)
+
+cyc_library(
+    name = "xml",
+    srcs = [
+        ":xmlscan",
+        ":xmlparse_tab",
+    ] + glob(["*.h"]) + glob(["*.cyc"]),
+    hdrs = glob(["*.h"]),
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std"],
+)

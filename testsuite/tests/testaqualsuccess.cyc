@@ -1,0 +1,360 @@
+/********************************************************************************
+Test Parser
+********************************************************************************/
+struct foo<`a, `q::Q> {
+  <`i> : regions(`a) <= `H, RESTRICTED >= `q, aquals(`a) >= `q
+  int *@aqual(`q) foo;
+  `a bar;
+  tag_t<`i> len;
+};
+
+void foo_fn(int *@aqual(`q) x, `a y : regions(`a) <= `H, aquals(`a) >= `q) {
+  return;
+}
+
+
+/********************************************************************************
+ Test unification cases
+********************************************************************************/
+
+//case 1 const X const
+//case 1(a,b):
+int*@aqual(ALIASABLE) test1_ab() {
+  int *@aqual(ALIASABLE) a = new 1;
+  int *@aqual(ALIASABLE) b = a; //simple assignment
+  //  int *@aqual(UNIQUE) c = b; //fail
+  return a; //simple return
+}
+//case 1(c): default return qual is ALIASABLE -- must be set in tctyp
+int* test_1c() {
+  int *@aqual(ALIASABLE) a = new 1;
+  int *@aqual(UNIQUE) b;
+  if(*a)
+    return a;
+  else
+    return b; //success -- UNIQUE <: ALIASABLE
+}
+
+//case 2 VarType X const
+//2(a) -- subtyping fails for C <: `q
+
+/* int *@aqual(`q) id(int *@aqual(`q) a : RESTRICTED >= `q) { */
+/*   return new 0; //fail */
+/* } */
+
+//2(b) -- subtyping succeeds of `q <: C (default return ALIASABLE)
+int* subtype_success(int *@aqual(`q) `H a : ALIASABLE >= `q) {
+  return a;
+}
+//subtyping succeeds of `q <: C succeeds for function call
+void explicit_argq(int *@aqual(ALIASABLE) a){}
+void use_explicit_argq(int *@aqual(`q) a : ALIASABLE >= `q) {
+  explicit_argq(a);
+}
+
+//case 3 Evar X const
+//3(a) default assignment
+void test_3a(aqual_t<UNIQUE> hdl) {
+  int *a = qnew (hdl) 1;
+  int *b = new 1;
+  //  a = b; //fail -- UNIQUE != ALIASABLE
+
+}
+//3(a) pattern matching
+struct struct3a_pat {
+  int *@aqual(ALIASABLE) a;
+  int *@aqual(UNIQUE) b;
+};
+int*@aqual(UNIQUE) test_3a_pat(struct struct3a_pat s) {
+  switch(s) {
+  case struct3a_pat{NULL, NULL}: return NULL;
+  case struct3a_pat{NULL, b}: return b; //success
+  case struct3a_pat{a, b}: return NULL;
+  }
+}
+
+//3(b) Function call
+void explicit_arg(int *@aqual(ALIASABLE) a){}
+void use_xarg(aqual_t<UNIQUE> hdl) {
+  int *@aqual(ALIASABLE) a = new 1;
+  explicit_arg(a);
+  int *b = qnew (hdl) 1;
+  explicit_arg(b); //this needs an auto let alias
+}
+//argument default
+
+void def_arg(int *a) {} //should def to int *@aqual(ALIASABLE) a
+void use_def_arg(int *@aqual(ALIASABLE) a) {
+  def_arg(a);
+}
+
+//3(c) aggregate construction
+struct s3c<`q::Q> { //default RESTRICTED >= `q
+  int *@aqual(`q) a;
+};
+struct s3c<ALIASABLE> test_s3c(aqual_t<UNIQUE> hdl) {
+  struct s3c<ALIASABLE> s1 = s3c{new 1};
+  let s2 = s3c{new 1};
+  struct s3c<UNIQUE> s3 = s3c{qnew (hdl) 1};
+  return s1;
+}
+
+//case 4  VarType x VarType
+//4(a,b) Constrained return, assignment between args, assignment of returned type
+int *@aqual(`q) id_4a(int *@aqual(`q)`H a) {return a;}
+int *@aqual(`q) test_4a(int *@aqual(`q)`H a, int *@aqual(`q)`H b, int *@aqual(`r)`H c) {
+  b = a;
+  a = id_4a(a);
+  return a;
+}
+//4(c) Assignment to existentially bound var
+struct s4c {
+  <`q::Q, `r::Q> : ALIASABLE >= `q, ALIASABLE >= `r
+  int *@aqual(`q) f1;
+  int *@aqual(`q) f2;
+  int *@aqual(`r) f3;
+};
+void test_4c(struct s4c @s) {
+  let &s4c{<`q,`r> f1, f2, f3} = s;
+  f2 = f1; //success
+}
+
+//case 5 Evar x VarType
+//5(a) -- Function call
+int *@aqual(`q)`r id_5a(int *@aqual(`q)`r a) { return a; }
+void use_5a(int *@aqual(`q) a) {
+  a = id_5a(a); //also tests 4a
+}
+
+//5(b) -- Aggregate construction
+struct s5b<`q::Q> {
+  int *@aqual(`q) a;
+};
+struct s5b<`q>* use_s5b(int *@aqual(`q)`H a) {
+  return new s5b{a};
+}
+
+//5(c) -- Pattern matching with VarType in access expression
+struct s5c<`q::Q> {
+  int *@aqual(`q) a;
+  int *b;
+};
+
+$(int*@aqual(`q), int*@aqual(ALIASABLE))* use_s5c(struct s5c<`q> *s) {
+  switch(s) {
+  case &s5c{NULL, NULL}: return NULL;
+  case &s5c{aa, bb}: return new $(aa, bb);
+  default: return NULL;
+  }
+}
+//let alias works in two separate ways
+//1: explicit let alias
+//case 6 Evar x Evar
+//6(a) -- only reasonable case is when using NULL ... but control_flow barfs on this
+
+/* int *@aqual(`q) id_6c(int *@aqual(`q)`H a : RESTRICTED >= `q) {return a;} */
+/* int*@aqual(ALIASABLE) use_6c(void) { */
+/*   int *a = id_6c(NULL); //a should be constrained to int *@aqual(RESTRICTED) */
+/*   return a; //fail */
+/* } */
+
+
+/********************************************************************************
+ Test Defaults
+********************************************************************************/
+//function return type defaults to ALIASABLE
+//function argument types default to ALIASABLE
+//bound for explicit qualifiers in functions default to ALIASABLE
+
+//aggregate fields default to ALIASABLE
+//top level type definitions default to `q <= RESTRICTED for maximal unification
+//bound for explicit qualifiers in aggregate fields defaults to RESTRICTED
+
+//other defaults?
+int test_letalias(int *@aqual(UNIQUE) `p a) __attribute((consume(1))) {
+  {
+    //the type of b is set to int *@aqual(ALIASABLE) `r
+    //and int *@aqual(UNIQUE) `rr is found to be a subtype ... so this is ok
+    let alias<`r> int *`r b = a;
+    int *c = b;
+    return *b; //b is not consumed since it is aliasable
+  }
+  return 0;
+}
+
+void autoalias_helper(int *@aqual(ALIASABLE) a) {}
+void autoalias_helper2(int *a) {}
+int test_autoalias(int *@aqual(UNIQUE) a) {
+  //this works by first casting (int *@aqual(ALIASABLE))a
+  //then a {let alias<`r> int *@aqual(ALIASABLE) __aliasvar17 = (int *@aqual(ALIASABLE))a; autoalias_helper(__aliasvar17);}
+  //is constructed
+  autoalias_helper(a);
+  autoalias_helper2(a);
+  return *a; //a is not consumed
+}
+
+void adrof(int *`r @`r a){}
+void use_adrof() {
+  let a = NULL;
+  adrof(&a);
+}
+
+//extern struct Table<`a::B>;
+struct List <`a,`r::E> {
+  `a hd;
+  struct List<`a,`r> *`r tl;
+};
+typedef struct List<`a,`r> *`r list_t<`a, `r>;
+
+extern struct Table<`a>;
+typedef struct Table<`a> *table_t<`a>;
+table_t<`a> create(){return NULL;}
+list_t<`a> create_list() {return NULL;}
+
+void try_table() {
+  table_t<int@`H> t = create();
+  list_t<int@`H> l = create_list();
+}
+
+//Tests for aquals(`a)
+/* //aquals(`a) in functions */
+void explicit(`a arg : RESTRICTED >= aquals(`a)){}// :  >= aquals(`a)){}
+void def_aliasable(`a arg){}
+void use_def(int *@aqual(UNIQUE) a) {
+  //    def_aliasable(a);//fail
+  explicit(a);
+}
+
+//recursive aquals
+void rec(`a *@aqual(aquals(`a)) arg : RESTRICTED >= aquals(`a)) {}
+void testrec(int *@aqual(RESTRICTED) *@aqual(ALIASABLE) in) {
+  rec(in);// succeed .. subtyping
+}
+void testrec2(int *@aqual(ALIASABLE) *@aqual(UNIQUE) in) __attribute((consume(1))) {
+  {
+    let alias<`r> int **`r ii = in;
+    rec(ii);
+  }
+  rec(in);// auto alias coercion fails because static bound on rec is RESTRICTED... i.e can_insert_alias is false
+}
+
+void testaliascallee(int *a){}
+void testaliascaller(int *@aqual(\T) a) {
+  testaliascallee(a); //automatic alias coercion
+}
+
+//aquals(`a) in aggregates -- test sugar .. TB
+struct test_agg1<`a::B\T> { // : RESTRICTED >= aquals(`a)
+  `a elt;
+  int b;
+};
+
+struct test_agg2<`a> {  : ALIASABLE >= aquals(`a)
+  `a elt;
+  int b;
+};
+
+void use_tagg1(int *@aqual(RESTRICTED) a) __attribute((consume(1))) {
+  let t = test_agg1{a, 0}; //succeed
+}
+
+void use_tagg2(int *@aqual(RESTRICTED) a, int *b) __attribute((consume(1))) {
+  //    let t1 = test_agg2{a, 0}; //fail
+  let t2 = test_agg2{b, 0}; //succeed
+}
+struct Queue<`a::B\T,`r::E> {
+  `a a;
+  int *`r r;
+};
+typedef struct Queue<`a,`r::E> @`r queue_t<`a,`r::E>;
+`a take2(queue_t<`a::B\T> q, `a v)__attribute((consume(2))) {return v;}//: RESTRICTED >= aquals(`a)){}return q->a;}
+void use_queue_foobar(queue_t<int*`H> q2){
+  let a = take2(q2, new 1);
+}
+
+
+//aquals(`a) in datatypes
+datatype test_dat<`a> { //: ALIASABLE >= aquals(`a)
+  TD1_1(`a);
+};
+
+void use_test_dat(int *@aqual(UNIQUE) a, int *b){
+  //  let y = new TD1_1(a); //fail -XXX
+  let v = new TD1_1(b); //succeed
+}
+
+void dum1(`a arg) {} //: ALIASABLE >= aquals(`a)
+void dum2(`b arg) { //: ALIASABLE >= aquals(`b)
+  dum1(arg); //how to typecheck this without qual_partial_order in the fenv?
+  dum2(arg);// same problem
+}
+
+table_t<`a> createsz(int sz) { return NULL; }
+table_t<int*@aqual(ALIASABLE) `H> use_tab() {
+  table_t<int*> a = createsz(101);
+  return a;
+}
+
+//tests unconstraineed aquals(`a) in return type
+datatype exn { AssertExn; };
+`a myassert(int a){ throw new AssertExn;}
+void use_assert() {
+  myassert(0);
+}
+
+//test kind
+//struct Env<`r::E>;
+struct Env<`rr> {
+  int *`rr a;
+};
+//typedef struct Env<`r>*`r env_t<`r>;
+struct Stack<`r> {
+  struct Stack<`r>* next;
+  struct Env<`r> e;
+};
+
+//test delayed constraints on evars ... from lib/sexp.cyc
+static void next_list(list_t<int@`H,`H> xs) {}
+extern void imp_rev(list_t<`a::B\T,`r> x){}
+
+// parse in a tuple of objects
+static void parse_tuple(){
+  list_t<int@@aqual(ALIASABLE) `H,`H> xs = NULL;
+  imp_rev(xs);
+  next_list(xs);
+}
+
+//defaults for existential types
+struct Ex {
+  <`a::B>
+  `a elt;
+};
+
+void make_ex(int *@aqual(\A) a){// __attribute((consume(1))) {
+  let e = Ex{a};
+};
+
+void use_ex(struct Ex @e) {
+  let &Ex{elt} = e;
+}
+
+struct TList<`a::B,`r::E,`q::Q>{ : RESTRICTED >= aquals(`a), RESTRICTED >= `q
+  `a hd;
+  struct TList<`a,`r,`q> *@aqual(`q) `r tl;
+};
+typedef struct TList<`a,`r,`q> *@aqual(`q) `r tlist_t<`a,`r,`q>;
+
+tlist_t<`a,`r,`q> rqcopy(region_t<`r> r,aqual_t<`q> q,tlist_t<`a,`r2,`p> l
+			: ALIASABLE >= aquals(`a),
+			RESTRICTED >= `q,
+			RESTRICTED >= `p) {
+  if(l == NULL)
+    return NULL;
+  _ tl = NULL;
+  tl :=: l->tl;
+  tlist_t<`a,`r,`q> result = rnew(r,q) TList{l->hd, rqcopy(r,q,tl)};
+  l->tl :=: tl;
+  return result;
+}
+
+int main() {return 0;}

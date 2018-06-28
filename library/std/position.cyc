@@ -1,0 +1,115 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2000-2001 Greg Morrisett
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+#include "cycboot.h"
+#include "lineno.h"
+#include "position.h"
+#include "string.h"
+using Core;
+using List;
+namespace Position;
+
+static $(string_t, unsigned int) seg_to_loc(seg_t seg);
+// When set to true, uses format:
+//   <filename>:<lineno>:<message>
+// and otherwise uses format
+//   <filename>:(<lineno>:<char>-<lineno>:<char>):<message>
+bool use_gcc_style_location = false;
+
+/////////// Location tracking ///////////
+static string_t source = "";  // initialized by overall control
+
+seg_t segment_join(seg_t s1, seg_t s2) {
+  if (s1 == 0)
+    return s2;
+  if (s2 == 0)
+    return s1;
+  return s1;
+}
+bool segment_equals(seg_t s1, seg_t s2) { return (s1 == s2); }
+
+mstring_t string_of_loc(unsigned int seg) {
+  let $(source, loc) = seg_to_loc(seg);
+  Lineno::pos_t pos  = Lineno::pos_of_abs(source, loc);
+  if (use_gcc_style_location)
+    return aprintf("%s:%d", pos->logical_file, pos->line_no);
+  return aprintf("%s:%d:%d", pos->logical_file, pos->line_no, pos->col);
+}
+
+static mstring_t string_of_pos_pr(Lineno::pos_t pos) {
+  if (use_gcc_style_location)
+    return aprintf("%s:%d", pos->logical_file, pos->line_no);
+  return aprintf("%s:%d:%d", pos->logical_file, pos->line_no, pos->col);
+}
+
+mstring_t string_of_segment(seg_t s) { return string_of_loc(s); }
+
+static Lineno::pos_t new_pos() { return new Lineno::Pos("", new_string(0), 0, 0); }
+
+list_t<mstringptr_t> strings_of_segments(list_t<seg_t> segs) {
+  // JGM: causes an uncaught exception, so doing the stupid thing for now.
+  list_t<mstringptr_t> ans = NULL;
+  for (; segs != NULL; segs = segs->tl)
+    ans = new List(new string_of_segment(segs->hd), ans);
+  return ans;
+  /*
+  list_t<$(int,Lineno::pos_t)@> places = NULL;
+  for(let segs2 = segs; segs2 != NULL; segs2 = segs2->tl) {
+    places = new List(new $(segs2->hd, new_pos()), places);
+  }
+  Lineno::poss_of_abss(source, places); // mutates places
+  list_t<mstringptr_t> ans = NULL;
+  places = List::imp_rev(places);
+  for(; segs != NULL; segs = segs->tl) {
+    ans = new List(new string_of_pos_pr((*places->hd)[1]),ans);
+    places = places->tl->tl;
+  }
+  return ans;
+  */
+}
+
+///////////// Errors ////////////
+struct Error {
+  string_t source;
+  seg_t seg;
+  string_t desc;
+};
+error_t mk_err(seg_t l, string_t<`H> desc) {
+  let $(source, loc) = seg_to_loc(l);
+  return new Error(source, l, desc);
+}
+seg_t get_seg(error_t e) { return e->seg; }
+string_t get_desc(error_t e) { return e->desc; }
+
+//////////// Overall Control ///////////
+void reset_position(string_t<`H> s) { source = s; }
+void set_position_file(string_t<`H> s) { source = s; }
+string_t get_position_file() { return source; }
+
+string_t get_line_directive(seg_t s) {
+  let $(source, loc) = seg_to_loc(s);
+  if (source) {
+    Lineno::pos_t pos_s = Lineno::pos_of_abs(source, loc);
+    if (pos_s != NULL)
+      return aprintf("\n#line %d \"%s\"\n", pos_s->line_no, pos_s->logical_file);
+  }
+  return NULL;
+}
+
+seg_t loc_to_seg(unsigned int loc) { return loc; }
+
+static $(string_t, unsigned int) seg_to_loc(seg_t seg) { return $(source, seg); }

@@ -1,0 +1,66 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("//cyclone:build_defs.bzl", "cyc_library", "cyclex", "cycyacc", "errorgen", "MACHINE")
+
+cc_binary(
+    name = "make-config",
+    srcs = ["make-config.c"],
+)
+
+genrule(
+    name = "gen_config",
+    srcs = ["//cyclone/library/std/cyc-lib:cycspecs"],
+    outs = ["config.c"],
+    cmd = "$(location :make-config) $< > $@",
+    tools = [":make-config"],
+)
+
+cc_library(
+    name = "config",
+    srcs = ["config.c"],
+    copts = [
+        "-Werror",
+        MACHINE,
+    ],
+    linkopts = [MACHINE],
+    visibility = ["//visibility:public"],
+)
+
+cyclex(
+    name = "lex",
+)
+
+cycyacc(
+    name = "parse_tab",
+    src = "parse.cyy",
+)
+
+errorgen(
+    name = "parse_errors",
+)
+
+cyc_library(
+    name = "compiler",
+    srcs = [
+        ":lex",
+        ":parse_tab",
+        ":parse_errors",
+    ] + glob(
+        [
+            "*.cyc",
+            "*.h",
+        ],
+        exclude = [
+            "*.err.cyc",
+            "bansheeif_stub.cyc",
+            "rgnorder.cyc",
+        ],
+    ),
+    hdrs = glob(["*.h"]),
+    boot = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        "//cyclone/library/compiler/inference",
+        "//cyclone/library/std",
+    ],
+)

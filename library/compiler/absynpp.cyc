@@ -1,0 +1,2876 @@
+/* Pretty printer for the abstract syntax.
+   Copyright (C) 2001 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include "absynpp.h"
+
+#include "evexp.h"
+#include "flags.h"
+#include "kinds.h"
+#include "tcutil.h"
+#include "warn.h"
+
+#include <assert.h>
+#include <string.h>
+#include "cyclone/library/std/buffer.h"
+
+using Absyn;
+using Core;
+using List;
+using PP;
+
+namespace Absynpp;
+
+#ifndef PP_WIDTH
+#define PP_WIDTH 72
+#endif
+
+// forward references
+doc_t dp2doc($(list_t<designator_t>, pat_t) @);
+doc_t switchclauses2doc(list_t<switch_clause_t>);
+doc_t typ2doc(type_t);
+doc_t aggrfields2doc(list_t<aggrfield_t>);
+doc_t stmt2doc(stmt_t, bool expstmt, list_t<qvar_t, `H> varsinblock, bool);
+doc_t exp2doc(exp_t);
+doc_t exps2doc_prec(int inprec, list_t<exp_t>);
+doc_t qvar2doc(qvar_t);
+doc_t typedef_name2doc(qvar_t);
+doc_t cnst2doc(cnst_t);
+doc_t prim2doc(primop_t);
+doc_t primapp2doc(int inprec, primop_t, list_t<exp_t>);
+doc_t de2doc($(list_t<designator_t>, exp_t) @);
+doc_t tqtd2doc(tqual_t, type_t, opt_t<doc_t>);
+doc_t funargs2doc(list_t<$(var_opt_t, tqual_t, type_t) @> args, bool c_varargs,
+                  vararg_info_t *cyc_varargs, type_opt_t effopt, list_t<effconstr_t> rgn_po,
+                  list_t<$(type_t, type_t) @> qb, exp_opt_t checks, exp_opt_t requires,
+                  exp_opt_t ensures, exp_opt_t thrws);
+doc_t datatypefields2doc(list_t<datatypefield_t>);
+doc_t enumfields2doc(list_t<enumfield_t>);
+doc_t vardecl2doc(vardecl_t, bool add_semicolon);
+doc_t aggrdecl2doc(aggrdecl_t);
+doc_t enumdecl2doc(enumdecl_t);
+doc_t datatypedecl2doc(datatypedecl_t);
+doc_t ntyp2doc(type_t);
+
+// Flag controlling whether typedefs are expanded during printing
+static bool expand_typedefs;
+
+// Flag controlling how to print identifiers (better performance (???) than
+// re-writing them all in Toc).
+static bool qvar_to_Cids;
+
+string_t cyc_string       = "Cyc";
+stringptr_t cyc_stringptr = &cyc_string;
+
+// Special namespace, avoid adding Cyc_ prefix to ids in this namespace
+static string_t nocyc_str       = "__NoCycPrefix";
+static stringptr_t nocyc_strptr = &nocyc_str;
+
+// Flag controlling whether to add the cyc prefix to the C-identifiers
+static bool add_cyc_prefix;
+
+// Flag controlling whether declarations have to be at the beginning of blocks
+static bool decls_first;
+
+// Flag controlling whether to rewrite temporary type variables
+// makes reparsing impossible, but gives nicer error messages
+static bool rewrite_temp_tvars;
+
+// Flag controlling whether to print all type variables
+static bool print_all_tvars;
+
+// Flag controlling whether to print all kinds
+static bool print_all_kinds;
+
+// Flag controlling whether to print effects on functions
+static bool print_all_effects;
+
+// Flag controlling whether to print the Using statements
+static bool print_using_stmts;
+
+// Flag controlling whether to print the extern "C" {...} statements
+// after the TC, the extern "C" are propagated to the functions,
+// and we get a warning if we don't hide this one
+static bool print_externC_stmts;
+
+// Flag controlling whether to print out free tvars that can be
+// used when instantiating evars
+static bool print_full_evars;
+static bool gen_clean_cyclone;  // evars should not explicitly appear in Cyclone output
+static bool inside_function_type = false;
+
+// Flag controlling whether to insert #line directives in c output
+static bool generate_line_directives;
+
+// Flag controlling whether to use the variable curr_namespace or not
+static bool use_curr_namespace;
+
+// Flag controlling whether to print [NO]ZEROTERM
+static bool print_zeroterm;
+
+// keep a track of the current namespace
+static list_t<var_t> curr_namespace = NULL;
+
+// used by cycdoc to suppress printing extern, etc.
+int print_for_cycdoc = false;
+
+struct Params {
+  bool expand_typedefs;
+  bool qvar_to_Cids;
+  bool add_cyc_prefix;
+  bool decls_first;
+  bool rewrite_temp_tvars;
+  bool print_all_tvars;
+  bool print_all_kinds;
+  bool print_all_effects;
+  bool print_using_stmts;
+  bool print_externC_stmts;
+  bool print_full_evars;
+  bool print_zeroterm;
+  bool generate_line_directives;
+  bool use_curr_namespace;
+  list_t<var_t> curr_namespace;
+  bool gen_clean_cyclone;
+};
+
+void set_params(struct Params @fs) {
+  expand_typedefs          = fs->expand_typedefs;
+  qvar_to_Cids             = fs->qvar_to_Cids;
+  add_cyc_prefix           = fs->add_cyc_prefix;
+  decls_first              = fs->decls_first;
+  rewrite_temp_tvars       = fs->rewrite_temp_tvars;
+  print_all_tvars          = fs->print_all_tvars;
+  print_all_kinds          = fs->print_all_kinds;
+  print_all_effects        = fs->print_all_effects;
+  print_using_stmts        = fs->print_using_stmts;
+  print_externC_stmts      = fs->print_externC_stmts;
+  print_full_evars         = fs->print_full_evars;
+  print_zeroterm           = fs->print_zeroterm;
+  generate_line_directives = fs->generate_line_directives;
+  use_curr_namespace       = fs->use_curr_namespace;
+  curr_namespace           = fs->curr_namespace;
+  gen_clean_cyclone        = fs->gen_clean_cyclone;
+}
+
+struct Params cyc_params_r = {
+    .expand_typedefs          = false,
+    .qvar_to_Cids             = false,
+    .add_cyc_prefix           = false,
+    .decls_first              = false,
+    .rewrite_temp_tvars       = true,
+    .print_all_tvars          = false,
+    .print_all_kinds          = false,
+    .print_all_effects        = false,
+    .print_using_stmts        = true,
+    .print_externC_stmts      = true,
+    .print_full_evars         = false,
+    .print_zeroterm           = true,
+    .generate_line_directives = false,
+    .use_curr_namespace       = true,
+    .curr_namespace           = NULL,
+    .gen_clean_cyclone        = false,
+};
+
+struct Params cycinf_params_r = {
+    .expand_typedefs          = false,
+    .qvar_to_Cids             = false,
+    .add_cyc_prefix           = false,
+    .decls_first              = false,
+    .rewrite_temp_tvars       = true,
+    .print_all_tvars          = false,
+    .print_all_kinds          = false,
+    .print_all_effects        = true,
+    .print_using_stmts        = true,
+    .print_externC_stmts      = true,
+    .print_full_evars         = false,
+    .print_zeroterm           = true,
+    .generate_line_directives = false,
+    .use_curr_namespace       = true,
+    .curr_namespace           = NULL,
+    .gen_clean_cyclone        = true,
+};
+
+struct Params cyci_params_r = {
+    .expand_typedefs          = true,
+    .qvar_to_Cids             = false,
+    .add_cyc_prefix           = true,
+    .decls_first              = false,
+    .rewrite_temp_tvars       = true,
+    .print_all_tvars          = false,
+    .print_all_kinds          = false,
+    .print_all_effects        = false,
+    .print_using_stmts        = true,
+    .print_externC_stmts      = true,
+    .print_full_evars         = false,
+    .print_zeroterm           = true,
+    .generate_line_directives = false,
+    .use_curr_namespace       = true,
+    .curr_namespace           = NULL,
+    .gen_clean_cyclone        = false,
+};
+
+struct Params c_params_r = {
+    .expand_typedefs          = true,
+    .qvar_to_Cids             = true,
+    .add_cyc_prefix           = true,
+    .decls_first              = true,
+    .rewrite_temp_tvars       = false,
+    .print_all_tvars          = false,
+    .print_all_kinds          = false,
+    .print_all_effects        = false,
+    .print_using_stmts        = false,
+    .print_externC_stmts      = false,
+    .print_full_evars         = false,
+    .print_zeroterm           = false,
+    .generate_line_directives = true,
+    .use_curr_namespace       = false,
+    .curr_namespace           = NULL,
+    .gen_clean_cyclone        = false,
+};
+
+struct Params tc_params_r = {
+    .expand_typedefs          = false,
+    .qvar_to_Cids             = false,
+    .add_cyc_prefix           = false,
+    .decls_first              = false,
+    .rewrite_temp_tvars       = true,
+    .print_all_tvars          = false,
+    .print_all_kinds          = false,
+    .print_all_effects        = false,
+    .print_using_stmts        = true,
+    .print_externC_stmts      = true,
+    .print_full_evars         = false,
+    .print_zeroterm           = true,
+    .generate_line_directives = false,
+    .use_curr_namespace       = false,
+    .curr_namespace           = NULL,
+    .gen_clean_cyclone        = false,
+};
+
+static void curr_namespace_add(var_t v) {
+  curr_namespace = imp_append(curr_namespace, new List(v, NULL));
+}
+
+static void suppr_last(list_t @l) {
+  // could be in List
+  if ((*l)->tl == NULL)
+    *l = NULL;
+  else
+    suppr_last(&((*l)->tl));
+}
+
+static void curr_namespace_drop() { suppr_last(&curr_namespace); }
+
+string_t char_escape(unsigned char c) {
+  switch (c) {
+    case '\a':
+      return "\\a";
+    case '\b':
+      return "\\b";
+    case '\f':
+      return "\\f";
+    case '\n':
+      return "\\n";
+    case '\r':
+      return "\\r";
+    case '\t':
+      return "\\t";
+    case '\v':
+      return "\\v";
+    case '\\':
+      return "\\\\";
+    case '\"':
+      return "\"";
+    case '\'':
+      return "\\'";
+    default:
+      if (c >= ' ' && c <= '~') {
+        let t = new_string(2);
+        t[0]  = c;
+        return t;
+      }
+      let t = new_string(5);
+      t[0]  = '\\';
+      t[1]  = (char)('0' + ((c >> 6) & 3));
+      t[2]  = (char)('0' + ((c >> 3) & 7));
+      t[3]  = (char)('0' + ((c >> 0) & 7));
+      return t;
+  }
+}
+
+static bool special(string_t s) {
+  int sz = numelts(s) - 1;
+
+  for (int i = 0; i < sz; i++) {
+    char c = s[i];
+    if (c <= ' ' || c >= '~' || c == '\042' || c == '\\')
+      return true;
+  }
+  return false;
+}
+
+string_t string_escape(string_t<`H> s) {
+  if (!special(s))
+    return s;
+
+  int n = numelts(s) - 1;
+  // Check for the expected NUL terminator of a string constant
+  if (n > 0 && s[n] == '\000')
+    n--;
+
+  // determine length
+  int len = 0;
+  for (int i = 0; i <= n; i++)
+    switch (s[i]) {
+      case '\a':
+      case '\b':
+      case '\f':
+      case '\n':
+      case '\r':
+      case '\t':
+      case '\v':
+      case '\\':
+      case '\"':
+        len += 2;
+        break;
+      case c:
+        if (c >= ' ' && c <= '~')
+          len++;
+        else
+          len += 4;
+        break;
+    }
+
+  // build the escaped string
+  mstring_t t = new_string(len + 1);
+  int j       = 0;
+  for (int i = 0; i <= n; i++)
+    switch (s[i]) {
+      case '\a':
+        t[j++] = '\\';
+        t[j++] = 'a';
+        break;
+      case '\b':
+        t[j++] = '\\';
+        t[j++] = 'b';
+        break;
+      case '\f':
+        t[j++] = '\\';
+        t[j++] = 'f';
+        break;
+      case '\n':
+        t[j++] = '\\';
+        t[j++] = 'n';
+        break;
+      case '\r':
+        t[j++] = '\\';
+        t[j++] = 'r';
+        break;
+      case '\t':
+        t[j++] = '\\';
+        t[j++] = 't';
+        break;
+      case '\v':
+        t[j++] = '\\';
+        t[j++] = 'v';
+        break;
+      case '\\':
+        t[j++] = '\\';
+        t[j++] = '\\';
+        break;
+      case '"':
+        t[j++] = '\\';
+        t[j++] = '"';
+        break;
+      case c:
+        if (c >= ' ' && c <= '~')
+          t[j++] = c;
+        else {
+          unsigned char uc = c;  // NB: typechecker declares c to have type char, might not be
+                                 // unsigned, and this makes a difference to the calculations
+                                 // below when the high bit is set
+          t[j++] = '\\';
+          t[j++] = (char)('0' + ((uc >> 6) & 7));
+          t[j++] = (char)('0' + ((uc >> 3) & 7));
+          t[j++] = (char)('0' + ((uc >> 0) & 7));
+        }
+        break;
+    }
+
+  return t;
+}
+
+doc_t tqual2doc(tqual_t tq) {
+  static string_t restrict_string = "restrict";
+  static string_t volatile_string = "volatile";
+  static string_t const_string    = "const";
+
+  list_t<stringptr_t> l = NULL;
+  if (tq.q_restrict)
+    l = new List(&restrict_string, l);
+  if (tq.q_volatile)
+    l = new List(&volatile_string, l);
+  if (tq.print_const)
+    l = new List(&const_string, l);
+
+  return egroup("", " ", " ", List::map(textptr, l));
+}
+
+string_t kind2string(kind_t ka) { return Kinds::kind2string(ka); }
+
+doc_t kind2doc(kind_t k) { return text(kind2string(k)); }
+
+string_t kindbound2string(kindbound_t c) {
+  switch (Kinds::compress_kb(c)) {
+    case &Eq_kb(k):
+      return kind2string(k);
+    case &Unknown_kb(_):
+      // protect against following ` in TeX, spacing ignored
+      return PP::tex_output ? "{?}" : "?";
+    case &Less_kb(_, k):
+      return aprintf("<=%s", kind2string(k));
+  }
+}
+
+// Code duplication so we can get spacing correct in TeX
+doc_t kindbound2doc(kindbound_t c) {
+  switch (Kinds::compress_kb(c)) {
+    case &Eq_kb(k):
+      return text(kind2string(k));
+    case &Unknown_kb(_):
+      // protect against following ` in TeX, spacing ignored
+      return PP::tex_output ? text("{?}") : text("?");
+    case &Less_kb(_, k):
+      return text(kind2string(k));
+  }
+}
+
+static bool emptydoc(doc_t a) { return strlen(string_of_doc(a, PP_WIDTH)) == 0; }
+
+static doc_t tps2doc(list_t<type_t, `H> ts) {
+  if (gen_clean_cyclone && !inside_function_type) {
+    bool foundEvar         = false;
+    list_t<type_t> cleanTs = NULL;
+    for (_ ts2 = ts; !foundEvar && ts2; ts2 = ts2->tl) {
+      switch (ts2->hd) {
+        case &Evar(...):
+          foundEvar = true;
+          break;
+        default:
+#if 0
+              if (foundEvar)
+                Warn::impos ("Found non-evar after an evar in a type application");
+
+#endif
+          cleanTs = new List{ts2->hd, cleanTs};
+          break;
+      }
+    }
+    ts = List::imp_rev(cleanTs);
+  }
+  let l = List::map(typ2doc, ts);
+  if (gen_clean_cyclone) {
+    list_t prev        = NULL;
+    bool foundEmptyDoc = false;
+    for (_ ll = l; ll; ll = ll->tl) {
+      if (!emptydoc(ll->hd)) {
+        if (foundEmptyDoc)
+          Warn::impos("Found non-empty doc after an empty doc");
+        prev = ll;
+      } else
+        foundEmptyDoc = true;
+    }
+    if (prev == NULL)
+      return nil_doc();
+    prev->tl = NULL;
+  }
+  return egroup("<", ">", ",", l);
+}
+
+doc_t tvar2doc(tvar_t tv) {
+  let n = *tv->name;
+
+  // FIX:  we're rewriting internally-generated tvars to `Gxxx
+  // which might conflict...
+  if (rewrite_temp_tvars && Tcutil::is_temp_tvar(tv)) {
+    string_t kstring = "K";
+    switch (Kinds::compress_kb(tv->kind)) {
+      case &Less_kb(_, k):
+        fallthru(k);
+      case &Eq_kb(k):
+        kstring = kind2string(k);
+        break;
+      default:
+        break;
+    }
+    return text(aprintf("`G%s%s", kstring, n + 1));
+  }
+  return text(n);
+}
+
+doc_t ktvar2doc(tvar_t tv) {
+  switch (Kinds::compress_kb(tv->kind)) {
+    case &Unknown_kb(_):
+      return tvar2doc(tv);
+#if 0
+    case &Eq_kb (&Kind (BoxKind, _)):
+#endif
+    case &Less_kb(_, k):
+      fallthru(k);
+    case &Eq_kb(k):
+      return cat(tvar2doc(tv), text("::"), kind2doc(k));
+  }
+}
+
+doc_t ktvars2doc(list_t<tvar_t> tvs) { return egroup("<", ">", ",", List::map(ktvar2doc, tvs)); }
+
+doc_t tvars2doc(list_t<tvar_t> tvs) {
+  let f = (print_all_kinds || gen_clean_cyclone) ? ktvar2doc : tvar2doc;
+
+  return egroup("<", ">", ",", List::map(f, tvs));
+}
+
+doc_t arg2doc($(tqual_t, type_t) @t) { return tqtd2doc((*t)[0], (*t)[1], NULL); }
+
+doc_t args2doc(list_t<$(tqual_t, type_t) @> ts) {
+  return group("(", ")", ",", List::map(arg2doc, ts));
+}
+
+doc_t noncallatt2doc(attribute_t att) {
+  switch (att) {
+    case &Stdcall_att:
+    case &Cdecl_att:
+    case &Fastcall_att:
+      return nil_doc();
+    default:
+      return text(attribute2string(att));
+  }
+}
+
+// for MS only
+doc_t callconv2doc(attributes_t atts) {
+  for (; atts != NULL; atts = atts->tl)
+    switch (atts->hd) {
+      case &Stdcall_att:
+        return text(" _stdcall ");
+      case &Cdecl_att:
+        return text(" _cdecl ");
+      case &Fastcall_att:
+        return text(" _fastcall ");
+      default:
+        break;
+    }
+  return nil_doc();
+}
+
+// for MS only
+doc_t noncallconv2doc(attributes_t atts) {
+  bool hasatt = false;
+
+  for (_ atts2 = atts; atts2 != NULL; atts2 = atts2->tl)
+    switch (atts2->hd) {
+      case &Stdcall_att:
+      case &Cdecl_att:
+      case &Fastcall_att:
+        break;
+      default:
+        hasatt = true;
+        break;
+    }
+  if (!hasatt)
+    return nil_doc();
+  return cat(text(" __declspec("), group("", "", " ", List::map(noncallatt2doc, atts)), text(")"));
+}
+
+string_t attribute2string(attribute_t a) {
+  switch (a) {
+    case &Regparm_att(i):
+      return aprintf("regparm(%d)", i);
+    case &Stdcall_att:
+      return "stdcall";
+    case &Cdecl_att:
+      return "cdecl";
+    case &Fastcall_att:
+      return "fastcall";
+    case &Noreturn_att:
+      return "noreturn";
+    case &Const_att:
+      return "const";
+    case &Availability_att:
+      return "availability";
+    case &Aligned_att(e):
+      if (e == NULL)
+        return "aligned";
+      switch (Flags::c_compiler) {
+        case Flags::Gcc_c:
+          return aprintf("aligned(%s)", exp2string(e));
+        case Flags::Vc_c:
+        default:
+          return aprintf("align(%s)", exp2string(e));
+      }
+    case &Packed_att:
+      return "packed";
+    case &Section_att(s):
+      return aprintf("section(\"%s\")", s);
+    case &Nocommon_att:
+      return "nocommon";
+    case &Shared_att:
+      return "shared";
+    case &Unused_att:
+      return "unused";
+    case &Weak_att:
+      return "weak";
+    case &Dllimport_att:
+      return "dllimport";
+    case &Dllexport_att:
+      return "dllexport";
+    case &No_instrument_function_att:
+      return "no_instrument_function";
+    case &Constructor_att:
+      return "constructor";
+    case &Destructor_att:
+      return "destructor";
+    case &No_check_memory_usage_att:
+      return "no_check_memory_usage";
+    case &Format_att(Printf_ft, n, m):
+      return aprintf("format(printf,%u,%u)", n, m);
+    case &Format_att(Scanf_ft, n, m):
+      return aprintf("format(scanf,%u,%u)", n, m);
+    case &Format_att(_, n, m):
+      Warn::impos("Unknown format specifier");
+    case &Initializes_att(n):
+      return aprintf("initializes(%d)", n);
+    case &Noliveunique_att(n):
+      return aprintf("noliveunique(%d)", n);
+    case &Consume_att(n):
+      return aprintf("consume(%d)", n);
+    case &Pure_att:
+      return "pure";
+    case &Always_inline_att:
+      return "always_inline";
+    case &Mode_att(s):
+      return aprintf("__mode__(\"%s\")", s);
+    case &Alias_att(s):
+      return aprintf("alias(\"%s\")", s);
+    case &No_throw_att:
+      return "no_throw";
+    case &Deprecated_att:
+      return "deprecated";
+    case &Leaf_att:
+      return "leaf";
+    case &Malloc_att:
+      return "malloc";
+    case &Access_att(WriteOnly_at, n, m):
+      return aprintf("access(write_only,%u,%u)", n, m);
+    case &Access_att(_, n, m):
+      Warn::impos("Unknown access specifier");
+    case &Cold_att:
+      return "cold";
+    case &AllocSize_att(n, 0):
+      return aprintf("alloc_size(%u)", n);
+    case &AllocSize_att(n, m):
+      return aprintf("alloc_size(%u,%u)", n, m);
+    case &AllocAlign_att(n):
+      return aprintf("alloc_align(%u)", n);
+    case &WarnUnusedResult_att:
+      return "warn_unused_result";
+    case &MayAlias_att:
+      return "may_alias";
+    case &VectorSize_att(n):
+      return aprintf("vector_size(%u)", n);
+  }
+}
+
+// for gcc only
+doc_t att2doc(attribute_t a) { return text(attribute2string(a)); }
+
+doc_t atts2doc(attributes_t atts) {
+  if (atts == NULL)
+    return nil_doc();
+  switch (Flags::c_compiler) {
+    case Flags::Vc_c:
+      return noncallconv2doc(atts);
+    default:
+      return cat(text(" __attribute__"), group("((", "))", ",", List::map(att2doc, atts)));
+  }
+}
+
+bool next_is_pointer(list_t<type_modifier_t> tms) {
+  if (tms == NULL)
+    return false;
+  switch (tms->hd) {
+    case &Pointer_mod(_, _):
+      return true;
+    case &Attributes_mod(_, _):
+      switch (Flags::c_compiler) {
+        case Flags::Gcc_c:
+          return false;
+        default:
+          return next_is_pointer(tms->tl);
+      }
+    default:
+      return false;
+  }
+}
+
+static doc_t question() {
+  static struct Doc *cache_question = NULL;
+
+  if (!cache_question)  // protect against following ` in TeX
+    cache_question = PP::tex_output ? text_width("{?}", 1) : text("?");
+  return (doc_t)cache_question;
+}
+
+static doc_t lb() {
+  static struct Doc *cache_lb = NULL;
+
+  if (!cache_lb)
+    cache_lb = PP::tex_output ? text_width("{\\lb}", 1) : text("{");
+  return (doc_t)cache_lb;
+}
+
+static doc_t rb() {
+  static struct Doc *cache_rb = NULL;
+
+  if (!cache_rb)
+    cache_rb = PP::tex_output ? text_width("{\\rb}", 1) : text("}");
+  return (doc_t)cache_rb;
+}
+
+static doc_t dollar() {
+  static struct Doc *cache_dollar = NULL;
+
+  if (!cache_dollar)
+    cache_dollar = PP::tex_output ? text_width("\\$", 1) : text("$");
+  return (doc_t)cache_dollar;
+}
+
+doc_t group_braces(string_t<`H> sep, list_t<doc_t, `H> ss) { return cat(lb(), seq(sep, ss), rb()); }
+
+// for debugging
+static void print_tms(list_t<type_modifier_t> tms) {
+  for (; tms != NULL; tms = tms->tl)
+    switch (tms->hd) {
+      case &Carray_mod(...):
+        fprintf(stderr, "Carray_mod ");
+        break;
+      case &ConstArray_mod(...):
+        fprintf(stderr, "ConstArray_mod ");
+        break;
+      case &Function_mod(&WithTypes(ys, ...)):
+        fprintf(stderr, "Function_mod(");
+        for (; ys != NULL; ys = ys->tl) {
+          let v = (*ys->hd)[0];
+          if (v == NULL)
+            fprintf(stderr, "?");
+          else
+            fprintf(stderr, *v);
+          if (ys->tl != NULL)
+            fprintf(stderr, ",");
+        }
+        fprintf(stderr, ") ");
+        break;
+      case &Function_mod(...):
+        fprintf(stderr, "Function_mod()");
+        break;
+      case &Attributes_mod(...):
+        fprintf(stderr, "Attributes_mod ");
+        break;
+      case &TypeParams_mod(...):
+        fprintf(stderr, "TypeParams_mod ");
+        break;
+      case &Pointer_mod(...):
+        fprintf(stderr, "Pointer_mod ");
+        break;
+    }
+  fprintf(stderr, "\n");
+}
+
+static const doc_t(@rgn2doc)(type_t) = ntyp2doc;
+
+doc_t scope2doc(scope_t sc) {
+  if (print_for_cycdoc)
+    return nil_doc();
+  switch (sc) {
+    case Static:
+      return text("static ");
+    case Public:
+      return nil_doc();
+    case Extern:
+      return text("extern ");
+    case ExternC:
+      return text("extern \"C\" ");
+    case Abstract:
+      return text("abstract ");
+    case Register:
+      return text("register ");
+    default:
+      return nil_doc();
+  }
+}
+
+static doc_t aqual_val2doc(alias_qual_val_t aqv) {
+  switch (aqv) {
+    case Aliasable_qual:
+      return text("ALIASABLE");
+    case Unique_qual:
+      return text("UNIQUE");
+    case Refcnt_qual:
+      return text("REFCNT");
+    case Restricted_qual:
+      return text("RESTRICTED");
+    default:
+      throw new Failure("Absynpp::aqual_val2doc unrecognized value");
+  }
+}
+
+static bool is_function_tms(list_t<type_modifier_t> tms) {
+  if (tms == NULL)
+    return false;
+  switch (tms->hd) {
+    case &Function_mod(...):
+      return true;
+    default:
+      return is_function_tms(tms->tl);
+  }
+}
+
+doc_t dtms2doc(bool is_char_ptr, doc_t d, list_t<type_modifier_t> tms) {
+  if (tms == NULL)
+    return d;
+  bool save_ift = inside_function_type;
+  if (gen_clean_cyclone && is_function_tms(tms))
+    inside_function_type = true;
+  doc_t rest   = dtms2doc(false, d, tms->tl);
+  doc_t p_rest = cat(text("("), rest, text(")"));
+  _ s;
+  switch (tms->hd) {
+    case &Carray_mod(zeroterm, _):
+      if (next_is_pointer(tms->tl))
+        rest = p_rest;
+      s = cat(rest, type2bool(false, zeroterm) ? text("[]@zeroterm") : text("[]"));
+      inside_function_type = save_ift;
+      return s;
+
+    case &ConstArray_mod(e, zeroterm, _):
+      if (next_is_pointer(tms->tl))
+        rest = p_rest;
+      s                    = cat(rest, text("["), exp2doc(e),
+              type2bool(false, zeroterm) ? text("]@zeroterm") : text("]"));
+      inside_function_type = save_ift;
+      return s;
+
+    case &Function_mod(args):
+      if (next_is_pointer(tms->tl))
+        rest = p_rest;
+      switch (args) {
+        case &WithTypes(args2, c_varargs, cyc_varargs, effopt, effc, qb, chk, req, ens, thrws):
+          s = cat(rest, funargs2doc(args2, c_varargs, cyc_varargs, effopt, effc, qb, chk, req, ens,
+                                    thrws));
+          inside_function_type = save_ift;
+          return s;
+        case &NoTypes(sl, loc):
+          s                    = cat(rest, group("(", ")", ",", List::map(textptr, sl)));
+          inside_function_type = save_ift;
+          return s;
+      }
+
+    case &Attributes_mod(_, atts):
+      switch (Flags::c_compiler) {
+        case Flags::Gcc_c:
+          if (next_is_pointer(tms->tl))
+            rest = p_rest;
+          s                    = cat(rest, atts2doc(atts));
+          inside_function_type = save_ift;
+          return s;
+        default:
+          if (next_is_pointer(tms->tl)) {
+            s                    = cat(callconv2doc(atts), rest);
+            inside_function_type = save_ift;
+            return s;
+          }
+          inside_function_type = save_ift;
+          return rest;
+      }
+
+    case &TypeParams_mod(ts, loc, print_kinds):
+      if (next_is_pointer(tms->tl))
+        rest = p_rest;
+      if (print_kinds) {
+        s                    = cat(rest, ktvars2doc(ts));
+        inside_function_type = save_ift;
+        return s;
+      }
+      s                    = cat(rest, tvars2doc(ts));
+      inside_function_type = save_ift;
+      return s;
+
+    // FIX? What about attributes that we parse before tq2??
+    case &Pointer_mod(PtrAtts(rgn, nullable, bd, zt, _, rel, aq), tq2):
+      doc_t ptr;
+      doc_t mt   = nil_doc();
+      doc_t aqd  = mt;
+      doc_t ztd  = mt;
+      doc_t reld = mt;
+      doc_t rgd  = mt;
+      doc_t tqd  = tqual2doc(tq2);
+      switch (compress(bd)) {
+        case &AppType(&FatCon, _):
+          ptr = question();
+          break;
+        case &AppType(&ThinCon, &List{targ, _}):
+          switch (targ) {
+            case &ValueofType(e):
+              ptr               = text(type2bool(true, nullable) ? "*" : "@");
+              let $(val, known) = Evexp::eval_const_uint_exp(e);
+              if (!known || val != 1)
+                ptr = cat(ptr, lb(), exp2doc(e), rb());
+              break;
+            default:
+              ptr = text(type2bool(true, nullable) ? "*" : "@");
+              ptr = cat(ptr, lb(), typ2doc(compress(targ)), rb());
+              break;
+          }
+          break;
+        default:
+          ptr = text(type2bool(true, nullable) ? "*" : "@");
+          ptr = cat(ptr, lb(), typ2doc(bd), rb());
+          break;
+      }
+      if (print_zeroterm) {
+        switch (compress(aq)) {
+          case &AppType(&AqualConstCon(aqv), _):
+            switch (aqv) {
+              case Aliasable_qual:
+                break;
+              default:
+                aqd = cat(text("@aqual("), aqual_val2doc(aqv), text(")"));
+                break;
+            }
+            break;
+          case &AppType(&AqualVarCon, tv):
+            if (gen_clean_cyclone) {
+              switch (compress(tv->hd)) {
+                case &Evar(...):
+                  break;
+                default:
+                  aqd = cat(text("@aqual("), typ2doc(compress(tv->hd)), text(")"));
+                  break;
+              }
+            } else
+              aqd = cat(text("@aqual("), typ2doc(compress(tv->hd)), text(")"));
+            break;
+          case &Evar(...):
+            if (!gen_clean_cyclone)
+              aqd = cat(text("@aqual("), typ2doc(aq), text(")"));
+            break;
+            // can never appear unwrapped  in a pointer qualifier
+#if 0
+            case &AppType (&AqualsCon, tv):
+              aqd = cat (text ("aquals("), typ2doc (tv->hd), text (")"));
+              break;
+#endif
+          default:
+            Warn::impos2("unexpected alias qualifier", aq);
+        }
+        if ((gen_clean_cyclone || !is_char_ptr) && type2bool(false, zt))
+          ztd = text("@zeroterm");
+        else if ((gen_clean_cyclone || is_char_ptr) && !type2bool(false, zt))
+          ztd = text("@nozeroterm");
+        if (type2bool(false, rel))
+          reld = text("@autoreleased");
+      }
+      bool was_evar = false;
+      if (gen_clean_cyclone && !inside_function_type)  // ugly hack :(
+      {
+        switch (rgn) {
+          case &Evar(...):
+            // this could have block region names in it, which will not be bound
+            was_evar = true;
+            break;
+          default:
+            break;
+        }
+      }
+      switch (compress(rgn)) {
+        case &AppType(&HeapCon, _):
+          if (Flags::interproc && Flags::no_merge)
+            rgd = text("`H");
+          break;
+        case &Evar(...) && (print_for_cycdoc || gen_clean_cyclone):
+          break;
+        default:
+          if (!was_evar)
+            // for gen_clean_cyclone only output regions that were
+            // explicitly written by the user
+            rgd = rgn2doc(rgn);
+      }
+      doc_t spacer0        = reld != mt && ztd != mt ? text(" ") : mt;
+      doc_t spacer1        = tqd != mt && (ztd != mt || rgd != mt || reld != mt) ? text(" ") : mt;
+      doc_t spacer2        = rest != mt ? text(" ") : mt;
+      s                    = cat(ptr, aqd, ztd, spacer0, reld, rgd, spacer1, tqd, spacer2, rest);
+      inside_function_type = save_ift;
+      return s;
+  }
+}
+
+static void effects2docs(list_t<doc_t, `H> @rgions, list_t<doc_t, `H> @effects, type_t t) {
+  switch (compress(t)) {
+#if 0
+    case &AppType (&AccessCon, &List { r, _ }):
+      *rgions = new List (rgn2doc (r), *rgions);
+      break;
+#endif
+    case &AppType(&JoinCon, ts):
+      for (; ts != NULL; ts = ts->tl)
+        effects2docs(rgions, effects, ts->hd);
+      break;
+    default:
+      *effects = new List(typ2doc(t), *effects);
+      break;
+  }
+}
+
+doc_t eff2doc(type_t t) {
+  list_t<doc_t> rgions = NULL, effects = NULL;
+  effects2docs(&rgions, &effects, t);
+  rgions  = List::imp_rev(rgions);
+  effects = List::imp_rev(effects);
+  if (rgions == NULL && effects != NULL)
+    return group("", "", "+", effects);
+  let doc1 = group_braces(",", rgions);
+  return group("", "", "+", List::imp_append(effects, new List(doc1, NULL)));
+}
+
+doc_t aggr_kind2doc(aggr_kind_t k) { return k == StructA ? text("struct ") : text("union "); }
+
+static $(tqual_t, type_t) @aggrfield2arg(aggrfield_t f) { return new $(f->tq, f->type); }
+
+// Convert a normalized typ to a doc
+doc_t ntyp2doc(type_t t) {
+  switch (t) {
+    // The first three cases never turn up in normalized types.
+    case &ArrayType(_):
+      return text("[[[array]]]");  // nil_doc();
+    case &FnType(_):
+      return nil_doc();
+    case &PointerType(_):
+      return nil_doc();
+
+    case &AppType(&VoidCon, _):
+      return text("void");
+
+    case &Cvar(k, topt, i, _, name, ...):
+#if 0
+      if (topt != NULL)
+        return ntyp2doc (topt);
+#endif
+      string_t kindstring = (k == NULL) ? "K" : kind2string(k->v);
+      if (name)
+        return text(aprintf("`C_%s_%s", kindstring, name));
+      else {
+        return text(aprintf("`C_%s_%d", kindstring, i));
+#if 0
+          cat (text (aprintf ("`C%s%d", kindstring, i)), text ("-"), (topt != NULL ? ntyp2doc (topt)
+                                                                        : text ("-")));
+#endif
+      }
+    case &Evar(k, topt, i, tvs):
+      if (topt != NULL)
+        // This is an error case, topt should be NULL in a normalized type
+        return ntyp2doc(topt);
+      if (gen_clean_cyclone)
+        return nil_doc();
+      string_t kindstring = (k == NULL) ? "K" : kind2string(k->v);
+      return text(aprintf("`E%s%d", kindstring, i));
+    case &VarType(tv):
+      doc_t s = tvar2doc(tv);
+      if (print_all_kinds)
+        s = cat(s, text("::"), kindbound2doc(tv->kind));
+      return s;
+    case &AppType(&DatatypeCon(tu_info), ts):
+      switch (tu_info) {
+        case {.UnknownDatatype = UnknownDatatypeInfo(n, is_x)}:
+          fallthru(n, is_x);
+        case {.KnownDatatype = &&Datatypedecl(_, n, _, _, is_x)}:
+          let kw  = text("datatype ");
+          let ext = is_x ? text("@extensible ") : nil_doc();
+          return cat(ext, kw, qvar2doc(n), tps2doc(ts));
+      }
+    case &AppType(&DatatypeFieldCon(tuf_info), ts):
+      switch (tuf_info) {
+        case {.UnknownDatatypefield = UnknownDatatypeFieldInfo(tname, fname, is_x)}:
+          fallthru(tname, is_x, fname);
+        case {.KnownDatatypefield =
+                  $(&Datatypedecl(_, tname, _, _, is_x), &Datatypefield(fname, _, _, _))}:
+          let kw = text(is_x ? "@extensible datatype " : "datatype ");
+          return cat(kw, qvar2doc(tname), text("."), qvar2doc(fname));
+      }
+    case &AppType(&IntCon(sn, sz), _):
+      string_t sns;
+      string_t ts;
+      switch (sn) {
+        case None:
+        case Signed:
+          sns = "";
+          break;
+        default:
+          sns = "unsigned ";
+          break;
+      }
+
+      switch (sz) {
+        case Char_sz:
+          switch (sn) {
+            case None:
+              sns = "";
+              break;
+            case Signed:
+              sns = "signed ";
+              break;
+            default:
+              sns = "unsigned ";
+              break;
+          }
+          ts = "char";
+          break;
+
+        case Short_sz:
+          ts = "short";
+          break;
+        case Int_sz:
+          ts = "int";
+          break;
+        case Long_sz:
+          ts = "long";
+          break;
+        case LongLong_sz:
+        default:
+          switch (Flags::c_compiler) {
+            case Flags::Gcc_c:
+              ts = "long long";
+              break;
+            default:
+              ts = "__int64";
+              break;
+          }
+          break;
+      }
+      return text(aprintf("%s%s", sns, ts));
+
+    case &AppType(&FloatCon(i), _):
+      switch (i) {
+        case 0:
+          return text("float");
+        case 1:
+          return text("double");
+        default:
+          return text("long double");
+      }
+
+    case &AppType(&ComplexCon, ts):
+      return cat(text("_Complex "), ntyp2doc(ts->hd));
+
+    case &AppType(&AggrCon(info), ts):
+      let $(k, n) = aggr_kinded_name(info);
+      return cat(aggr_kind2doc(k), qvar2doc(n), tps2doc(ts));
+
+    case &AnonAggrType(k, is_tuple, fs):
+      if (is_tuple)
+        return cat(dollar(), args2doc(map(aggrfield2arg, fs)));
+      else
+        return cat(aggr_kind2doc(k), lb(), nest(2, aggrfields2doc(fs)), rb());
+
+    case &AppType(&AnonEnumCon(fs), _):
+      return cat(text("enum "), lb(), nest(2, enumfields2doc(fs)), rb());
+
+    case &AppType(&EnumCon(n, _), _):
+      return cat(text("enum "), qvar2doc(n));
+
+    case &ValueofType(e):
+      return cat(text("valueof_t("), exp2doc(e), text(")"));
+
+    case &TypeofType(e):
+      return cat(text("typeof("), exp2doc(e), text(")"));
+
+    case &AppType(&BuiltinCon(t, _), _):
+      return text(t);
+
+    case &TypedefType(n, ts, kopt, _):
+      // NB: we could print out the expanded typedef by following the topt
+      // pointer (when non-NULL).
+      // TJ: NO, the way to do that is to expand typedefs in to_tms -- see
+      // for example the EVar case in to_tms.  The problem is that topt->v is
+      // not going to be "normalized" (i.e., come out of to_tms).
+      return cat(qvar2doc(n), tps2doc(ts));
+
+    case &AppType(&RgnHandleCon, ts):
+      return cat(text("region_t<"), rgn2doc(ts->hd), text(">"));
+
+    case &AppType(&AqualHandleCon, ts):
+      return cat(text("aqual_t<"), typ2doc(ts->hd), text(">"));
+
+    case &AppType(&AqualVarCon, ts):
+      return typ2doc(ts->hd);
+
+    case &AppType(&TagCon, ts):
+      return cat(text("tag_t<"), typ2doc(ts->hd), text(">"));
+
+    case &AppType(&RgnsCon, ts):
+      return cat(text("regions("), typ2doc(ts->hd), text(")"));
+
+    case &AppType(&HeapCon, _):
+      return text("`H");
+    case &AppType(&UniqueHeapCon, _):
+      return text("`U");
+    case &AppType(&RefCntHeapCon, _):
+      return text("`RC");
+#if 0
+    case &AppType (&AccessCon, _):
+#endif
+    case &AppType(&JoinCon, _):
+      return eff2doc(t);
+
+    case &TypeDeclType(&{.r = &Aggr_td(d), ...}, _):
+      return aggrdecl2doc(d);
+
+    case &TypeDeclType(&{.r = &Enum_td(d), ...}, _):
+      return enumdecl2doc(d);
+
+    case &TypeDeclType(&{.r = &Datatype_td(d), ...}, _):
+      return datatypedecl2doc(d);
+
+    case &AppType(&ThinCon, &List{t, _}):
+      return cat(text("@thin @numelts"), lb(), typ2doc(t), rb());
+
+    case &AppType(&AqualConstCon(aqv), _):
+      return aqual_val2doc(aqv);
+
+    case &AppType(&AqualsCon, qtv):
+      return cat(text("aquals("), typ2doc(qtv->hd), text(")"));
+
+    case &AppType(&ThinCon, _):
+      return text("@thin");
+    case &AppType(&FatCon, _):
+      return text("@fat");
+    case &AppType(&TrueCon, _):
+      return text("@true");
+    case &AppType(&FalseCon, _):
+      return text("@false");
+
+    case &SubsetType(vd, e, _):
+      return cat(text("@subset"), text("("), vardecl2doc(vd, false), text(" | "), exp2doc(e),
+                 text(")"));
+  }
+}
+
+doc_t rgn_cmp2doc($(type_t, type_t) @cmp) {
+  let &$(r1, r2) = cmp;
+  return cat(rgn2doc(r1), text(" > "), rgn2doc(r2));
+}
+
+doc_t rgnpo2doc(list_t<$(type_t, type_t) @> po) { return ppseq(rgn_cmp2doc, ",", po); }
+
+doc_t one_ec2doc(effconstr_t ec) {
+  switch (ec) {
+    case &SubsetConstraint(e1, e2):
+      return cat(eff2doc(e1), text(" <= "), eff2doc(e2));
+    case &DisjointConstraint(e1, e2):
+      return cat(eff2doc(e1), text(" | "), eff2doc(e2));
+    case &SingleConstraint(e):
+      return cat(text("single("), eff2doc(e), text(")"));
+  }
+}
+
+doc_t effconstr2doc(list_t<effconstr_t> effc) { return ppseq(one_ec2doc, ",", effc); }
+
+doc_t qb_cmp2doc($(type_t, type_t) @cmp) {
+  let &$(t1, t2) = cmp;
+  return cat(ntyp2doc(t2), text(" >= "), ntyp2doc(t1));
+}
+
+doc_t qualbnd2doc(list_t<$(type_t, type_t) @> qb) {
+  return group("", "", ",", List::map(qb_cmp2doc, qb));
+}
+
+doc_t funarg2doc($(var_opt_t, tqual_t, type_t) @t) {
+  let vo = (*t)[0];
+
+  opt_t<doc_t> dopt = (vo == NULL) ? NULL : (new Opt(text(*vo)));
+  return tqtd2doc((*t)[1], (*t)[2], dopt);
+}
+
+doc_t funargs2doc(list_t<$(var_opt_t, tqual_t, type_t) @> args, bool c_varargs,
+                  vararg_info_t *cyc_varargs, type_opt_t effopt, list_t<effconstr_t> effc,
+                  list_t<$(type_t, type_t) @> qb, exp_opt_t chk, exp_opt_t req, exp_opt_t ens,
+                  exp_opt_t thrws) {
+  let arg_docs = List::map(funarg2doc, args);
+  doc_t eff_doc;
+
+  if (c_varargs)
+    arg_docs = List::append(arg_docs, new List(text("..."), NULL));
+  else if (cyc_varargs != NULL) {
+    let varargs_doc = cat(text("..."), cyc_varargs->inject ? text(" inject ") : text(" "),
+                          funarg2doc(new $(cyc_varargs->name, cyc_varargs->tq, cyc_varargs->type)));
+    arg_docs        = List::append(arg_docs, new List(varargs_doc, NULL));
+  }
+
+  let arg_doc = group("", "", ",", arg_docs);
+  if (effopt != NULL && print_all_effects)
+    arg_doc = cat(arg_doc, text(";"), eff2doc(effopt));
+  if (effc != NULL)
+    arg_doc = cat(arg_doc, text(":"), effconstr2doc(effc));
+  if (qb != NULL) {
+    let sep = (effc == NULL ? text(":") : text(","));
+    arg_doc = cat(arg_doc, sep, qualbnd2doc(qb));
+  }
+
+  let res = cat(text("("), arg_doc, text(")"));
+  if (chk != NULL)
+    res = cat(res, text(" @checks("), exp2doc(chk), text(")"));
+  if (req != NULL)
+    res = cat(res, text(" @requires("), exp2doc(req), text(")"));
+  if (ens != NULL)
+    res = cat(res, text(" @ensures("), exp2doc(ens), text(")"));
+  if (thrws != NULL)
+    res = cat(res, text(" @throws("), exp2doc(thrws), text(")"));
+
+  return res;
+}
+
+string_t qvar2string(qvar_t q) {
+  let prefix = NULL;
+  let match;
+
+  switch ((*q)[0]) {
+    case {.Loc_n = _}:
+      fallthru(NULL);
+    case {.Rel_n = x}:
+      match = false;
+      if (x && qvar_to_Cids && !strptrcmp(x->hd, nocyc_strptr))
+        prefix = x->tl;
+      else
+        prefix = x;
+      break;
+
+    case {.C_n = x}:
+      if (gen_clean_cyclone)
+        fallthru(x);
+      else
+        match = use_curr_namespace && list_prefix(strptrcmp, x, curr_namespace);
+      // No namespace prefixes in the C namespace.
+      break;
+
+    case {.Abs_n = x}:
+      match = use_curr_namespace && list_prefix(strptrcmp, x, curr_namespace);
+      if (x && qvar_to_Cids && !strptrcmp(x->hd, nocyc_strptr))
+        prefix = x->tl;
+      else
+        prefix = add_cyc_prefix ? new List(cyc_stringptr, x) : x;
+      break;
+  }
+
+  if (qvar_to_Cids)
+    return str_sepstr(List::append(prefix, new List((*q)[1], NULL)), "_");
+  if (match)  // don't print prefix if it matches the current namespaces
+    return *((*q)[1]);
+  return str_sepstr(List::append(prefix, new List((*q)[1], NULL)), "::");
+}
+
+string_t fullqvar2string(qvar_t q) {
+  let prefix = NULL;
+
+  switch ((*q)[0]) {
+    case {.Loc_n = _}:
+      fallthru(NULL);
+    case {.Rel_n = x}:
+      prefix = x;
+      break;
+    case {.C_n = x}:
+      break;
+    case {.Abs_n = x}:
+      prefix = x;
+      break;
+  }
+  return str_sepstr(List::append(prefix, new List((*q)[1], NULL)), "_");
+}
+
+string_t typedef_name2string(qvar_t v) {
+  // behave as qvar2string when translating to C
+  if (qvar_to_Cids)
+    return qvar2string(v);
+
+  // otherwise we should not print the complete namespace here (it won't
+  // reparse)
+  if (use_curr_namespace) {
+    switch ((*v)[0]) {
+      case {.Loc_n = _}:
+      case {.Rel_n = NULL}:
+        return *((*v)[1]);
+
+      case {.C_n = l}:
+        fallthru(l);  // FIX: is this correct?
+      case {.Abs_n = l}:
+        if (list_cmp(strptrcmp, l, curr_namespace) == 0)
+          return *((*v)[1]);
+        fallthru;
+      default:
+        return strconcat("/* bad namespace : */ ", qvar2string(v));
+    }
+  }
+  return *((*v)[1]);
+}
+
+doc_t qvar2doc(qvar_t q) { return text(qvar2string(q)); }
+
+doc_t typedef_name2doc(qvar_t v) { return text(typedef_name2string(v)); }
+
+doc_t qvar2bolddoc(qvar_t q) {
+  let qs = qvar2string(q);
+
+  if (PP::tex_output)
+    return text_width(strconcat(strconcat("\\textbf{", qs), "}"), strlen(qs));
+  return text(qs);
+}
+
+doc_t typedef_name2bolddoc(qvar_t v) {
+  let vs = typedef_name2string(v);
+
+  if (PP::tex_output)
+    return text_width(strconcat(strconcat("\\textbf{", vs), "}"), strlen(vs));
+  return text(vs);
+}
+
+doc_t typ2doc(type_t t) { return tqtd2doc(empty_tqual(0), t, NULL); }
+
+static doc_t offsetof_field_to_doc(offsetof_field_t f) {
+  switch (f) {
+    case &StructField(n):
+      return textptr(n);
+  }
+}
+
+// higher precedence means binds more tightly
+// not quite right b/c unary operators allow cast expressions,
+//   but that just means we put extra parens in.
+//       Eg. &((foo) x) has unnecessary parens
+// warning -- as a quick hack, exp2_doc_prec also uses some constants
+//            in key places
+// BIGGER WARNING: Absyndump::dumpexp_prec has to use the same constants!!!
+int exp_prec(exp_t e) {
+  switch (e->r) {
+    case &Const_e(...):
+    case &Var_e(...):
+      return 10000;
+    case &Primop_e(p, _):
+      switch (p) {
+        case Plus:
+          return 100;
+        case Times:
+          return 110;
+        case Minus:
+          return 100;
+        case Div:
+        case UDiv:
+        case Mod:
+        case UMod:
+          return 110;
+        case Eq:
+        case Neq:
+          return 70;
+        case Gt:
+        case Lt:
+        case Gte:
+        case Lte:
+        case UGt:
+        case ULt:
+        case UGte:
+        case ULte:
+          return 80;
+        case Not:
+        case Bitnot:
+          return 130;
+        case Bitand:
+          return 60;
+        case Bitor:
+          return 40;
+        case Bitxor:
+          return 50;
+        case Bitlshift:
+          return 90;
+        case Bitlrshift:
+          return 80;  // unlike C (see grammar)
+        case Numelts:
+          return 140;  // numelts(foo)
+        case Tagof:
+          return 140;  // tagof(foo)
+        default:
+          return 140;
+      }
+    case &AssignOp_e(...):
+      return 20;
+    case &Increment_e(...):
+      return 130;
+    case &Conditional_e(...):
+      return 30;
+    case &And_e(...):
+      return 35;  // FIX: right precedence for &&
+    case &Or_e(...):
+      return 30;  // FIX: right precedence for ||
+    case &SeqExp_e(...):
+      return -10;  // DJG: must be less than 0
+    case &FnCall_e(...):
+      return 140;
+    case &Pragma_e(...):
+      return 140;
+    case &Throw_e(...):
+      return 130;
+    case &NoInstantiate_e(e2):
+      fallthru(e2);
+    case &Instantiate_e(e2, _):
+      return exp_prec(e2);
+    case &Cast_e(...):
+      return 120;
+    case &New_e(...):
+      return 15;  // ???
+    case &Address_e(_):
+    case &Sizeoftype_e(_):
+    case &Sizeofexp_e(_):
+    case &Valueof_e(_):
+    case &Asm_e(...):
+    case &Tagcheck_e(...):
+    case &Offsetof_e(...):
+    case &Deref_e(...):
+    case &Assert_e(...):
+    case &Assert_false_e(...):
+    case &Extension_e(...):
+      return 130;
+    case &AggrMember_e(...):
+    case &AggrArrow_e(...):
+    case &Subscript_e(...):
+      return 140;
+    case &CompoundLit_e(...):
+    case &Array_e(...):
+    case &Comprehension_e(...):
+    case &ComprehensionNoinit_e(...):
+    case &Aggregate_e(...):
+    case &AnonStruct_e(...):
+    case &Datatype_e(...):
+    case &Enum_e(...):
+    case &AnonEnum_e(...):
+    case &Malloc_e(_):
+    case &Swap_e(...):
+    case &UnresolvedMem_e(...):
+      return 140;  // ???
+    case &StmtExp_e(...):
+      return 10000;
+  }
+}
+
+static doc_t asm_iolist_doc_in(list_t<$(string_t<`H>, exp_t) @> o) {
+  doc_t s = nil_doc();
+
+  while (o) {
+    let &$(c, e) = o->hd;
+    s            = cat(s, text("\""), text(c), text("\" ("), exp2doc(e), text(")"));
+    o            = o->tl;
+    if (o)
+      s = cat(s, text(","));
+  }
+  return s;
+}
+
+static doc_t asm_iolist_doc(list_t<$(string_t<`H>, exp_t) @> o, list_t<$(string_t<`H>, exp_t) @> i,
+                            list_t<string_t<`H> @> cl) {
+  doc_t s = nil_doc();
+
+  if (o)
+    s = cat(text(": "), asm_iolist_doc_in(o));
+
+  if (i) {
+    if (!o)
+      s = cat(s, text(": : "), asm_iolist_doc_in(i));
+    else
+      s = cat(s, text(" : "), asm_iolist_doc_in(i));
+  }
+
+  if (cl) {
+    int ncol = (i ? 2 : o ? 1 : 0);
+    s        = cat(s, ncol == 0 ? text(": : :") : ncol == 1 ? text(" : : ") : text(" : "));
+    while (cl != NULL) {
+      s  = cat(s, text("\""), text(*cl->hd), text("\""));
+      cl = cl->tl;
+      if (cl)
+        s = cat(s, text(", "));
+    }
+  }
+  return s;
+}
+
+datatype exn{Implicit_region};
+datatype exn.Implicit_region Implicit_region_val = Implicit_region;
+
+static bool may_contain_implicit_regions(bool *res, type_t t) {
+  if (Tcutil::type_kind(t) == &Kinds::ek) {
+    switch (compress(t)) {
+      case &VarType(tv):
+        if (Tcutil::is_temp_tvar(tv)) {
+          *res = true;
+          throw &Implicit_region_val;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return true;
+}
+
+static bool is_clean_cast(type_t nt, exp_t e) {
+  switch ($(nt, e->topt)) {
+    case $(&AppType(&IntCon(...), _), &PointerType(p1)):
+      switch (p1.ptr_atts.bounds) {
+        case &Cvar(...):
+        case &AppType(&FatCon, ...):
+          return false;
+        // these casts get inserted using unchecked_cast; for instance
+        // if((unsigned int) (char ?)a) ... which is not legal
+        // so don't print these out... they will get reintroduced in the
+        // --resolve pass
+        default:
+          return true;
+      }
+    default:
+      switch (e->r) {
+        case &NoInstantiate_e(...):
+          return false;
+        default:
+          bool br = false;
+          try {
+            visit_type(may_contain_implicit_regions, &br, nt);
+            return true;
+          } catch {
+            case &Implicit_region:
+              return false;
+          }
+      }
+  }
+}
+
+doc_t exp2doc_prec(int inprec, exp_t e) {
+  int myprec = exp_prec(e);
+  doc_t s;
+
+  switch (e->r) {
+    case &Const_e(c):
+      s = cnst2doc(c);
+      break;
+    case &Var_e(b):
+      s = qvar2doc(binding2qvar(b));
+      break;
+    case &Pragma_e(p):
+      s = cat(text("__cyclone_pragma__"), text("("), text(p), text(")"));
+      break;
+    case &Primop_e(p, es):
+      s = primapp2doc(myprec, p, es);
+      break;
+    case &AssignOp_e(e1, popt, e2):
+      s = cat(exp2doc_prec(myprec, e1), text(" "), popt == NULL ? nil_doc() : prim2doc(popt->v),
+              text("= "), exp2doc_prec(myprec, e2));
+      break;
+
+    case &Increment_e(e2, i):
+      let es = exp2doc_prec(myprec, e2);
+      switch (i) {
+        case PreInc:
+          s = cat(text("++"), es);
+          break;
+        case PreDec:
+          s = cat(text("--"), es);
+          break;
+        case PostInc:
+          s = cat(es, text("++"));
+          break;
+        case PostDec:
+        default:
+          s = cat(es, text("--"));
+          break;
+      }
+      break;
+
+    case &Conditional_e(e1, e2, e3):
+      s = cat(exp2doc_prec(myprec, e1), text(" ? "), exp2doc_prec(0, e2), text(" : "),
+              exp2doc_prec(myprec, e3));
+      break;
+
+    case &And_e(e1, e2):
+      s = cat(exp2doc_prec(myprec, e1), text(" && "), exp2doc_prec(myprec, e2));
+      break;
+
+    case &Or_e(e1, e2):
+      s = cat(exp2doc_prec(myprec, e1), text(" || "), exp2doc_prec(myprec, e2));
+      break;
+
+    case &SeqExp_e(e1, e2):
+      // DJG: as a hack to avoid piles of parens for aggregate initialization
+      // we pass our precedence - 1 recursively -- sound because , is
+      // associative
+      s = cat(exp2doc_prec(myprec - 1, e1), text(", "), exp2doc_prec(myprec - 1, e2));
+      break;
+
+    case &FnCall_e(e1, es, ...):
+      s = cat(exp2doc_prec(myprec, e1), text("("), exps2doc_prec(20, es), text(")"));
+      break;
+
+    case &Throw_e(e1, _):
+      s = cat(text("throw "), exp2doc_prec(myprec, e1));
+      break;
+
+    case &NoInstantiate_e(e1):
+      s = exp2doc_prec(inprec, e1);
+      if (gen_clean_cyclone)
+        s = cat(text("("), s, text(")"), text("<>"));
+      break;
+
+    case &Instantiate_e(e1, ts):
+      s = exp2doc_prec(inprec, e1);
+      if (gen_clean_cyclone) {
+        let inst = tps2doc(ts);
+        if (!emptydoc(inst))
+          s = cat(text("("), s, text(")"), text("@"), inst);
+      }
+      break;
+
+    case &Cast_e(t, e1, u, c):
+      let castStr    = nil_doc();
+      bool printType = true;
+      if (gen_clean_cyclone && !u)  // user casts should not be sanitized
+        printType = is_clean_cast(t, e1);
+      if (printType)
+        castStr = cat(text("("), typ2doc(t), text(")"));
+      s = cat(castStr, exp2doc_prec(myprec, e1));
+      break;
+
+    case &Address_e(e1):
+      s = cat(text("&"), exp2doc_prec(myprec, e1));
+      break;
+
+    case &New_e(ropt, e1, qual):
+      if (ropt == NULL) {
+        let qd = nil_doc();
+        if (qual)
+          qd = cat(text("("), exp2doc(qual), text(")"));
+        s = cat(qual == NULL ? text("new ") : text("qnew "), qd, exp2doc_prec(myprec, e1));
+      } else {
+        let qd = nil_doc();
+        if (qual)
+          qd = cat(text(","), exp2doc(qual));
+        s = cat(text("rnew("), exp2doc(ropt), qd, text(") "), exp2doc_prec(myprec, e1));
+      }
+      break;
+
+    case &Sizeoftype_e(t):
+      s = cat(text("sizeof("), typ2doc(t), text(")"));
+      break;
+    case &Sizeofexp_e(e1):
+      s = cat(text("sizeof("), exp2doc(e1), text(")"));
+      break;
+
+    case &Assert_e(e, static_only, _):
+      if (static_only)
+        s = cat(text("@assert("), exp2doc(e), text(")"));
+      else
+        s = cat(text("assert("), exp2doc(e), text(")"));
+      break;
+    case &Assert_false_e(e):
+      s = cat(text("@assert_false("), exp2doc(e), text(")"));
+      break;
+
+    case &Extension_e(e):
+      s = cat(text("__extension__("), exp2doc(e), text(")"));
+      break;
+
+    case &Valueof_e(t):
+      s = cat(text("valueof("), typ2doc(t), text(")"));
+      break;
+
+    case &Asm_e(vol, t, o, i, cl):
+      s = text("__asm__");
+      if (vol)
+        s = cat(s, text(" volatile "));
+      s = cat(s, text("(\""), text(string_escape(t)), text("\""), asm_iolist_doc(o, i, cl),
+              text(")"));
+      break;
+
+    case &Tagcheck_e(e, f):
+      s = cat(text("tagcheck("), exp2doc(e), text("."), textptr(f), text(")"));
+      break;
+
+    case &Offsetof_e(t, l):
+      s = cat(text("offsetof("), typ2doc(t), text(","),
+              seq(".", List::map(offsetof_field_to_doc, l)), text(")"));
+      break;
+
+    case &Deref_e(e1):
+      s = cat(text("*"), exp2doc_prec(myprec, e1));
+      break;
+
+    case &AggrMember_e(e1, n, ...):
+      s = cat(exp2doc_prec(myprec, e1), text("."), textptr(n));
+      break;
+
+    case &AggrArrow_e(e1, n, ...):
+      s = cat(exp2doc_prec(myprec, e1), text("->"), textptr(n));
+      break;
+
+    case &Subscript_e(e1, e2):
+      s = cat(exp2doc_prec(myprec, e1), text("["), exp2doc(e2), text("]"));
+      break;
+
+    case &CompoundLit_e(vat, des):  // OK to ignore qualifiers??
+      s = cat(text("("), typ2doc((*vat)[2]), text(")"), group_braces(",", List::map(de2doc, des)));
+      break;
+
+    case &Array_e(des):
+      s = group_braces(",", List::map(de2doc, des));
+      break;
+
+    case &Comprehension_e(vd, e1, e2, _):
+      s = cat(lb(), text("for "), text(*((*vd->name)[1])), text(" < "), exp2doc(e1), text(" : "),
+              exp2doc(e2), rb());
+      break;
+    case &ComprehensionNoinit_e(e, t, _):
+      s = cat(lb(), text("for x "), text(" < "), exp2doc(e), text(" : "), typ2doc(t), rb());
+      break;
+
+    case &Aggregate_e(n, ts, des, _):
+      let des_doc = List::map(de2doc, des);
+      s           = cat(qvar2doc(n), lb(),
+#if 0
+               tps2doc (ts),
+#endif
+              seq(",", des_doc), rb());
+#if 0
+      group_braces (",",
+                    (ts != NULL ? new List (tps2doc (ts), des_doc)
+                       : des_doc)));
+#endif
+      break;
+
+    case &AnonStruct_e(_, is_tuple, des):
+      if (is_tuple)
+        s = cat(dollar(), text("("), exps2doc_prec(20, map(snd, des)), text(")"));
+      else
+        s = group_braces(",", List::map(de2doc, des));
+      break;
+
+    case &Datatype_e(es, _, tuf):
+      // special case: a nullary datatype constant is printed "foo" not "foo()"
+      s = cat(qvar2doc(tuf->name), egroup("(", ")", ",", List::map(exp2doc, es)));
+      break;
+    case &Enum_e(_, ef):
+      fallthru(ef);
+    case &AnonEnum_e(_, ef):
+      s = qvar2doc(ef->name);
+      break;
+
+    case &Malloc_e(MallocInfo{mknd, rgnopt, aqopt, topt, e, _, inline_call}):
+      // Note: This is for Cyclone's malloc, not the mallocs introduced during
+      //       translation to C, which are function calls.
+      if (mknd == Calloc) {
+        // topt should not be NULL for calloc's
+        exp_t st = sizeoftype_exp(*topt, 0);
+        if (rgnopt == NULL)
+          s = cat(text("calloc("), exp2doc(e), text(","), exp2doc(st), text(")"));
+        else
+          s = cat(aqopt != NULL ? text("qcalloc(") : text("rcalloc("), exp2doc(rgnopt),
+                  (aqopt != NULL ? cat(text(","), exp2doc(aqopt), text(",")) : text(",")),
+                  exp2doc(e), text(","), exp2doc(st), text(")"));
+      } else {
+        // see comments in absyn.h
+        doc_t new_e = exp2doc(e);
+        assert(topt);  // topt never null
+#if 0
+          exp2doc ((topt == NULL) ? e: times_exp (sizeoftype_exp (*topt, 0), e, 0));
+#endif
+        string_t fn_name = "malloc(";
+        if (rgnopt == NULL)
+          s = cat(text(fn_name), new_e, text(")"));
+        else {
+          if (mknd == Vmalloc)
+            fn_name = "rvmalloc(";
+          else if (inline_call)
+            fn_name = "rmalloc_inline(";
+          else if (aqopt != NULL)
+            fn_name = "qmalloc(";
+          else
+            fn_name = "rmalloc(";
+          s = cat(text(fn_name), exp2doc(rgnopt),
+                  (aqopt != NULL ? cat(text(","), exp2doc(aqopt), text(",")) : text(",")), new_e,
+                  text(")"));
+        }
+      }
+      break;
+
+    case &Swap_e(e1, e2):
+      s = cat(exp2doc_prec(myprec, e1), text(" :=: "), exp2doc_prec(myprec, e2));
+      break;
+
+    case &UnresolvedMem_e(n,
+                          des):  // Currently n is always NULL from the parser
+      s = group_braces(",", List::map(de2doc, des));
+      break;
+
+    case &StmtExp_e(s2):
+      s = cat(text("("), lb(), blank_doc(), nest(2, stmt2doc(s2, true, NULL, true)), blank_doc(),
+              rb(), text(")"));
+      break;
+  }
+
+  if (inprec >= myprec)
+    s = cat(text("("), s, text(")"));
+
+  return s;
+}
+
+doc_t exp2doc(exp_t e) { return exp2doc_prec(0, e); }
+
+doc_t designator2doc(designator_t d) {
+  switch (d) {
+    case &ArrayElement(e):
+      return cat(text(".["), exp2doc(e), text("]"));
+    case &FieldName(v):
+      return cat(text("."), textptr(v));
+  }
+}
+
+doc_t de2doc($(list_t<designator_t>, exp_t) @de) {
+  if ((*de)[0] == NULL)
+    return exp2doc((*de)[1]);
+  return cat(egroup("", "=", "=", List::map(designator2doc, (*de)[0])), exp2doc((*de)[1]));
+}
+
+doc_t exps2doc_prec(int inprec, list_t<exp_t> es) {
+  return group("", "", ",", List::map_c(exp2doc_prec, inprec, es));
+}
+
+string_t longlong2string(unsigned long long i) {
+  char ? x = new { for
+      i < 28 : 'z'
+  };
+  x[27]     = '\0';
+  x[26]     = 'L';
+  x[25]     = 'L';
+  x[24]     = 'U';
+  x[23]     = '0';
+  int index = 23;
+  while (i != 0) {
+    x[index--] = (char)('0' + (i % 10));
+    i          = i / 10;
+  }
+  return x + index + 1;
+}
+
+// FIX: take care of sign for Char_c and Short_c
+doc_t cnst2doc(cnst_t c) {
+  switch (c) {
+    case {.Char_c = $(sg, ch)}:
+      return text(aprintf("'%s'", char_escape(ch)));
+
+    case {.Wchar_c = s}:
+      return text(aprintf("L'%s'", s));
+
+    case {.Short_c = $(sg, s)}:
+      return text(aprintf("%d", (int)s));
+
+    case {.Int_c = $(sn, i)}:
+      if (sn == Unsigned)
+        return text(aprintf("%uU", (unsigned)i));
+      return text(aprintf("%d", i));
+
+    case {.LongLong_c = $(sg, i)}:
+      return text(longlong2string(i));  // FIX: use sign!
+
+    case {.Int128_c = $(sg, i)}:
+      return text(longlong2string(i));  // FIX: use sign!
+
+    case {.Float_c = $(x, _)}:
+      return text(x);
+
+    case {.Null_c = _}:
+      return text("NULL");
+
+    case {.String_c = s}:
+      return cat(text("\""), text(string_escape(s)), text("\""));
+
+    case {.Wstring_c = s}:
+      return cat(text("L\""), text(s), text("\""));
+  }
+}
+
+doc_t primapp2doc(int inprec, primop_t p, list_t<exp_t> es) {
+  doc_t ps = prim2doc(p);
+
+  if (p == Numelts) {
+    if (es == NULL || es->tl != NULL)
+      Warn::impos("Absynpp::primapp2doc Numelts: %s with bad args", string_of_doc(ps, 72));
+    return cat(text("numelts("), exp2doc(es->hd), text(")"));
+  } else if (p == Tagof) {
+    if (es == NULL || es->tl != NULL)
+      Warn::impos("Absynpp::primapp2doc Tagof: %s with bad args", string_of_doc(ps, 72));
+    return cat(text("tagof("), exp2doc(es->hd), text(")"));
+  }
+
+  list_t<doc_t> ds = List::map_c(exp2doc_prec, inprec, es);
+  if (ds == NULL)
+    Warn::impos("Absynpp::primapp2doc: %s with no args", string_of_doc(ps, 72));
+  if (ds->tl == NULL)
+    return cat(ps, text(" "), ds->hd);
+  if (ds->tl->tl != NULL)
+    Warn::impos("Absynpp::primapp2doc: %s with more than 2 args", string_of_doc(ps, 72));
+
+  return cat(ds->hd, text(" "), ps, text(" "), ds->tl->hd);
+}
+
+string_t prim2str(primop_t p) {
+  switch (p) {
+    case Plus:
+      return "+";
+    case Times:
+      return "*";
+    case Minus:
+      return "-";
+    case UDiv:
+    case Div:
+      return "/";
+    case UMod:
+    case Mod:
+      return print_for_cycdoc ? "\\%" : "%";
+    case Eq:
+      return "==";
+    case Neq:
+      return "!=";
+    case UGt:
+    case Gt:
+      return ">";
+    case ULt:
+    case Lt:
+      return "<";
+    case UGte:
+    case Gte:
+      return ">=";
+    case ULte:
+    case Lte:
+      return "<=";
+    case Not:
+      return "!";
+    case Bitnot:
+      return "~";
+    case Bitand:
+      return "&";
+    case Bitor:
+      return "|";
+    case Bitxor:
+      return "^";
+    case Bitlshift:
+      return "<<";
+    case Bitlrshift:
+      return ">>";
+    case Numelts:
+      return "numelts";
+    case Tagof:
+      return "tagof";
+    default:
+      return "?";
+  }
+}
+
+doc_t prim2doc(primop_t p) { return text(prim2str(p)); }
+
+bool is_declaration(stmt_t s) {
+  switch (s->r) {
+    case &Decl_s(_, _):
+      return true;
+    default:
+      return false;
+  }
+}
+
+static bool is_region_decl(decl_t d) {
+  switch (d->r) {
+    case &Region_d(...):
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Returns true if the declaration d shadows any of the variables in
+// the list of varsinblock.  In this case, we also return a singleton
+// list with the variable that is declared since it will be the only
+// variable in the newblock.  Otherwise, returns the variable declared
+// by the decl (if any) cons'd onto the varsinblock.
+// We only bother to record Var_d declarations since it's only C code
+// that we have to wrap extra braces around when a declaration shadows a
+// previous one.
+$(bool, list_t<qvar_t, `H>)
+shadows(decl_t d, list_t<qvar_t, `H> varsinblock) {
+  switch (d->r) {
+    case &Var_d(vd):
+      if (List::mem(qvar_cmp, varsinblock, vd->name))
+        return $(true, new List{vd->name, NULL});
+      return $(false, new List{vd->name, varsinblock});
+
+    default:
+      return $(false, varsinblock);
+  }
+}
+
+doc_t block(bool stmtexp, doc_t d) {
+  let block = cat(lb(), blank_doc(), nest(2, d), line_doc(), rb());
+
+  if (stmtexp)
+    block = cat(text("("), block, text(");"), line_doc());
+
+  return block;
+}
+
+doc_t stmt2doc(stmt_t st, bool stmtexp, list_t<qvar_t, `H> varsinblock, bool prevdecl) {
+  switch (st->r) {
+    case &Skip_s:
+      return text(";");
+
+    case &Exp_s(e):
+      return cat(exp2doc(e), text(";"));
+
+    case &Seq_s(s1, s2):
+      if (!decls_first)
+        return cat(stmt2doc(s1, false, NULL, prevdecl), line_doc(),
+                   stmt2doc(s2, stmtexp, NULL, false));
+
+      if (is_declaration(s1))
+        return cat(block(false, stmt2doc(s1, false, NULL, prevdecl)),
+                   is_declaration(s2)
+                       // for gcc compatibility
+                       ? block(stmtexp, stmt2doc(s2, stmtexp, NULL, false))
+                       : stmt2doc(s2, stmtexp, varsinblock, false));
+
+      if (is_declaration(s2))  // for gcc compatibility
+        return cat(stmt2doc(s1, false, varsinblock, prevdecl), line_doc(),
+                   block(stmtexp, stmt2doc(s2, stmtexp, NULL, false)));
+      return cat(stmt2doc(s1, false, varsinblock, prevdecl), line_doc(),
+                 stmt2doc(s2, stmtexp, varsinblock, false));
+
+    case &Return_s(NULL):
+      return text("return;");
+
+    case &Return_s(eopt):
+      return cat(text("return "), exp2doc(eopt), text(";"));
+
+    case &IfThenElse_s(e, s1, s2):
+      bool print_else;
+      switch (s2->r) {
+        case &Skip_s:
+          print_else = false;
+          break;
+        default:
+          print_else = true;
+          break;
+      }
+      return cat(text("if ("), exp2doc(e), text(") "),
+                 block(false, stmt2doc(s1, false, NULL, true)),
+                 print_else ? cat(  // line_doc(),
+                                  text("else "), block(false, stmt2doc(s2, false, NULL, true)))
+                            : nil_doc());
+
+    case &While_s($(e, _), s1):
+      return cat(text("while ("), exp2doc(e), text(") "),
+                 block(false, stmt2doc(s1, false, NULL, true)));
+
+    case &Break_s:
+      return text("break;");
+
+    case &Continue_s:
+      return text("continue;");
+
+    case &Goto_s(x):
+      return text(aprintf("goto %s;", *x));
+
+    case &For_s(e1, $(e2, _), $(e3, _), s1):
+      return cat(text("for("), exp2doc(e1), text("; "), exp2doc(e2), text("; "), exp2doc(e3),
+                 text(") "), block(false, stmt2doc(s1, false, NULL, true)));
+
+    case &Switch_s(e, ss, _):
+      return cat(text("switch ("), exp2doc(e), text(") "), lb(), line_doc(), switchclauses2doc(ss),
+                 line_doc(), rb());
+
+    case &Fallthru_s(NULL, _):
+      return text("fallthru;");
+    case &Fallthru_s(es, _):
+      return cat(text("fallthru("), exps2doc_prec(20, es), text(");"));
+
+    case &Decl_s(d, s1):
+      let $(newblock, newvarsinblock) = shadows(d, varsinblock);
+      doc_t s = cat(decl2doc(d), line_doc(), stmt2doc(s1, stmtexp, newvarsinblock, true));
+      if (newblock || gen_clean_cyclone)
+        s = block(stmtexp, s);
+#if 0
+      (gen_clean_cyclone && (!prevdecl || is_region_decl (d))))
+#endif
+      return s;
+
+    case &Label_s(x, s1):
+      if (decls_first && is_declaration(s1))
+        return cat(textptr(x), text(": "),
+                   block(stmtexp, stmt2doc(s1, stmtexp, NULL,
+                                           false)));  // label starts a new region
+      return cat(textptr(x), text(": "), stmt2doc(s1, stmtexp, varsinblock, false));
+
+    case &Do_s(s1, $(e, _)):
+      return cat(text("do "), block(false, stmt2doc(s1, false, NULL, true)), text(" while ("),
+                 exp2doc(e), text(");"));
+
+    case &TryCatch_s(s1, ss, _):
+      return cat(text("try "), block(false, stmt2doc(s1, false, NULL, true)), text(" catch "),
+                 block(false, switchclauses2doc(ss)));
+  }
+}
+
+doc_t pat2doc(pat_t p) {
+  switch (p->r) {
+    case &Wild_p:
+      return text("_");
+    case &Null_p:
+      return text("NULL");
+
+    case &Int_p(sg, i):
+      if (sg != Unsigned)
+        return text(aprintf("%d", i));
+      return text(aprintf("%u", i));
+    case &Char_p(ch):
+      return text(aprintf("'%s'", char_escape(ch)));
+    case &Float_p(x, _):
+      return text(x);
+
+    case &Var_p(vd, &Pat{.r = &Wild_p, ...}):
+      return qvar2doc(vd->name);
+    case &Var_p(vd, p2):
+      return cat(qvar2doc(vd->name), text(" as "), pat2doc(p2));
+
+    case &AliasVar_p(tv, vd):
+      return cat(text("alias"), text(" <"), tvar2doc(tv), text("> "), vardecl2doc(vd, false));
+
+    case &TagInt_p(tv, vd):
+      return cat(qvar2doc(vd->name), text("<"), tvar2doc(tv), text(">"));
+
+    case &Pointer_p(p2):
+      return cat(text("&"), pat2doc(p2));
+
+    case &Reference_p(vd, &Pat{.r = &Wild_p, ...}):
+      return cat(text("*"), qvar2doc(vd->name));
+    case &Reference_p(vd, p2):
+      return cat(text("*"), qvar2doc(vd->name), text(" as "), pat2doc(p2));
+
+    case &UnknownId_p(q):
+      return qvar2doc(q);
+
+    case &UnknownCall_p(q, ps, dots):
+      string_t term = dots ? ", ...)" : ")";
+      return cat(qvar2doc(q), group("(", term, ",", List::map(pat2doc, ps)));
+
+    case &Aggr_p(topt, is_tuple, exists, dps, dots):
+      if (is_tuple)
+        return cat(dollar(), text("("), ppseq(pat2doc, ",", map(snd, dps)),
+                   dots ? text(", ...)") : text(")"));
+      else {
+        string_t term = dots ? ", ...}" : "}";
+        if (topt != NULL) {
+          switch (compress((type_t)topt)) {
+            case &AppType(&AggrCon(info), ...):
+              let $(_, n) = aggr_kinded_name(info);
+              return cat(qvar2doc(n), lb(), egroup("<", ">", ",", List::map(tvar2doc, exists)),
+                         group("", term, ",", List::map(dp2doc, dps)));
+            default:
+              break;
+          }
+        }
+        return cat(lb(), egroup("<", ">", ",", List::map(tvar2doc, exists)),
+                   group("", term, ",", List::map(dp2doc, dps)));
+      }
+
+    case &Enum_p(_, ef):
+      fallthru(ef);
+    case &AnonEnum_p(_, ef):
+      return qvar2doc(ef->name);
+
+    case &Datatype_p(_, tuf, NULL, _):
+      return qvar2doc(tuf->name);
+    case &Datatype_p(_, tuf, ps, dots):
+      string_t term = dots ? ", ...)" : ")";
+      return cat(qvar2doc(tuf->name), egroup("(", term, ",", List::map(pat2doc, ps)));
+
+    case &Exp_p(e):
+      return exp2doc(e);
+  }
+}
+
+doc_t dp2doc($(list_t<designator_t>, pat_t) @dp) {
+  return cat(egroup("", "=", "=", List::map(designator2doc, (*dp)[0])), pat2doc((*dp)[1]));
+}
+
+doc_t switchclause2doc(switch_clause_t c) {
+  // must treat switch clauses like labelled statements
+  doc_t body = stmt2doc(c->body, false, NULL, false);
+
+  if (decls_first && is_declaration(c->body))
+    body = block(false, body);
+
+  if (c->where_clause == NULL && c->pattern->r == (raw_pat_t)&Wild_p_val)
+    return cat(text("default: "), nest(2, cat(line_doc(), body)));
+
+  if (c->where_clause == NULL)
+    return cat(text("case "), pat2doc(c->pattern), text(": "), nest(2, cat(line_doc(), body)));
+
+  return cat(text("case "), pat2doc(c->pattern), text(" && "), exp2doc((exp_t)c->where_clause),
+             text(": "), nest(2, cat(line_doc(), body)));
+}
+
+doc_t switchclauses2doc(list_t<switch_clause_t> cs) { return ppseql(switchclause2doc, "", cs); }
+
+static doc_t enumfield2doc(enumfield_t f) {
+  if (f->tag == NULL)
+    return qvar2doc(f->name);
+  return cat(qvar2doc(f->name), text(" = "), exp2doc((exp_t)f->tag));
+}
+
+doc_t enumfields2doc(list_t<enumfield_t> fs) { return ppseql(enumfield2doc, ",", fs); }
+
+static doc_t id2doc(vardecl_t v) { return qvar2doc(v->name); }
+
+static doc_t ids2doc(list_t<vardecl_t> vds) { return ppseq(id2doc, ",", vds); }
+
+doc_t vardecl2doc(vardecl_t vd, bool add_semicolon) {
+  let &Vardecl{sc, name, varloc, tq, type, initializer, _, atts, _, _, rename} = vd;
+  doc_t s;
+  doc_t sn      = typedef_name2bolddoc(name);
+  doc_t attsdoc = atts2doc(atts);
+  doc_t beforenamedoc;
+
+  switch (Flags::c_compiler) {
+    case Flags::Gcc_c:
+      beforenamedoc = attsdoc;
+      break;
+    default:
+      switch (compress(type)) {
+        case &FnType(FnInfo{.attributes = atts2, ...}):
+          beforenamedoc = callconv2doc(atts2);
+          break;
+        default:
+          beforenamedoc = nil_doc();
+          break;
+      }
+      break;
+  }
+
+  doc_t tmp_doc;
+  switch (Flags::c_compiler) {
+    case Flags::Gcc_c:
+      tmp_doc = nil_doc();
+      break;
+    default:
+      tmp_doc = attsdoc;
+      break;
+  }
+
+  s = cat(tmp_doc, scope2doc(sc), tqtd2doc(tq, type, new Opt(cat(beforenamedoc, sn))),
+          rename == NULL ? nil_doc() : exp2doc(rename),
+          initializer == NULL ? nil_doc() : cat(text(" = "), exp2doc(initializer)),
+          add_semicolon ? text(";") : nil_doc());
+  return s;
+}
+
+doc_t export2doc($(Position::seg_t, qvar_t, bool) @x) { return qvar2doc((*x)[1]); }
+
+doc_t aggrdecl2doc(aggrdecl_t ad) {
+  if (ad->impl == NULL)
+    return cat(scope2doc(ad->sc),
+               // TODO: @tagged?
+               aggr_kind2doc(ad->kind), qvar2bolddoc(ad->name), ktvars2doc(ad->tvs));
+
+  return cat(
+      scope2doc(ad->sc), ad->impl->tagged ? text("@tagged ") : blank_doc(), aggr_kind2doc(ad->kind),
+      qvar2bolddoc(ad->name), ktvars2doc(ad->tvs), blank_doc(),
+
+      lb(), ktvars2doc(ad->impl->exist_vars),
+      ad->impl->effconstr == NULL ? nil_doc() : cat(text(":"), effconstr2doc(ad->impl->effconstr)),
+      ad->impl->qual_bnd == NULL
+          ? nil_doc()
+          : cat(text(ad->impl->effconstr == NULL ? ":" : ","), qualbnd2doc(ad->impl->qual_bnd)),
+      nest(2, cat(line_doc(), aggrfields2doc(ad->impl->fields))), line_doc(), rb(),
+
+      atts2doc(ad->attributes));
+}
+
+doc_t datatypedecl2doc(datatypedecl_t dd) {
+  let &Datatypedecl(sc, name, tvs, fields, is_x) = dd;
+
+  let decl = cat(scope2doc(sc), is_x ? text("@extensible ") : blank_doc(), text("datatype "),
+                 is_x ? qvar2bolddoc(name) : typedef_name2bolddoc(name), ktvars2doc(tvs));
+
+  if (fields != NULL)
+    decl = cat(decl, blank_doc(), lb(), nest(2, cat(line_doc(), datatypefields2doc(fields->v))),
+               line_doc(), rb());
+
+  return decl;
+}
+
+doc_t enumdecl2doc(enumdecl_t ed) {
+  let &Enumdecl{sc, n, fields} = ed;
+
+  if (fields == NULL)
+    return cat(scope2doc(sc), text("enum "), typedef_name2bolddoc(n));
+  return cat(scope2doc(sc), text("enum "), qvar2bolddoc(n), blank_doc(),
+
+             lb(), nest(2, cat(line_doc(), enumfields2doc(fields->v))), line_doc(), rb());
+}
+
+doc_t decl2doc(decl_t d) {
+  doc_t s;
+
+  switch (d->r) {
+    case &Fn_d(fd):
+      fn_info_t type_info  = fd->i;
+      type_info.attributes = NULL;
+      type_t t             = new FnType(type_info);
+      if (fd->cached_type != NULL)
+        switch (compress((type_t)fd->cached_type)) {
+          case &FnType(i):
+            fd->i.attributes = append(fd->i.attributes, i.attributes);
+            break;
+          default:
+            Warn::impos("function has non-function type");
+        }
+
+      doc_t attsdoc = atts2doc(fd->i.attributes);
+
+      doc_t inlinedoc;
+      if (fd->is_inline)
+        switch (Flags::c_compiler) {
+          case Flags::Gcc_c:
+            inlinedoc = text("inline ");
+            break;
+          default:
+            inlinedoc = text("__inline ");
+            break;
+        }
+      else
+        inlinedoc = nil_doc();
+
+      doc_t scopedoc = scope2doc(fd->sc);
+      doc_t beforenamedoc;
+      switch (Flags::c_compiler) {
+        case Flags::Gcc_c:
+          beforenamedoc = attsdoc;
+          break;
+        default:
+          beforenamedoc = callconv2doc(fd->i.attributes);
+          break;
+      }
+
+      doc_t namedoc = typedef_name2doc(fd->name);
+      doc_t tqtddoc = tqtd2doc(empty_tqual(0), t, new Opt(cat(beforenamedoc, namedoc)));
+      // NOTE: if we have a local variable declared in the outermost block
+      // that shadows a parameter, gcc will warn.  If we want to get rid of
+      // the warning, we could pass in the parameters as the list of variables
+      // defined in the block and then we will insert an extra { ... } which
+      // suppresses the warning.
+      doc_t bodydoc =
+          cat(blank_doc(), lb(), nest(2, cat(line_doc(), stmt2doc(fd->body, false, NULL, true))),
+              line_doc(), rb());
+
+      s = cat(inlinedoc, scopedoc, tqtddoc, bodydoc);
+      switch (Flags::c_compiler) {
+        case Flags::Vc_c:
+          s = cat(attsdoc, s);
+          break;
+        default:
+          break;
+      }
+
+      break;
+
+    case &Aggr_d(ad):
+      s = cat(aggrdecl2doc(ad), text(";"));
+      break;
+    case &Var_d(vd):
+      s = vardecl2doc(vd, true);
+      break;
+    case &Datatype_d(dd):
+      s = cat(datatypedecl2doc(dd), text(";"));
+      break;
+    case &Letv_d(vds):
+      s = cat(text("let "), ids2doc(vds), text(";"));
+      break;
+    case &Enum_d(ed):
+      s = cat(enumdecl2doc(ed), text(";"));
+      break;
+
+    case &Region_d(tv, vd, open_exp_opt):
+      s = cat(text("region"), (open_exp_opt ? nil_doc() : cat(text("<"), tvar2doc(tv), text(">"))),
+              text(" "), qvar2doc(vd->name),
+              (open_exp_opt ? cat(text(" = open("), exp2doc(open_exp_opt), text(")")) : nil_doc()),
+              text(";"));
+      break;
+
+    case &Let_d(p, _, e, _):
+      s = cat(text("let "), pat2doc(p), text(" = "), exp2doc(e), text(";"));
+      break;
+
+    case &Typedef_d(td):
+      type_t t = (td->defn != NULL) ? (type_t)td->defn : new_evar(td->kind, NULL);
+      s        = cat(text("typedef "),
+              tqtd2doc(td->tq, t, new Opt(cat(typedef_name2bolddoc(td->name), tvars2doc(td->tvs)))),
+              // FIX:  not clear where attributes should go...
+              atts2doc(td->atts), text(";"));
+
+      break;
+
+    case &Namespace_d(v, tdl):
+      if (use_curr_namespace)
+        curr_namespace_add(v);
+      s = cat(text("namespace "), textptr(v), blank_doc(), lb(), line_doc(),
+              ppseql(decl2doc, "", tdl), line_doc(), rb());
+      if (use_curr_namespace)
+        curr_namespace_drop();
+      break;
+
+    case &Using_d(q, tdl):
+      if (print_using_stmts)
+        s = cat(text("using "), qvar2doc(q), blank_doc(), lb(), line_doc(),
+                ppseql(decl2doc, "", tdl), line_doc(), rb());
+      else
+        s = cat(text("/* using "), qvar2doc(q), blank_doc(), lb(), text(" */"), line_doc(),
+                ppseql(decl2doc, "", tdl), line_doc(), text("/* "), rb(), text(" */"));
+      break;
+
+    case &ExternC_d(tdl):
+      if (print_externC_stmts)
+        s = cat(text("extern \"C\" "), lb(), line_doc(), ppseql(decl2doc, "", tdl), line_doc(),
+                rb());
+      else
+        s = cat(text("/* extern \"C\" "), lb(), text(" */"), line_doc(), ppseql(decl2doc, "", tdl),
+                line_doc(), text("/* "), rb(), text(" */"));
+      break;
+
+    case &ExternCinclude_d(tdl, ovrs, exs, wc):
+      if (print_externC_stmts) {
+        doc_t exs_doc;
+        doc_t ovrs_doc;
+        if (exs != NULL)
+          exs_doc = cat(rb(), text(" export "), lb(), line_doc(), ppseql(export2doc, ",", exs),
+                        line_doc(), rb());
+        else
+          exs_doc = rb();
+        if (ovrs != NULL)
+          ovrs_doc = cat(rb(), text(" cycdef "), lb(), line_doc(), ppseql(decl2doc, "", ovrs),
+                         line_doc(), rb());
+        else
+          ovrs_doc = rb();
+        s = cat(text("extern \"C include\" "), lb(), line_doc(), ppseql(decl2doc, "", tdl),
+                line_doc(), exs_doc);
+      } else
+        s = cat(text("/* extern \"C include\" "), lb(), text(" */"), line_doc(),
+                ppseql(decl2doc, "", tdl), line_doc(), text("/* "), rb(), text(" */"));
+      break;
+
+    // DJG: the lb() in the next 4 cases don't look right to me
+    case &Porton_d:
+      s = cat(text("__cyclone_port_on__;"), lb());
+      break;
+    case &Portoff_d:
+      s = cat(text("__cyclone_port_off__;"), lb());
+      break;
+    case &Tempeston_d:
+      s = cat(text("__tempest_on__;"), lb());
+      break;
+    case &Tempestoff_d:
+      s = cat(text("__tempest_off__;"), lb());
+      break;
+  }
+
+  return s;
+}
+
+// needed to detect default effect
+bool exists_temp_tvar_in_effect(type_t t) {
+  switch (compress(t)) {
+    case &VarType(tv):
+      return Tcutil::is_temp_tvar(tv);
+    case &AppType(&JoinCon, l):
+      return exists(exists_temp_tvar_in_effect, l);
+    default:
+      return false;
+  }
+}
+
+// This is used in deciding whether to expand a typedef -- we don't
+// expand a typedef of an anonymous function even if expand_typedefs
+// is true, because we end up with anonymous structs in, e.g.,
+// function parameters where gcc does not like them.
+bool is_anon_aggrtype(type_t t) {
+  switch (t) {
+    case &AnonAggrType(_, _, _):
+    case &AppType(&AnonEnumCon(_), _):
+      return true;
+    case &TypedefType(_, _, td, x) && x != NULL:
+      // This won't loop if the types come from a .cyc file,
+      // because typedefs in Cyclone (or C) can't be recursive
+      return is_anon_aggrtype(x);
+    default:
+      return false;
+  }
+}
+
+// bubble the attribute modifier past a running series of
+// Pointer_mod Function_mod's
+static list_t<type_modifier_t<`r>, `r> bubble_attributes(region_t<`r> r, type_modifier_t<`r> atts,
+                                                         list_t<type_modifier_t<`r>, `r> tms) {
+  if (tms != NULL && tms->tl != NULL)
+    switch ($(tms->hd, tms->tl->hd)) {
+      case $(&Pointer_mod(_, _), &Function_mod(_)):
+        return rnew(r)
+            List(tms->hd, rnew(r) List(tms->tl->hd, bubble_attributes(r, atts, tms->tl->tl)));
+      default:
+        break;
+    }
+
+  return rnew(r) List(atts, tms);
+}
+
+static void rewrite_temp_tvar(tvar_t t) {
+  // change t->name from "#xxx" to "`xxx"
+  if (!Tcutil::is_temp_tvar(t))
+    return;
+
+  let s   = strconcat("`", *t->name);
+  s[1]    = 't';
+  t->name = new (string_t) s;
+}
+
+// Conversion between alternate forms of types
+$(tqual_t, type_t, list_t<type_modifier_t<`r>, `r>)
+to_tms(region_t<`r> r, tqual_t tq, type_t t) {
+  switch (t) {
+    case &ArrayType(ArrayInfo{t2, tq2, e, zeroterm, ztl}):
+      // Throw away tq, can't qualify an array
+      let $(tq3, t3, tml3) = to_tms(r, tq2, t2);
+      type_modifier_t tm;
+      if (e == NULL)
+        tm = rnew(r) Carray_mod(zeroterm, ztl);
+      else
+        tm = rnew(r) ConstArray_mod(e, zeroterm, ztl);
+      return $(tq3, t3, rnew(r) List(tm, tml3));
+
+    case &PointerType(PtrInfo(t2, tq2, ptratts)):
+      let $(tq3, t3, tml3) = to_tms(r, tq2, t2);
+      tml3                 = rnew(r) List(rnew(r) Pointer_mod(ptratts, tq), tml3);
+      return $(tq3, t3, tml3);
+
+    case &FnType(FnInfo{typvars, effopt,  t2qual, t2, args, c_varargs, cyc_varargs,
+                        qb,      fn_atts, chk,    _,  req,  _,         ens,
+                        _,       thrws,   _,      _,  _,    effc}):
+      if (!print_all_tvars) {
+        // don't print default effects
+        // WARNING: this is our criterion to detect default effect,
+        // so it'd better be right
+        if (effopt == NULL || exists_temp_tvar_in_effect(effopt)) {
+          effopt  = NULL;  // drop the existing effect
+          typvars = NULL;  // drop the tvars, but they could be useful b/c of kinds!
+        }
+      } else if (rewrite_temp_tvars)
+        // rewrite the temp variables so that they could parse
+        // WARNING : we don't check for conflicts with user-defined tvars
+        iter(rewrite_temp_tvar, typvars);
+
+      // discard tq because you can't qualify a function
+      let $(tq3, t3, tml3)                = to_tms(r, t2qual, t2);
+      list_t<type_modifier_t<`r>, `r> tms = tml3;
+      // mess with attributes and arguments:
+      // * for gcc: we put all attributes after the args
+      // * for VC:
+      //   o we drop non-calling conventions on the floor (in fact,
+      //     decl printing puts them at the declaration beginning)
+      //   o for calling conventions, we put them before the args and rely
+      //     on the caller to move them to the right place. KLUDGE! FIX!
+      //     (I doubt this is right in all cases.)
+
+      switch (Flags::c_compiler) {
+        case Flags::Gcc_c:
+          // if the return type is a function pointer, then we have to
+          // move the attributes past that function modifier and so forth
+          if (fn_atts != NULL)
+            tms = bubble_attributes(r, rnew(r) Attributes_mod(0, fn_atts), tms);
+          tms = rnew(r)
+              List(rnew(r) Function_mod(rnew(r) WithTypes(args, c_varargs, cyc_varargs, effopt,
+                                                          effc, qb, chk, req, ens, thrws)),
+                   tms);
+          break;
+        default:
+          tms = rnew(r)
+              List(rnew(r) Function_mod(rnew(r) WithTypes(args, c_varargs, cyc_varargs, effopt,
+                                                          effc, qb, chk, req, ens, thrws)),
+                   tms);
+          for (; fn_atts != NULL; fn_atts = fn_atts->tl)
+            switch (fn_atts->hd) {
+              case &Stdcall_att:
+              case &Cdecl_att:
+              case &Fastcall_att:
+                tms = rnew(r) List(rnew(r) Attributes_mod(0, new List(fn_atts->hd, NULL)), tms);
+                goto AfterAtts;
+              default:
+                break;
+            }
+          break;
+      }
+
+    AfterAtts:
+      if (typvars != NULL)
+        tms = rnew(r) List(rnew(r) TypeParams_mod(typvars, 0, true), tms);
+
+      return $(tq3, t3, tms);
+
+    case &Evar(k, topt, i, _):
+      return topt == NULL ? $(tq, t, NULL) : to_tms(r, tq, topt);
+
+    case &TypedefType(n, ts, td, topt):
+      // we don't want to expand when either the flag is set,
+      // or it's qualified in some way...
+      // DJG: we now expand anonymous aggrs b/c we hoist and name them
+      if (topt == NULL || !expand_typedefs)
+        return $(tq, t, NULL);
+      if (tq.real_const)
+        tq.print_const = tq.real_const;
+      return to_tms(r, tq, topt);
+
+    default:
+      return $(tq, t, NULL);
+  }
+}
+
+static bool is_char_ptr(type_t t) {
+  // want to avoid compressing here when possible
+  switch (t) {
+    case &Evar(_, def, _, _) && def != NULL:
+      return is_char_ptr(def);
+    case &PointerType(PtrInfo{elt_typ, _, _}):
+      while (true)
+        switch (elt_typ) {
+          case &Evar(_, t, _, _) && t != NULL:
+            elt_typ = t;
+            continue;
+          case &TypedefType(_, _, _, t) && t != NULL:
+            elt_typ = t;
+            continue;
+
+          case &AppType(&IntCon(_, Char_sz), _):
+            return true;
+
+          default:
+            return false;
+        }
+    default:
+      return false;
+  }
+}
+
+doc_t tqtd2doc(tqual_t tq, type_t typ, opt_t<doc_t> dopt) {
+  region temp;
+
+  let $(tq, t, tms) = to_tms(temp, tq, typ);
+  tms               = List::imp_rev(tms);
+  if (tms == NULL && dopt == NULL)
+    return cat(tqual2doc(tq), ntyp2doc(t));
+  return cat(tqual2doc(tq), ntyp2doc(t), text(" "),
+             dtms2doc(is_char_ptr(typ), dopt == NULL ? nil_doc() : dopt->v, tms));
+}
+
+doc_t aggrfield2doc(aggrfield_t f) {
+  exp_opt_t req      = f->requires_clause;
+  exp_opt_t wid      = f->width;
+  doc_t requires_doc = req ? cat(text("@requires "), exp2doc(req)) : nil_doc();
+  doc_t width_doc    = wid ? cat(text(":"), exp2doc(wid)) : nil_doc();
+
+  switch (Flags::c_compiler) {
+    case Flags::Gcc_c:
+      return cat(tqtd2doc(f->tq, f->type, new Opt(textptr(f->name))), width_doc,
+                 atts2doc(f->attributes), requires_doc, text(";"));
+    default:
+      return cat(atts2doc(f->attributes), tqtd2doc(f->tq, f->type, new Opt(textptr(f->name))),
+                 width_doc, requires_doc, text(";"));
+  }
+}
+
+doc_t aggrfields2doc(list_t<aggrfield_t> fields) { return ppseql(aggrfield2doc, "", fields); }
+
+doc_t datatypefield2doc(datatypefield_t f) {
+  return cat(scope2doc(f->sc), typedef_name2doc(f->name),
+             f->typs == NULL ? nil_doc() : args2doc(f->typs));
+}
+
+doc_t datatypefields2doc(list_t<datatypefield_t> fields) {
+  return ppseql(datatypefield2doc, ",", fields);
+}
+
+//// Public interface -- extend with what clients actually want to print
+void decllist2file(list_t<decl_t> tdl, FILE @f) {
+  for (; tdl != NULL; tdl = tdl->tl) {
+    file_of_doc(decl2doc(tdl->hd), PP_WIDTH, f);
+    fprintf(f, "\n");
+  }
+}
+
+string_t decllist2string(list_t<decl_t> tdl) {
+  return string_of_doc(seql("", List::map(decl2doc, tdl)), PP_WIDTH);
+}
+
+string_t exp2string(exp_t e) { return string_of_doc(exp2doc(e), PP_WIDTH); }
+string_t stmt2string(stmt_t s) { return string_of_doc(stmt2doc(s, false, NULL, false), PP_WIDTH); }
+string_t typ2string(type_t t) { return string_of_doc(typ2doc(t), PP_WIDTH); }
+string_t tvar2string(tvar_t t) { return string_of_doc(tvar2doc(t), PP_WIDTH); }
+string_t prim2string(primop_t p) { return string_of_doc(prim2doc(p), PP_WIDTH); }
+string_t pat2string(pat_t p) { return string_of_doc(pat2doc(p), PP_WIDTH); }
+string_t scope2string(scope_t s) { return string_of_doc(scope2doc(s), PP_WIDTH); }
+string_t cnst2string(cnst_t c) { return string_of_doc(cnst2doc(c), PP_WIDTH); }
+string_t rgnpo2string(list_t<$(type_t, type_t) @> po) {
+  return string_of_doc(rgnpo2doc(po), PP_WIDTH);
+}
+string_t effconstr2string(list_t<effconstr_t> effc) {
+  return string_of_doc(effconstr2doc(effc), PP_WIDTH);
+}
+
+string_t typ2cstring(type_t t) {
+  bool old_qvar_to_Cids   = qvar_to_Cids;
+  bool old_add_cyc_prefix = add_cyc_prefix;
+
+  qvar_to_Cids   = true;
+  add_cyc_prefix = false;
+  string_t s     = typ2string(t);
+  qvar_to_Cids   = old_qvar_to_Cids;
+  add_cyc_prefix = old_add_cyc_prefix;
+  return s;
+}

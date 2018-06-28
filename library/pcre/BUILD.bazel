@@ -1,0 +1,34 @@
+load("//cyclone:build_defs.bzl", "buildlib", "cyc_library", "cyc_test")
+
+buildlib(
+    name = "pcre_buildlib",
+    src = "pcre.cys",
+    hdrs = ["pcre.h"],
+    includes = ["external/pcre/include"],
+    visibility = ["//cyclone/library/std:__pkg__"],
+    deps = ["@pcre//:include"],
+)
+
+cyc_library(
+    name = "pcre",
+    srcs = [":pcre_buildlib"],
+    cdeps = ["@pcre"],
+    copts = ["-Iexternal/pcre/include"],
+    csrcs = [
+        ":pcre_buildlib",
+        "@pcre//:include",
+    ],
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std"],
+)
+
+cyc_test(
+    name = "pcredemo",
+    size = "small",
+    srcs = ["pcredemo.cyc"],
+    args = [
+        "a*p",
+        "aap",
+    ],
+    deps = [":pcre"],
+)

@@ -1,0 +1,1904 @@
+/* Type checking for patterns.
+   Copyright (C) 2001 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+#include <string.h>
+#include "absynpp.h"
+#include "cyclone/library/std/dict.h"
+#include "cyclone/library/std/set.h"
+#include "evexp.h"
+#include "kinds.h"
+#include "subtype.h"
+#include "tcexp.h"
+#include "tcpat.h"
+#include "tctyp.h"
+#include "tcutil.h"
+#include "unify.h"
+#include "warn.h"
+
+using Absyn;
+using Absynpp;
+using Core;
+using List;
+using Set;
+using Tcenv;
+using Tcutil;
+namespace Tcpat;
+
+/////////////////////////////////////////////////////////////////////////
+// type-check a pattern and return a list of the bound type variables,
+// and a list of the bound value variables, their types, and any
+// qualifiers (e.g., const).
+/////////////////////////////////////////////////////////////////////////
+
+static void resolve_pat(tenv_t te, type_t *topt, pat_t p) {
+  switch (p->r) {
+    case &Aggr_p(NULL, is_tuple, exist_ts, dps, dots):
+      if (topt == NULL) {
+        if (is_tuple && !dots) {
+          list_t<aggrfield_t> fields = NULL;
+          unsigned int n             = List::length(dps);
+          for (int i = 0; i < n; ++i) {
+            let &FieldName(n) = tuple_field_designator(i);
+            let f =
+                new Aggrfield{n,    empty_tqual(0), new_evar(&Kinds::mko, lookup_opt_type_vars(te)),
+                              NULL, NULL,           NULL};
+            fields = new List{f, fields};
+          }
+          fields   = List::imp_rev(fields);
+          type_t t = new AnonAggrType(StructA, is_tuple, fields);
+          p->r     = new Aggr_p(t, is_tuple, exist_ts, dps, dots);
+        } else
+          Warn::err2(p->loc, "cannot determine pattern type");
+      } else {
+        let type = compress(*topt);
+        switch (type) {
+          case &AppType(&AggrCon(_), _):
+            p->r = new Aggr_p(type, is_tuple, exist_ts, dps, dots);
+            resolve_pat(te, topt, p);
+            break;
+          case &AnonAggrType(...):
+            p->r = new Aggr_p(type, is_tuple, exist_ts, dps, dots);
+            resolve_pat(te, topt, p);
+            break;
+          default:
+            Warn::err2(p->loc, "pattern expects aggregate type instead of ", *topt);
+            break;
+        }
+      }
+      return;
+
+    case &Aggr_p(topt, is_tuple, *exist_ts, dps, dots):
+      switch (compress((type_t)topt)) {
+        case &AppType(&AggrCon(AggrInfo{.KnownAggr = adp}), _):
+          let ad = *adp;
+          if (ad->impl == NULL) {
+            Warn::err2(p->loc, "can't destructure an abstract", ad);
+            p->r = &Wild_p_val;
+            return;
+          }
+          int more_exists = length(ad->impl->exist_vars) - length(*exist_ts);
+          if (more_exists < 0) {
+            Warn::err2(p->loc, "too many existential type variables in pattern");
+            let ts = exist_ts;
+            for (int n = length(ad->impl->exist_vars); n != 0; n--)
+              ts = &(*ts)->tl;
+            *ts = NULL;
+          } else if (more_exists > 0) {
+            // add missing type variables for user here
+            let new_ts = NULL;
+            for (; more_exists != 0; more_exists--)
+              new_ts = new List(new_tvar(new Unknown_kb(NULL)), new_ts);
+            *exist_ts = List::imp_append(*exist_ts, new_ts);
+          }
+          return;
+        case &AnonAggrType(...):
+          return;
+        default:
+          Warn::impos2("resolve_pat unknown aggrtype ", (type_t)topt);
+      }
+    case &Exp_p(e):
+      Tcexp::tcExp(te, NULL, e);
+      if (!is_const_exp(e)) {
+        Warn::err2(p->loc, "non-constant expression in case pattern");
+        p->r = &Wild_p_val;
+        return;
+      }
+      let $(i, known) = Evexp::eval_const_uint_exp(e);
+      if (!known) {
+        Warn::err(p->loc,
+                  "cannot evaluate expression at compile time\nWe suggest "
+                  "using x && x == %s instead",
+                  exp2string(e));
+        p->r = &Wild_p_val;
+        return;
+      }
+      p->r = new Int_p(None, i);
+      return;
+
+    case &UnknownId_p(...):
+      Warn::impos2("resolve_pat UnknownId_p");
+    case &UnknownCall_p(...):
+      Warn::impos2("resolve_pat UnknownCall_p");
+
+    default:
+      return;
+  }
+}
+
+static pat_t wild_pat(seg_t loc) { return new Pat{.loc = loc, .topt = NULL, .r = &Wild_p_val}; }
+static $(list_t<designator_t>, pat_t) @wild_dlp(seg_t loc) { return new $(NULL, wild_pat(loc)); }
+
+static list_t<`a> remove_dots(list_t<`a,`H> earlier, int num_pats, int num_fields,
+			      `a(@f)(seg_t), seg_t loc, string_t<`H> msg_str) {
+  if (num_pats >= num_fields)
+    Warn::warn2(loc, "unnecessary ... in ", msg_str, " pattern");
+  list_t<`a> new_ps = NULL;
+  for (int i = 0; i < num_fields - num_pats; ++i)
+    new_ps = new List(f(loc), new_ps);
+  return List::imp_append(earlier, new_ps);
+}
+static var_t get_name(vardecl_t vd) { return (*vd->name)[1]; }
+static type_t any_type(list_t<tvar_t,`H> s, type_t *topt) {
+  return (topt == NULL) ? new_evar(&Kinds::mko, new Opt(s)) : *topt;
+}
+static type_t num_type(type_t *topt, type_t numt) {
+  // by setting to whatever topt is, unification will succeed.  Because
+  // comparison between any two num types succeeds, this is fine (but kludgey)
+  // FIX:? Allow *topt to be an Enum ?
+  if (topt == NULL)
+    return numt;
+  if (is_arithmetic_type(*topt))
+    return *topt;
+  switch (compress(numt)) {  // now allow enum to be cast up too
+    case &AppType(&EnumCon(...), _):
+    case &AppType(&AnonEnumCon(...), _):
+      return *topt;
+    default:
+      return numt;
+  }
+}
+
+static void set_vd(vardecl_t *`r vd, exp_opt_t e,
+                   list_t<$(vardecl_t *`r, exp_opt_t) @`H,`H> @v_result_ptr, type_t t) {
+  if (vd != NULL) {
+    (*vd)->type = t;
+    (*vd)->tq   = empty_tqual(0);
+  }
+  *v_result_ptr = new List(new $(vd, e), *v_result_ptr);
+}
+static tcpat_result_t combine_results(tcpat_result_t res1, tcpat_result_t res2) {
+  // FIX: plenty of unnecessary allocation here
+  let TcPatResult(p1, vs1, aq1) = res1;
+  let TcPatResult(p2, vs2, aq2) = res2;
+  _ aq                          = List::append(aq1, aq2);
+  if (p1 == NULL && p2 == NULL)
+    return TcPatResult(NULL, append(vs1, vs2), aq);
+  if (p1 == NULL)
+    p1 = new $(NULL, NULL);
+  if (p2 == NULL)
+    p2 = new $(NULL, NULL);
+
+  return TcPatResult(new $(append((*p1)[0], (*p2)[0]), append((*p1)[1], (*p2)[1])),
+                     append(vs1, vs2), aq);
+}
+
+// Promote an array, using an evar for the region if necessary.
+static type_t pat_promote_array(tenv_t te, type_t t, type_opt_t rgn_opt) {
+  return is_array_type(t) ? promote_array(t,
+                                          (rgn_opt == NULL)
+                                              ? new_evar(&Kinds::eko, new Opt(lookup_type_vars(te)))
+                                              : rgn_opt,
+                                          al_qual_type, false)
+                          : t;
+}
+
+#define DL 0
+
+static $(tvar_t, bool) @add_false(tvar_t tv) { return new $(tv, false); }
+
+static tcpat_result_t tcPatRec(tenv_t te, pat_t p, type_t *topt, type_opt_t rgn_pat,
+                               bool allow_ref_pat, exp_opt_t access_exp) {
+  resolve_pat(te, topt, p);
+  type_t t;
+  tcpat_result_t res = TcPatResult(NULL, NULL, NULL);
+
+  // Figure out what t should be; assign to p->topt and return after switch
+  switch (p->r) {
+    case &Wild_p:
+      t = any_type(lookup_type_vars(te), topt);
+      break;
+
+    case &Var_p(vd, p2):
+      // warn if the variable is "true" or "false"
+      let &$(_, &v) = vd->name;
+      if (strcmp(v, "true") == 0 || strcmp(v, "false") == 0)
+        Warn::warn2(p->loc, "you probably do not want to use ", v, " as a local variable");
+      res = tcPatRec(te, p2, topt, rgn_pat, allow_ref_pat, access_exp);
+      t   = (type_t)p2->topt;
+      // We allow arrays as long as the rgn_pat is defined, since
+      // you can't update them (i.e., the whole array).
+      switch (compress(t)) {
+        case &ArrayType(_):
+          if (rgn_pat == NULL || !allow_ref_pat)
+            Warn::err2(p->loc, "array reference would point into unknown/unallowed region");
+          break;
+        default:
+          if (!Kinds::kind_leq(type_kind(t), &Kinds::mk))
+            Warn::err2(p->loc, "pattern would point to an abstract member");
+          break;
+      }
+      set_vd(new vd, access_exp, &res.patvars, pat_promote_array(te, t, rgn_pat));
+      break;
+    case &AliasVar_p(tv, vd):
+      tenv_t te2 = add_type_vars(p->loc, te, list(tv));
+      if (res.tvars_and_effconstr_opt == NULL)
+        res.tvars_and_effconstr_opt = new $(NULL, NULL);
+      (*res.tvars_and_effconstr_opt)[0] =
+          append((*res.tvars_and_effconstr_opt)[0], new List(new $(tv, true), NULL));
+      Tctyp::check_type(p->loc, te2, lookup_type_vars(te2), &Kinds::mk, true, false, vd->type);
+      switch (vd->type) {  // ensure that the top level region matches the new
+                           // type variable
+        case &PointerType(PtrInfo{_, _, PtrAtts { eff, ... }}):
+          let atv = var_type(tv);
+          if (!Unify::unify(eff, var_type(tv)))
+            Warn::err2(p->loc, "Mismatched effect variables in alias pattern:", eff, ", ", atv);
+          break;
+        default:
+          break;
+      }
+      // Now we repeat checks for the Var_p case above (except the var's type)
+      //   this is the type of the access expression
+      t = any_type(lookup_type_vars(te), topt);
+      switch (compress(t)) {
+        case &ArrayType(_):
+          if (rgn_pat == NULL || !allow_ref_pat)
+            Warn::err2(p->loc, "array reference would point into unknown/unallowed region");
+          break;
+        default:
+          if (!Kinds::kind_leq(type_kind(t), &Kinds::mk))
+            Warn::err2(p->loc, "pattern would point to an abstract member");
+          break;
+      }
+      set_vd(new vd, access_exp, &res.patvars, vd->type);
+      break;
+
+    case &Reference_p(vd, p2):
+      res = tcPatRec(te, p2, topt, rgn_pat, allow_ref_pat, access_exp);
+      t   = (type_t)p2->topt;
+      if (!allow_ref_pat || rgn_pat == NULL) {
+        Warn::err2(p->loc, "* pattern would point into an unknown/unallowed region");
+        break;
+      } else if (is_noalias_pointer_or_aggr(curr_aquals_bounds(te), t))
+        Warn::err2(p->loc, "* pattern cannot take the address of an alias-free path");
+      exp_opt_t new_access_exp = NULL;
+      let pi                   = Tcexp::fresh_pointer_type(te);
+      pi.elt_type              = t;
+      pi.ptr_atts.eff          = rgn_pat;
+      pi.ptr_atts.nullable     = false_type;
+      type_t t2                = pointer_type(pi);
+      if (access_exp) {
+        new_access_exp       = address_exp(access_exp, DL);
+        new_access_exp->topt = t2;
+      }
+      set_vd(new vd, new_access_exp, &res.patvars, t2);
+      break;
+
+    case &TagInt_p(tv, vd):
+      // parser set the type b/c it's trivially known, but we need the var
+      // in the result
+      set_vd(new vd, access_exp, &res.patvars, vd->type);
+      // gotta add the tvar in too; the parser set its kind correctly
+      // the kind is IntKind, so no partial-order munging, etc.
+      // this checks uniqueness of new tvars (kinda kludgy)
+      add_type_vars(p->loc, te, list(tv));
+      if (res.tvars_and_effconstr_opt == NULL)
+        res.tvars_and_effconstr_opt = new $(NULL, NULL);
+      (*res.tvars_and_effconstr_opt)[0] =
+          new List(new $(tv, false), (*res.tvars_and_effconstr_opt)[0]);
+      t = uint_type;  // this is what we match against
+      break;
+
+    case &Int_p(Unsigned, _):
+      t = num_type(topt, uint_type);
+      break;
+    case &Int_p(_, _):
+      t = num_type(topt, sint_type);
+      break;
+    case &Char_p(_):
+      t = num_type(topt, char_type);
+      break;
+    case &Float_p(_, i):
+      t = num_type(topt, gen_float_type(i));
+      break;
+    case &Enum_p(ed, _):
+      t = num_type(topt, enum_type(ed->name, ed));
+      break;
+    case &AnonEnum_p(tenum, _):
+      t = num_type(topt, tenum);
+      break;
+    case &Null_p:
+      if (topt != NULL)
+        switch (compress(*topt)) {
+          case &PointerType(_):
+            t = *topt;
+            goto tcpat_end;
+          default:
+            break;
+        }
+      let pi               = Tcexp::fresh_pointer_type(te);
+      pi.ptr_atts.nullable = true_type;
+      t                    = pointer_type(pi);
+      break;
+
+    case &Pointer_p(p2):
+      // FIX: In the DatatypeField for p2 case, we should really pass-through
+      // the type instantiation information in topt!!!
+      type_t inner_typ = void_type;
+      let inner_topt   = NULL;
+      bool elt_const   = false;
+      if (topt != NULL)
+        switch (compress(*topt)) {
+          case &PointerType(PtrInfo(elt_typ, elt_tq, _)):
+            inner_typ  = elt_typ;
+            inner_topt = &inner_typ;
+            elt_const  = elt_tq.real_const;
+            break;
+          default:
+            break;
+        }
+
+      // we put in an unconstrained region.  Then the client calls
+      // check_pat_regions after unifying against the type they're
+      // destructuring.
+      type_t ptr_rgn           = new_evar(&Kinds::eko, lookup_opt_type_vars(te));
+      exp_opt_t new_access_exp = NULL;
+      if (access_exp)
+        new_access_exp = deref_exp(access_exp, DL);
+      res = combine_results(res, tcPatRec(te, p2, inner_topt, ptr_rgn, true, new_access_exp));
+      // if p2 is a datatype field pattern (e.g., datatype F.C), then unless
+      // topt says otherwise, we make the type datatype F@.  We also change
+      // p2's type from a datatype field to a datatype so that the match
+      // compiler (below) knows how to treat it.
+      switch (compress((type_t)p2->topt)) {
+        case &AppType(&DatatypeFieldCon({.KnownDatatypefield = $(tud, tuf)}), targs):
+          // it's a datatype field pattern -- check topt to see if we're
+          // supposed to leave it as a datatype field pattern.
+          switch (compress(inner_typ)) {
+            case &AppType(&DatatypeFieldCon(...), _):
+              goto DONT_PROMOTE;  // don't promote to datatype
+            default:
+              break;
+          }
+          // we're going to promote to the datatype instead of the field.
+          type_t new_type = datatype_type(KnownDatatype(new tud), targs);
+          // change the type of p2 to reflect this
+          p2->topt = new_type;
+          t = new PointerType(PtrInfo(new_type, (elt_const ? const_tqual(0) : empty_tqual(0)),
+                                      PtrAtts(ptr_rgn, any_bool(lookup_type_vars(te)), bounds_one(),
+                                              false_type, NULL, any_bool(lookup_type_vars(te)),
+                                              new_evar(&Kinds::aqko, lookup_opt_type_vars(te)))));
+          break;
+        default:
+        DONT_PROMOTE:
+          let pi          = Tcexp::fresh_pointer_type(te);
+          pi.elt_type     = (type_t)p2->topt;
+          pi.elt_tq       = elt_const ? const_tqual(0) : empty_tqual(0);
+          pi.ptr_atts.eff = ptr_rgn;
+          t               = pointer_type(pi);
+      }
+      if (new_access_exp)
+        new_access_exp->topt = p2->topt;
+      break;
+
+    case &Aggr_p(atype, is_tuple, exist_ts, *dps_p, dots):
+      let dps = *dps_p;
+      if (atype == NULL) {
+        // error has already been issued
+        t = wildtyp(lookup_opt_type_vars(te));
+        break;
+      }
+      t = (type_t)atype;
+      switch (compress(t)) {
+        case &AppType(&AggrCon(ainfo as{.KnownAggr = &ad}), _):
+          if (ad->impl == NULL) {
+            Warn::err2(p->loc, "can't destructure abstract ", ad);
+            t = wildtyp(lookup_opt_type_vars(te));
+            break;
+          }
+          // don't allow reference patterns for existentials or tagged unions --
+          // see Dan's ESOP paper
+          if (ad->kind == UnionA && ad->impl->tagged)
+            allow_ref_pat = false;
+          if (exist_ts != NULL) {
+            // we can allow a reference as long as the whole structure is
+            // abstract; this is because there's no way to alter the structure
+            // and thus violate the assumption of the open existential
+            if (topt == NULL || type_kind(*topt) != &Kinds::ak)
+              allow_ref_pat = false;
+          }
+          {
+            region rgn;
+            // constrain type variables to have at least the kind they were
+            // abstracted over
+            let var_tvs = NULL;
+            let u       = ad->impl->exist_vars;
+            for (_ t = exist_ts; t != NULL; t = t->tl) {
+              tvar_t tv = t->hd;
+              tvar_t uv = u->hd;
+              u         = u->tl;
+              let kb1   = Kinds::compress_kb(tv->kind);
+              let kb2   = Kinds::compress_kb(uv->kind);
+              kind_t k2;
+              switch (kb2) {
+                case &Less_kb(_, k):
+                  fallthru(k);
+                case &Eq_kb(k):
+                  k2 = k;
+                  break;
+                default:
+                  Warn::impos2("unconstrained existential tyvar in aggregate");
+              }
+              switch (kb1) {
+                  // ensure that kind of quantified var <:: kind of pattern var
+                case &Eq_kb(k1):
+                  if (!Kinds::kind_leq(k2, k1))
+                    Warn::err2(p->loc, "type variable ", tv, " has kind ", kb1,
+                               " but must have at least kind ", k2);
+                  break;
+                case &Less_kb(*f, k):
+                  fallthru(f);
+                case &Unknown_kb(*f):
+                  *f = new Opt(kb2);
+                  break;
+              }
+              type_t vartype = new VarType(tv);
+              var_tvs        = rnew(rgn) List(vartype, var_tvs);
+              // if unpacking a region var, must add it to the po
+              // This doesn't appear to be neccessary anymore
+              // The region variable should be leaked into the effect equality
+              // constraint for it to be usable
+              // FIX: allow adding existentials of TR kind?
+              /*           if(k2->kind == RgnKind) { */
+              /*             /\* 	  if (k2->aliasqual != Aliasable) *\/ */
+              /*             /\* 	    Warn::impos2("opened existential
+               * had unique or top region kind"); *\/ */
+              /*             outlives_constraints = */
+              /*               new List(new
+               * $(empty_effect,vartype),outlives_constraints); */
+              /*           } */
+            }
+
+            var_tvs = imp_rev(var_tvs);
+
+            tenv_t te2 = add_type_vars(p->loc, te, exist_ts);
+
+            let env        = $(lookup_type_vars(te2), rgn);
+            let all_inst   = List::rmap_c(rgn, r_make_inst_var, &env, ad->tvs);
+            let exist_inst = List::rzip(rgn, rgn, ad->impl->exist_vars, var_tvs);
+            let all_typs   = List::map(snd, all_inst);
+            let exist_typs = List::map(snd, exist_inst);
+            let inst       = List::rappend(rgn, all_inst, exist_inst);
+
+            if (exist_ts != NULL ||
+                ad->impl->effconstr != NULL) {  // how does qual_bnd get handled here?
+              if (res.tvars_and_effconstr_opt == NULL)
+                res.tvars_and_effconstr_opt = new $(NULL, NULL);
+              (*res.tvars_and_effconstr_opt)[0] =
+                  append((*res.tvars_and_effconstr_opt)[0], map(add_false, exist_ts));
+              /*           (*res.tvars_and_effconstr_opt)[1] =  */
+              /*             append((*res.tvars_and_effconstr_opt)[1],outlives_constraints);
+               */
+              let ec_inst = rsubst_effconstr(rgn, inst, ad->impl->effconstr);
+              //          rpo_inst = imp_rev(rpo_inst);
+              (*res.tvars_and_effconstr_opt)[1] =
+                  append((*res.tvars_and_effconstr_opt)[1], ec_inst);
+              let aqb_inst = NULL;
+              for (let aqb = ad->impl->qual_bnd; aqb != NULL; aqb = aqb->tl) {
+                let $(tv, b) =
+                    $(rsubstitute(rgn, inst, (*aqb->hd)[0]), rsubstitute(rgn, inst, (*aqb->hd)[1]));
+                aqb_inst = new List(new $(tv, b), aqb_inst);
+              }
+              aqb_inst          = imp_rev(aqb_inst);
+              res.aquals_bounds = aqb_inst;
+            }
+
+            //*tsp = all_typs;
+            t = aggr_type(KnownAggr(new ad), all_typs);
+            if (dots && ad->kind == UnionA)
+              Warn::warn(p->loc, "`...' pattern not allowed in union pattern");
+            else if (dots) {
+              *dps_p = remove_dots(dps, length(dps), length(ad->impl->fields), wild_dlp, p->loc,
+                                   "struct");
+              dps    = *dps_p;
+            }
+            list_t<$(aggrfield_t, pat_t) @`rgn,`rgn> fields =
+                resolve_aggregate_designators(rgn, p->loc, dps, ad->kind, ad->impl->fields);
+            for (; fields != NULL; fields = fields->tl) {
+              let &$(field, pat) = fields->hd;
+              let inst_fieldtyp  = rsubstitute(rgn, inst, field->type);
+              // inst_fieldtyp = pat_promote_array(te,inst_fieldtyp,rgn_pat);
+              exp_opt_t new_access_exp = NULL;
+              if (access_exp)
+                new_access_exp = aggrmember_exp(access_exp, field->name, DL);
+              res = combine_results(
+                  res, tcPatRec(te2, pat, &inst_fieldtyp, rgn_pat, allow_ref_pat, new_access_exp));
+              // must unify here or the type we gave pat won't ever get checked
+              // against the exp we're matching against.  Even if we succeed
+              // now, we could be constraining so as to catch an error later.
+              if (!Unify::unify_and_constrain(p->loc, (type_t)pat->topt, inst_fieldtyp))
+                Warn::err2(p->loc, "field ", *field->name, " of ", ad, " pattern expects type ",
+                           inst_fieldtyp, " != ", (type_t)pat->topt);
+              if (new_access_exp)
+                new_access_exp->topt = pat->topt;
+            }
+          }
+          break;
+        case &AnonAggrType(ak, is_tuple, afs):
+          // FIX: lots of code duplicated from above.
+          if (exist_ts != NULL)
+            Warn::err2(p->loc, "bad existentially-bound type variables");
+          if (dots && ak == UnionA)
+            Warn::warn(p->loc, "`...' patterns not allowed in union pattern");
+          else if (dots) {
+            *dps_p = remove_dots(dps, length(dps), length(afs), wild_dlp, p->loc,
+                                 is_tuple ? "tuple" : "struct");
+            dps    = *dps_p;
+          }
+          {
+            region rgn;
+            list_t<$(aggrfield_t, pat_t) @`rgn,`rgn> fields =
+                resolve_aggregate_designators(rgn, p->loc, dps, ak, afs);
+            for (; fields != NULL; fields = fields->tl) {
+              let &$(field, pat)       = fields->hd;
+              let fieldtyp             = field->type;
+              exp_opt_t new_access_exp = NULL;
+              if (access_exp)
+                new_access_exp = aggrmember_exp(access_exp, field->name, DL);
+              res = combine_results(
+                  res, tcPatRec(te, pat, &fieldtyp, rgn_pat, allow_ref_pat, new_access_exp));
+              // must unify here or the type we gave pat won't ever get checked
+              // against the exp we're matching against.  Even if we succeed
+              // now, we could be constraining so as to catch an error later.
+              if (!Unify::unify_and_constrain(p->loc, (type_t)pat->topt, fieldtyp))
+                Warn::err2(p->loc, "field ", *field->name, " pattern expects type ", fieldtyp,
+                           " != ", (type_t)pat->topt);
+              if (new_access_exp)
+                new_access_exp->topt = pat->topt;
+            }
+          }
+          break;
+        default:
+          Warn::impos2("bad type in tcpat");
+      }
+      break;
+
+    case &Datatype_p(tud, tuf, *ps_p, dots):
+      let ps                            = *ps_p;
+      list_t<$(tqual_t, type_t) @> tqts = tuf->typs;
+
+      let env      = $(lookup_type_vars(te), heap_region);
+      let inst     = List::map_c(r_make_inst_var, &env, tud->tvs);
+      let all_typs = List::map(snd, inst);
+      t            = datatype_field_type(KnownDatatypefield(tud, tuf), all_typs);
+      if (dots) {
+        *ps_p = remove_dots(ps, length(ps), length(tqts), wild_pat, p->loc, "datatype field");
+        ps    = *ps_p;
+      }
+      for (; ps != NULL && tqts != NULL; ps = ps->tl, tqts = tqts->tl) {
+        let p2 = ps->hd;
+        // Note:  we don't pass in ptr_rgn here because for value-carrying
+        // constructors, the pointer's region is passed down as rgn_pat.
+        let field_typ = substitute(inst, (*tqts->hd)[1]);
+        // set just the expression here to indicate that the entire
+        // datatype must be escaped/consumed
+        if (access_exp)
+          set_vd(NULL, access_exp, &res.patvars, char_type /* dummy */);
+        res = combine_results(res, tcPatRec(te, p2, &field_typ, rgn_pat, allow_ref_pat, NULL));
+        // must unify here or the type we gave pat won't ever get checked
+        // against the exp we're matching against.  Even if we succeed now,
+        // we could be constraining so as to catch an error later.
+        if (!Unify::unify_and_constrain(p2->loc, (type_t)p2->topt, field_typ))
+          Warn::err2(p2->loc, tuf->name, " expects argument type ", field_typ, " not ",
+                     (type_t)p2->topt);
+      }
+      if (ps != NULL)
+        Warn::err2(p->loc, "too many arguments for datatype constructor ", tuf->name);
+      if (tqts != NULL)
+        Warn::err2(p->loc, "too few arguments for datatype constructor ", tuf->name);
+      break;
+
+    case &UnknownId_p(_):
+    case &Exp_p(_):
+    case &UnknownCall_p(...):
+      t = wildtyp(lookup_opt_type_vars(te));
+      break;
+  }
+tcpat_end:
+  p->topt = t;
+  return res;
+}
+
+tcpat_result_t tcPat(tenv_t te, pat_t p, type_t @topt, exp_opt_t pat_var_exp) {
+  let ans = tcPatRec(te, p, topt, NULL, false, pat_var_exp);
+  // caller will check tvar uniqueness when adding to environment
+  let $(vs1, _) = List::split(ans.patvars);
+  let vs        = NULL;
+  for (_ x = vs1; x != NULL; x = x->tl)
+    if (x->hd != NULL)
+      vs = new List(*x->hd, vs);
+  check_unique_vars(map(get_name, vs), p->loc, "pattern contains a repeated variable");
+  // go through and deep copy the access expressions if they
+  // are not == to pat_var_exp; this prevents bad sharing
+  // of annotations added in the flow analysis
+  for (_ x = ans.patvars; x != NULL; x = x->tl) {
+    let &$(vdopt, *expopt) = x->hd;
+    if (*expopt != NULL && *expopt != pat_var_exp)
+      *expopt = deep_copy_exp(true, (exp_t)*expopt);
+  }
+  return ans;
+}
+
+// we're trying to make exp_t look like it has the same shape as
+// new_type, which should be a pointer.  But this may involve
+// a coercion (e.g., null-check or make fat).
+static bool try_alias_coerce(tenv_t tenv, type_t old_type, type_t new_type, exp_t initializer,
+                             list_t<$(type_t, type_t) @`H,`H> assump) {
+  switch ($(compress(old_type), compress(new_type))) {
+    case $(&PointerType(pold), &PointerType(pnew)):
+      let ptry = new PointerType(
+          PtrInfo{pold.elt_type, pnew.elt_tq,
+                  PtrAtts{pold.ptr_atts.eff, pnew.ptr_atts.nullable, pnew.ptr_atts.bounds,
+                          pnew.ptr_atts.zero_term, pold.ptr_atts.ptrloc, pnew.ptr_atts.autoreleased,
+                          pold.ptr_atts.aqual}});
+      return (Subtype::subtype(initializer->loc, assump, ptry, new_type) &&
+              coerce_assign(curr_aquals_bounds(tenv), initializer, ptry));
+    default:
+      return false;
+  }
+}
+
+// we're aliasing an expression of type old_type, temporarily
+// assigning it the type new_type where some occurrences of
+// unique regions are replaced with tv.
+// We also replace any UNIQUE alias qualifier with ALIASABLE
+static void check_alias_coercion(tenv_t tenv, seg_t loc, type_t old_type, tvar_t tv,
+                                 type_t new_type, exp_t initializer) {
+  list_t<$(type_t, type_t) @> assump = NULL;
+  switch ($(compress(old_type), compress(new_type))) {
+    case $(&PointerType(PtrInfo(_, _, PtrAtts(oldrgn, _, _, _, _, _, aq_old))),
+           &PointerType(PtrInfo(_, _, PtrAtts(_, _, _, _, _, _, *aq_new)))):
+      assump = new List{new $(oldrgn, new VarType(tv)), NULL};
+      switch (*aq_new) {
+        case &AppType(&AqualVarCon, &List{&Evar(...), bnd}):
+          *aq_new = al_qual_type;
+          break;
+        default:
+          // user specified some qualifier ... don't override
+          break;
+      }
+      break;
+    default:
+      Warn::err2(loc, "alias requires pointer type");
+      break;
+  }
+
+  if (Subtype::subtype(loc, assump, old_type, new_type)
+      // JGM: the following line would be valid if we could somehow
+      // get the coercion applied to the right expression instead of
+      // this access expression that is passed in for initializer.
+      // Oh well...
+      //      || try_alias_coerce(tenv, old_type, new_type, initializer, assump)
+  ) {
+    // next, check that the types are pointer types
+
+    // MWH: removed this check because it was causing the the type of
+    // the rhs of the alias to no longer be unique, foiling the flow
+    // analysis.  However, without this cast we might not properly
+    // insert computational coercions, such as converting from ? to *.
+    // Seems like we need to have unchecked_cast take a parameter
+    // that includes whether or not to leave the region variables alone.
+    //
+    //     unchecked_cast(initializer,new_type,Other_coercion);
+    switch ($(compress(old_type), compress(new_type))) {
+      case $(&PointerType(pold), &PointerType(pnew)):
+        break;
+      default:
+        Warn::err2(loc, "alias requires pointer type");
+        break;
+    }
+  } else {
+    Warn::err2(loc, "cannot alias value of type ", old_type, " to type ", new_type);
+  }
+}
+
+// This makes sure that any mentioned region is accessible, and that
+// reference patterns are not used on unique pointers
+void check_pat_regions_rec(tenv_t te, pat_t p, bool did_noalias_deref,
+                           list_t<$(vardecl_t *, exp_opt_t) @> patvars) {
+  switch (p->r) {
+    case &Pointer_p(p2):
+      switch ((type_t)p->topt) {
+        case &PointerType(PtrInfo(_, _, PtrAtts{.eff = rt, .aqual = aq, ...})):
+          check_effect_accessible_nodelay(te, p->loc, rt);
+          check_pat_regions_rec(te, p2, is_noalias_qual(aq, false), patvars);
+          return;
+        default:
+          Warn::impos2("check_pat_regions: bad pointer type");
+      }
+    case &Aggr_p(ai, is_tuple, exist_ts, dps, _):
+      for (; dps != NULL; dps = dps->tl)
+        check_pat_regions_rec(te, (*dps->hd)[1], did_noalias_deref, patvars);
+      return;
+    // FIX: ultimately should allow unique pointers in datatype patterns
+    case &Datatype_p(_, _, ps, _):
+      did_noalias_deref = false;
+      for (; ps != NULL; ps = ps->tl)
+        check_pat_regions_rec(te, ps->hd, did_noalias_deref, patvars);
+      return;
+    case &Reference_p(vd, p2):
+      for (_ x = patvars; x != NULL; x = x->tl) {
+        let &$(vdopt, eopt) = x->hd;
+        // NOTE: if eopt == NULL, we must be within a datatype, either because
+        // we're in a catch clause (exceptions are always datatypes), or
+        // because we're in a datatype pattern in a switch or let.  In either
+        // case, there's no worry of taking the address of a unique pointer
+        if (vdopt != NULL && *vdopt == vd && eopt != NULL) {
+          switch (eopt->r) {
+            case &Address_e(e):
+              if (is_noalias_pointer_or_aggr(curr_aquals_bounds(te), (type_t)e->topt))
+                Warn::err2(p->loc, "reference pattern not allowed on alias-free pointers");
+              break;
+            default:
+              Warn::impos2("check_pat_regions: bad reference access exp");
+          }
+          break;
+        }
+      }
+      check_pat_regions_rec(te, p2, did_noalias_deref, patvars);
+      return;
+    case &Var_p(vd, p2):
+      switch (p->topt) {
+        case &ArrayType(_):
+          if (!did_noalias_deref)
+            break;
+          Warn::err2(p->loc, "pattern to array would create alias of no-alias pointer");
+          return;
+        default:
+          break;
+      }
+      check_pat_regions_rec(te, p2, did_noalias_deref, patvars);
+      return;
+    case &AliasVar_p(tv, vd):
+      for (_ x = patvars; x != NULL; x = x->tl) {
+        let &$(vdopt, eopt) = x->hd;
+        // NOTE: if eopt == NULL, we must be within a datatype, in which
+        // case we disallow the alias, since we must know the path
+        if (vdopt != NULL && *vdopt == vd) {
+          if (eopt == NULL)
+            Warn::err2(p->loc, "cannot alias pattern expression in datatype");
+          else {
+            tenv_t te2 = add_type_vars(p->loc, te, list(tv));
+            te2        = add_region(te2, new VarType(tv), false, false);
+            //       check_type(p->loc,te2,lookup_type_vars(te2),&tmk,true,false,vd->type);
+            check_alias_coercion(te2, p->loc, (type_t)eopt->topt, tv, vd->type, eopt);
+          }
+          break;
+        }
+      }
+      break;
+    default:
+      return;
+  }
+}
+
+// checks that the generated access expressions to each pattern
+// are legal unique paths, if they have no-alias type, and checks
+// that regions referred to are accessible.
+//
+// NOTE: if the expression is NULL, then it was either from a match to
+// a datatype somewhere along the line, in which no unique types are
+// allowed, or it's within a catch clause, which also forbids unique
+// types because exceptions are datatypes
+//
+// FIX: ultimately we should just toss this stuff and use tcExp on
+// each of the access expressions.
+void check_pat_regions(tenv_t te, pat_t p, tcpat_result_t @pat_res) {
+  let patvars = pat_res->patvars;
+  check_pat_regions_rec(te, p, false, patvars);
+  // add aquals assumptions to te
+  let &TcPatResult(_, _, aqb) = pat_res;
+  for (; aqb != NULL; aqb = aqb->tl) {
+    let &$(tv, b) = aqb->hd;
+    switch (compress(tv)) {
+      case &AppType(&AqualsCon, _):
+        te = add_aquals_bound(te, tv, b);
+        break;
+      default:
+        break;
+    }
+  }
+  for (_ x = patvars; x != NULL; x = x->tl) {
+    let &$(vdopt, eopt) = x->hd;
+    if (eopt != NULL) {
+      let e = (exp_t)eopt;
+      if (is_noalias_pointer_or_aggr(curr_aquals_bounds(te), (type_t)e->topt) &&
+          !is_noalias_path(curr_aquals_bounds(te), e))
+        // FIX: need better location information
+        if (vdopt == NULL)
+          Warn::err2(p->loc, "pattern dereferences an alias-free-pointer ",
+                     "from a non-unique path");
+        else
+          Warn::err2(p->loc, "pattern for variable ", (*vdopt)->name,
+                     " dereferences an alias-free-pointer from a non-unique path");
+    }
+  }
+}
+
+// The rest of this is for match compilation -- this seems to be
+// the easiest way to check for overlapping or inexhaustive patterns.
+// These ideas are lifted from Peter Sestoft's paper "ML pattern
+// match compilation and partial evaluation", which appeared in
+// Dagstuhl Seminar on Partial Evaluation, LNCS, Springer-Verlag,
+// March 1996.  See
+// ftp://ftp.dina.kvl.dk/pub/Staff/Peter.Sestoft/papers/match.ps.gz
+
+// FIX:  we need short, long, and double patterns.  In addition, we
+// should really allow constant-expressions in patterns, and we should
+// allow integral promotion on integral patterns.  Still need
+// to deal with FALLTHRU's, etc.  We should probably also hash-cons
+// as suggested by Sestoft to avoid a potential exponential space
+// blow-up, and the traversal of the decision tree should be turned
+// into a depth-first dag traversal to avoid an exponential time
+// blow-up.  We should hang on to the decision tree so that the
+// compiler can make effective use of it.  We should generalize the
+// access to a "switch" (instead of just an "if").  We should
+// look at the MacQueen paper to do a better job of ordering the tests.
+
+// We compile down to simple patterns for exhaustive/overlap checks.
+// Any's represent variables or wild-cards, whereas Con's represent
+// everything else.
+// The "name" of the con is an integer or string.
+// The arity is the number of arguments the constructor has, and the
+// span is the total number of constructors for the given type.
+// Constant patterns (e.g., 1, true, 3[0]4) have 0 arity.  The span
+// for bool is 2, for char is 256, and for integers, floats, and
+// Xdatatypes is infinite (i.e., NULL).
+datatype PatTest {
+  WhereTest(exp_opt_t);
+  EqNull;
+  NeqNull;
+  EqEnum(enumdecl_t, enumfield_t);
+  EqAnonEnum(type_t, enumfield_t);
+  EqFloat(string_t, int);
+  EqConst(unsigned int);
+  EqDatatypeTag(int, datatypedecl_t, datatypefield_t);
+  EqTaggedUnion(type_t, field_name_t, int);
+  EqExtensibleDatatype(datatypedecl_t, datatypefield_t);
+};
+datatype PatTest.EqNull EqNull_val   = EqNull;
+datatype PatTest.NeqNull NeqNull_val = NeqNull;
+
+datatype Access {
+  Dummy;
+  Deref(type_t res_type);
+  DatatypeField(datatypedecl_t, datatypefield_t, unsigned, type_t res_type);
+  AggrField(type_t aggrtype, bool tagged, stringptr_t, type_t res_type);
+};
+datatype Access.Dummy Dummy_val = Dummy;
+
+@tagged union PatOrWhere {
+  pat_t pattern;
+  exp_opt_t where_clause;
+};
+struct PathNode {
+  union PatOrWhere orig_pat;
+  access_t access;
+};
+
+static @tagged union Name_value {
+  string_t Name_v;
+  int Int_v;
+};
+typedef union Name_value name_value_t;
+name_value_t Name_v(string_t<`H> s) { return Name_value{.Name_v = s}; }
+name_value_t Int_v(int i) { return Name_value{.Int_v = i}; }
+static struct Con_s<`r> {
+  name_value_t name;
+  int arity;
+  int *`r const span;
+  // pointer back to original pattern that generated it
+  union PatOrWhere orig_pat;
+};
+typedef struct Con_s @con_t;
+static datatype Simple_pat {
+  Any;
+  Con(con_t, list_t<datatype Simple_pat @>);
+};
+typedef datatype Simple_pat @simple_pat_t;
+
+// used for creating sets of constructors
+static int compare_con(con_t c1, con_t c2) {
+  switch (c1->name) {
+    case {.Name_v = n1}:
+      switch (c2->name) {
+        case {.Name_v = n2}:
+          return strcmp(n1, n2);
+        case {.Int_v = _}:
+          return -1;
+      }
+    case {.Int_v = i1}:
+      switch (c2->name) {
+        case {.Name_v = _}:
+          return 1;
+        case {.Int_v = i2}:
+          return i1 - i2;
+      }
+  }
+}
+
+// build various cons
+static Set::set_t<con_t> empty_con_set() { return Set::rempty(heap_region, compare_con); }
+
+static int one_opt         = 1;
+static int two_opt         = 2;
+static int twofiftysix_opt = 256;
+
+static unsigned datatype_tag_number(datatypedecl_t td, qvar_t name) {
+  unsigned ans = 0;
+  let fs       = td->fields->v;
+  while (qvar_cmp(name, fs->hd->name) != 0) {
+    ++ans;
+    fs = fs->tl;
+  }
+  return ans;
+}
+
+static int get_member_offset(aggrdecl_t ad, field_name_t f) {
+  int i = 1;
+  for (let fields = ad->impl->fields; fields != NULL; fields = fields->tl, ++i)
+    if (strcmp(*fields->hd->name, *f) == 0)
+      return i;
+  Warn::impos2("get_member_offset ", *f, " failed");
+}
+
+static pat_test_t get_pat_test(union PatOrWhere pw) {
+  switch (pw) {
+    case {.where_clause = e}:
+      return new WhereTest(e);
+    case {.pattern = p}:
+      switch (p->r) {
+        case &Var_p(_, p1):
+          fallthru(p1);
+        case &Reference_p(_, p1):
+          return get_pat_test(PatOrWhere{.pattern = p1});
+        case &Null_p:
+          return &EqNull_val;
+        case &Int_p(s, i):
+          return new EqConst(i);
+        case &Char_p(c):
+          return new EqConst((unsigned)c);
+        case &Float_p(f, i):
+          return new EqFloat(f, i);
+        case &Enum_p(ed, ef):
+          return new EqEnum(ed, ef);
+        case &AnonEnum_p(t, ef):
+          return new EqAnonEnum(t, ef);
+        case &Pointer_p(_):
+          if (!is_pointer_type((type_t)p->topt) ||
+              !is_nullable_pointer_type((type_t)p->topt, false))
+            Warn::impos2("non-null pointer type or non-pointer type in pointer pattern");
+          return &NeqNull_val;
+        case &Datatype_p(ddecl, df, _, _):
+          if (ddecl->is_extensible)
+            return new EqExtensibleDatatype(ddecl, df);
+          return new EqDatatypeTag(datatype_tag_number(ddecl, df->name), ddecl, df);
+        case &Aggr_p(atype, _, _, dlps, _) && atype != NULL:
+          switch (compress((type_t)atype)) {
+            case &AppType(&AggrCon(info), _):
+              let ad = get_known_aggrdecl(info);
+              if (!ad->impl->tagged)
+                Warn::impos2("non-tagged aggregate in pattern test");
+              switch ((*dlps->hd)[0]->hd) {
+                case &FieldName(f):
+                  return new EqTaggedUnion(atype, f, get_member_offset(ad, f));
+                default:
+                  Warn::impos2("no field name in tagged union pattern");
+              }
+            default:
+              Warn::impos2("non-tagged aggregate in pattern test");
+          }
+        default:
+          Warn::impos2("non-test pattern in pattern test");
+      }
+  }
+}
+
+static union PatOrWhere pw(pat_t p) { return PatOrWhere{.pattern = p}; }
+
+static con_t null_con(pat_t p) { return new Con_s{Name_v("NULL"), 0, &two_opt, pw(p)}; }
+static con_t null_ptr_con(pat_t p) { return new Con_s{Name_v("&"), 1, &two_opt, pw(p)}; }
+static con_t ptr_con(pat_t p) { return new Con_s{Name_v("&"), 1, &one_opt, pw(p)}; }
+static con_t int_con(int i, union PatOrWhere p) { return new Con_s(Int_v(i), 0, NULL, p); }
+static con_t float_con(string_t<`H> f, pat_t p) { return new Con_s(Name_v(f), 0, NULL, pw(p)); }
+static con_t char_con(char c, pat_t p) { return new Con_s(Int_v(c), 0, &twofiftysix_opt, pw(p)); }
+static con_t tuple_con(int i, union PatOrWhere p) { return new Con_s(Name_v("$"), i, &one_opt, p); }
+
+// build various simple patterns
+static simple_pat_t null_pat(pat_t p) { return new Con(null_con(p), NULL); }
+static simple_pat_t int_pat(int i, union PatOrWhere p) { return new Con(int_con(i, p), NULL); }
+static simple_pat_t char_pat(char c, pat_t p) { return new Con(char_con(c, p), NULL); }
+static simple_pat_t float_pat(string_t<`H> f, pat_t p) { return new Con(float_con(f, p), NULL); }
+static simple_pat_t null_ptr_pat(simple_pat_t p, pat_t p0) {
+  return new Con(null_ptr_con(p0), new List(p, NULL));
+}
+static simple_pat_t ptr_pat(simple_pat_t p, pat_t p0) {
+  return new Con(ptr_con(p0), new List(p, NULL));
+}
+static simple_pat_t tuple_pat(list_t<simple_pat_t,`H> ss, union PatOrWhere p) {
+  return new Con(tuple_con(List::length(ss), p), ss);
+}
+static simple_pat_t con_pat(string_t<`H> con_name, int *`H span, list_t<simple_pat_t,`H> ps,
+                            pat_t p) {
+  con_t c = new Con_s(Name_v(con_name), List::length(ps), span, pw(p));
+  return new Con(c, ps);
+}
+
+// compile a Cyclone pattern to a simple pattern
+static simple_pat_t compile_pat(pat_t p) {
+  simple_pat_t s;
+  switch (p->r) {
+    case &Wild_p:
+    case &AliasVar_p(_, _):
+    case &TagInt_p(_, _):
+      s = new Any;
+      break;
+    case &Null_p:
+      s = null_pat(p);
+      break;
+    case &Int_p(sn, i):
+      s = int_pat(i, pw(p));
+      break;
+    case &Char_p(c):
+      s = char_pat(c, p);
+      break;
+    case &Float_p(f, _):
+      s = float_pat(f, p);
+      break;
+    case &Var_p(_, p2):
+      s = compile_pat(p2);
+      break;
+    case &Reference_p(_, p2):
+      s = compile_pat(p2);
+      break;
+    case &Pointer_p(pp):
+      switch (compress((type_t)p->topt)) {
+        case &PointerType(PtrInfo(_, _, PtrAtts(_, n, ...))):
+          bool is_nullable = force_type2bool(false, n);
+          simple_pat_t ss  = compile_pat(pp);
+          s                = (is_nullable) ? null_ptr_pat(ss, p) : ptr_pat(ss, p);
+          break;
+        default:
+          Warn::impos2("expecting pointertype for pattern!");
+      }
+      break;
+    case &Datatype_p(tud, tuf, ps, _):
+      int *`H span;
+      switch (compress((type_t)p->topt)) {
+        case &AppType(&DatatypeCon(_), _):
+          span = (tud->is_extensible) ? NULL : new (List::length(tud->fields->v));
+          break;
+        case &AppType(&DatatypeFieldCon(_), _):
+          span = &one_opt;
+          break;
+        default:
+          Warn::impos2("void datatype pattern has bad type");
+      }
+      s = con_pat(*((*tuf->name)[1]), span, List::map(compile_pat, ps), p);
+      break;
+
+    case &Aggr_p(atype, _, _, dlps, _):
+      list_t<aggrfield_t> fields;
+      aggr_kind_t aggr_kind;
+      bool is_tagged = false;
+      switch (compress((type_t)atype)) {
+        case &AppType(&AggrCon(ainfo), _):
+          let ad    = get_known_aggrdecl(ainfo);
+          aggr_kind = ad->kind;
+          fields    = ad->impl->fields;
+          is_tagged = ad->impl->tagged;
+          break;
+        case &AnonAggrType(ak, _, fs):
+          aggr_kind = ak;
+          fields    = fs;
+          break;
+        default:
+          Warn::impos2("bad type on aggr pattern");
+      }
+      // FIX: doesn't look like multiple designators are right
+      // we do different things for structs and unions:
+      if (aggr_kind == StructA) {
+        list_t<simple_pat_t> ps = NULL;
+        for (; fields != NULL; fields = fields->tl) {
+          // leave out bit fields without a name
+          bool found = (strcmp(*fields->hd->name, "") == 0);
+          for (_ dlps0 = dlps; !found && dlps0 != NULL; dlps0 = dlps0->tl) {
+            let &$(dl, p) = dlps0->hd;
+            switch (dl) {
+              case &List{.hd = &FieldName(f), .tl = NULL}:
+                if (strptrcmp(f, fields->hd->name) == 0) {
+                  ps    = new List(compile_pat(p), ps);
+                  found = true;
+                }
+                break;
+              default:
+                Warn::impos2("bad designator(s)");
+            }
+          }
+          if (!found)
+            Warn::impos2("bad designator");
+        }
+        s = tuple_pat(List::imp_rev(ps), pw(p));
+      } else {
+        // UnionA-- want to treat this like a datatype
+        if (!is_tagged)
+          Warn::err2(p->loc, "patterns on untagged unions not yet supported.");
+        int *span = new List::length(fields);
+        switch (dlps) {
+          case &List{.hd = &$(&List{.hd = &FieldName(f), .tl = NULL}, p2), .tl = NULL}:
+            s = con_pat(*f, span, new List{compile_pat(p2), NULL}, p);
+            break;
+          default:
+            Warn::impos2("bad union pattern");
+        }
+      }
+      break;
+
+      // FIX: two different enum constructors can have the same value so we
+      // might not get a duplicate warning when we should.
+      // JGM: we have to pretend like it's an infinite span since
+      // we don't enforce that enum values are actually drawn from
+      // only the given tags...
+    case &Enum_p(_, ef):
+      fallthru(ef);
+    case &AnonEnum_p(_, ef):
+      s = con_pat(*((*ef->name)[1]), NULL, NULL, p);
+      break;
+
+    case &UnknownId_p(_):
+    case &UnknownCall_p(...):
+    case &Exp_p(_):
+      s = new Any;
+  }
+  return s;
+}
+
+// A match is a list of patterns and their right-hand sides.
+typedef list_t<$(simple_pat_t, rhs_t) @> match_t;
+// A term descriptor describes a set of values using positive and/or
+// negative information.  The descriptor Pos(c,[td1,...,tdn]) describes
+// all values v of the form c(v1,...,vn), where vi is in the set
+// described by tdi.  The descriptor Neg[c1,...,cn] describes all
+// values v that are not of the form ci(v1,...,vm) (1 <= i <= n).
+// Note that Neg[] denotes any possible value.
+static datatype Term_desc {
+  Pos(con_t, list_t<datatype Term_desc @>);
+  Neg(Set::set_t<con_t>);
+};
+
+// Contexts represent a partial term-description matched thus far,
+// from the root node of the object in a left-to-right fashion.
+typedef list_t<$(con_t, list_t<term_desc_t>) @> context_t;
+// A decision tree for compiling pattern-matches.  Failure denotes
+// that an exception should be thrown.  Success triggers a right-hand-side.
+// IfEq is a constructor test -- conceptually, the access path is a sequence
+// of projections applied to the root object to get at the field being
+// tested.
+
+static bool same_access(access_t a1, access_t a2) {
+  switch ($(a1, a2)) {
+    case $(&Dummy, &Dummy):
+      return true;
+    case $(&Deref(_), &Deref(_)):
+      return true;
+    case $(&DatatypeField(_, df1, i1, _), &DatatypeField(_, df2, i2, _)):
+      return (df1 == df2) && (i1 == i2);
+    case $(&AggrField(_, b1, f1, _), &AggrField(_, b2, f2, _)):
+      return (b1 == b2) && (strptrcmp(f1, f2) == 0);
+    default:
+      return false;
+  }
+}
+
+static bool same_path(path_t p1, path_t p2) {
+  for (; p1 != NULL && p2 != NULL; p1 = p1->tl, p2 = p2->tl)
+    if (!same_access(p1->hd->access, p2->hd->access))
+      return false;
+  if (p1 != p2)
+    return false;
+  return true;
+}
+
+static decision_t ifeq(path_t access, con_t con, decision_t d1, decision_t d2) {
+  let test = get_pat_test(con->orig_pat);
+  switch (d2) {
+    case &SwitchDec(access2, switch_clauses, default_decision):
+      if (same_path(access, access2) && tagcheck(con->orig_pat.pattern))
+        return new SwitchDec(access2, new List(new $(test, d1), switch_clauses), default_decision);
+      fallthru;
+    default:
+      return new SwitchDec(access, new List(new $(test, d1), NULL), d2);
+  }
+}
+
+// A work_stack records what tests we have to continue to do.  An
+// implicit invariant is that for each frame on the stack, the
+// length of the pattern, access, and term_desc lists are the same.
+typedef $(list_t<simple_pat_t>, list_t<path_t>, list_t<term_desc_t>) @work_stack_frame_t;
+
+typedef list_t<work_stack_frame_t> work_stack_t;
+// Used during primitive match compilation
+static enum Answer { Yes, No, Maybe };
+typedef enum Answer answer_t;
+
+static void print_tab(int i) {
+  for (; i != 0; i--)
+    fprintf(stderr, " ");
+}
+static void print_con(con_t c) {
+  switch (c->name) {
+    case {.Name_v = s}:
+      fprintf(stderr, "%s", s);
+      break;
+    case {.Int_v = i}:
+      fprintf(stderr, "%d", i);
+      break;
+  }
+}
+
+static void print_access(access_t a) {
+  switch (a) {
+    case &Dummy:
+      fprintf(stderr, "DUMMY");
+      break;
+    case &Deref(_):
+      fprintf(stderr, "*");
+      break;
+    case &DatatypeField(_, f, i, _):
+      fprintf(stderr, "%s[%d]", qvar2string(f->name), i);
+      break;
+    case &AggrField(_, tagged, f, _):
+      if (tagged)
+        fprintf(stderr, ".tagunion");
+      fprintf(stderr, ".%s", *f);
+      break;
+  }
+}
+
+static void print_pat_test(pat_test_t p) {
+  switch (p) {
+    case &WhereTest(NULL):
+      fprintf(stderr, "where(NULL)");
+      break;
+    case &WhereTest(e):
+      fprintf(stderr, "where(%s)", Absynpp::exp2string((exp_t)e));
+      break;
+    case &EqNull:
+      fprintf(stderr, "NULL");
+      break;
+    case &NeqNull:
+      fprintf(stderr, "NOT-NULL:");
+      break;
+    case &EqAnonEnum(_, ef):
+      fallthru(ef);
+    case &EqEnum(_, ef):
+      fprintf(stderr, "%s", qvar2string(ef->name));
+      break;
+    case &EqFloat(s, _):
+      fprintf(stderr, "%s", s);
+      break;
+    case &EqConst(i):
+      fprintf(stderr, "%d", i);
+      break;
+    case &EqDatatypeTag(i, _, _):
+      fprintf(stderr, "datatypetag(%d)", i);
+      break;
+    case &EqTaggedUnion(_, f, i):
+      fprintf(stderr, "uniontag[%s](%d)", *f, i);
+      break;
+    case &EqExtensibleDatatype(_, f):
+      fprintf(stderr, "datatypefield(%s)", qvar2string(f->name));
+  }
+}
+
+static void print_rhs(rhs_t r) { fprintf(stderr, "%s", Absynpp::stmt2string(r->rhs)); }
+
+static void print_dec_tree(decision_t d, int tab) {
+  switch (d) {
+    case &Success(rhs):
+      print_tab(tab);
+      fprintf(stderr, "Success(");
+      print_rhs(rhs);
+      fprintf(stderr, ")\n");
+      break;
+    case &Failure(_):
+      fprintf(stderr, "Failure\n");
+      break;
+    case &SwitchDec(a, cases, def):
+      print_tab(tab);
+      fprintf(stderr, "Switch[");
+      for (; a != NULL; a = a->tl) {
+        print_access(a->hd->access);
+        if (a->tl != NULL)
+          fprintf(stderr, ",");
+      }
+      fprintf(stderr, "] {\n");
+      for (; cases != NULL; cases = cases->tl) {
+        let $(pt, d) = *cases->hd;
+        print_tab(tab);
+        fprintf(stderr, "case ");
+        print_pat_test(pt);
+        fprintf(stderr, ":\n");
+        print_dec_tree(d, tab + 7);
+      }
+      print_tab(tab);
+      fprintf(stderr, "default:\n");
+      print_dec_tree(def, tab + 7);
+      print_tab(tab);
+      fprintf(stderr, "}\n");
+  }
+}
+
+void print_decision_tree(decision_t d) { print_dec_tree(d, 0); }
+
+// Add c to a set of negative constructors for a term description.
+// Assumes that td is a negative term description, that c is not
+// already in the set, and that adding c does not cover all of the
+// possible constructors.
+static term_desc_t add_neg(term_desc_t td, con_t c) {
+  switch (td) {
+    case &Neg(cs):
+      /* JGM: I'm commenting these out to avoid spurious compiler errors
+       * when someone has a bad pattern.
+      if (Set::member(cs,c))
+        impos("add_neg called when constructor already in set");
+      if (c->span != NULL && (Set::cardinality(cs) + 1) >= *c->span)
+        impos("add_neg called when |cs U {c}| >= span(c)");
+      */
+      return new Neg(Set::insert(cs, c));
+    case &Pos(_, _):
+      Warn::impos2("add_neg called when td is Positive");
+  }
+}
+
+// Returns whether or not values that start with constructor c are in the set
+// described by the term descriptor td.
+static answer_t static_match(con_t c, term_desc_t td) {
+  switch (td) {
+    case &Pos(c2, _):
+      // td is the set of all values that start with c2
+      return (compare_con(c, c2) == 0) ? Yes : No;
+    case &Neg(cs):
+      // td is the set of all values that do not start with any of the cons in
+      // cs
+      if (Set::member(cs, c))
+        return No;
+      // when there are n possible starting constructors, c is not in cs,
+      // and |cs| = n-1, then we know that c has to be in the set described by
+      // td
+      if ((c->span != NULL) && (*c->span == Set::cardinality(cs) + 1))
+        return Yes;
+      // otherwise, we can't be sure.
+      return Maybe;
+  }
+}
+
+// Add dsc to the current node in the context -- note that this node
+// is always at the beginning of the context.  Furthermore, the current
+// node's sub-term-descriptors are in reverse order.  Thus, we just
+// cons the dsc onto the first con's list of sub-term-desc's.
+static context_t augment(context_t ctxt, term_desc_t dsc) {
+  switch (ctxt) {
+    case NULL:
+      return NULL;  // ???
+    case &List(&$(c, args), tl):
+      return new List(new $(c, new List(dsc, args)), tl);
+  }
+}
+
+// When argument descriptions [dn,dn-1,...,d2,d1] have been found
+// for all arguments of the local-most constructor c, we turn it
+// into a positive descriptor Pos(c,[d1,d2,...,dn-1,dn]).
+static context_t norm_context(context_t ctxt) {
+  switch (ctxt) {
+    case NULL:
+      Warn::impos2("norm_context: empty context");
+    case &List(&$(c, args), tl):
+      return augment(tl, new Pos(c, List::rev(args)));
+  }
+}
+
+// When moving from one match rule to another, we must re-construct the
+// object description from the context (describes the part of the object
+// up to the left of the current subterm), the current subterm description,
+// and the term descriptions on the work stack, which, when taken together,
+// describe the object to the right of the current subterm.
+static term_desc_t build_desc(context_t ctxt, term_desc_t dsc, work_stack_t work) {
+  switch ($(ctxt, work)) {
+    case $(NULL, NULL):
+      return dsc;
+    case $(NULL, _):
+    case $(_, NULL):
+      Warn::impos2("build_desc: ctxt and work don't match");
+    case $(&List{.hd = &$(c, args), .tl = rest}, &List{.hd = &$(_, _, dargs), .tl = work2}):
+      let td = new Pos(c, List::append(List::rev(args), new List(dsc, dargs)));
+      return build_desc(rest, td, work2);
+  }
+}
+
+static decision_t match(simple_pat_t, path_t, term_desc_t, context_t, work_stack_t, rhs_t, match_t);
+
+// Checks to see that the term (thus far described by dsc) matches one
+// of the match_t rules.
+static decision_t or_match(term_desc_t dsc, match_t allmrules) {
+  switch (allmrules) {
+    case NULL:
+      return new Tcpat::Failure(dsc);
+    case &List{.hd = &$(pat1, rhs1), .tl = rulerest}:
+      return match(pat1, NULL, dsc, NULL, NULL, rhs1, rulerest);
+  }
+}
+
+// Compiles a set of match rules to a decision tree.
+static decision_t match_compile(match_t allmrules) {
+  return or_match(new Neg(empty_con_set()), allmrules);
+}
+
+// Succeeds returning the right-hand-side if every pattern matches the
+// associated term-description in the work stack, or else the original
+// object matches some rule from rules.
+static decision_t and_match(context_t ctx, work_stack_t work, rhs_t right_hand_side,
+                            match_t rules) {
+  switch (work) {
+    case NULL:
+      return new Success(right_hand_side);
+    case &List{.hd = &$(NULL, NULL, NULL), .tl = workr}:
+      return and_match(norm_context(ctx), workr, right_hand_side, rules);
+    case &List{.hd = &$(pats, objs, dscs), .tl = workr}:
+      if (pats == NULL || objs == NULL || dscs == NULL)
+        Warn::impos2("tcpat:and_match: malformed work frame");
+      let &List(pat1, patr) = (_ @)pats;
+      let &List(obj1, objr) = (_ @)objs;
+      let &List(dsc1, dscr) = (_ @)dscs;
+      let wf                = new $(patr, objr, dscr);
+      return match(pat1, obj1, dsc1, ctx, new List(wf, workr), right_hand_side, rules);
+  }
+}
+
+// Get the term description arguments for a constructor term-description.
+static list_t<term_desc_t> getdargs(con_t pcon, term_desc_t dsc) {
+  switch (dsc) {
+    case &Neg(ncs):
+      // We only know that the term is con which is never in the set ncs.
+      // So return Neg{} for each argument, reflecting that no information
+      // is known about the arguments.
+      term_desc_t any = new Neg(empty_con_set());
+      let res         = NULL;
+      for (int i = 0; i < pcon->arity; ++i)
+        res = new List(any, res);
+      return res;
+    case &Pos(_, dargs):
+      return dargs;
+  }
+}
+
+static access_t get_access(union PatOrWhere pw, int i) {
+  switch (pw) {
+    case {.where_clause = _}:
+      return &Dummy_val;
+    case {.pattern = p}:
+      switch (p->r) {
+        case &Pointer_p(p2):
+          if (i != 0)
+            Warn::impos("get_access on pointer pattern with offset %d\n", i);
+          return new Deref((type_t)p2->topt);
+        case &Datatype_p(tud, tuf, args, ...):
+          let orig_i = i;
+          for (; i != 0; args = args->tl, i--)
+            ;
+          return new DatatypeField(tud, tuf, orig_i, (type_t)args->hd->topt);
+        case &Aggr_p(atype, _, _, dlps, _):
+          list_t<aggrfield_t> fields;
+          bool is_tagged = false;
+          switch (compress((type_t)atype)) {
+            case &AppType(&AggrCon(ainfo), _):
+              let ad    = get_known_aggrdecl(ainfo);
+              is_tagged = ad->impl->tagged;
+              fields    = ad->impl->fields;
+              break;
+            case &AnonAggrType(_, _, fs):
+              fields = fs;
+              break;
+            default:
+              Warn::impos("bad type in aggr pattern");
+          }
+          if (is_tagged) {
+            switch ((*dlps->hd)[0]) {
+              case &List{&FieldName(f), NULL}:
+                return new AggrField(atype, is_tagged, f, (type_t)dlps->hd->f1->topt);
+              default:
+                Warn::impos("get_access on bad aggr pattern: %s", pat2string(p));
+            }
+          }
+          let orig_i = i;
+          for (; i != 0; i--)
+            fields = fields->tl;
+          let name       = fields->hd->name;
+          let field_type = void_type;
+          for (; dlps != 0; dlps = dlps->tl) {
+            switch (dlps->hd->f0) {
+              case &List{&FieldName(f), NULL}:
+                if (strptrcmp(f, name) != 0)
+                  continue;
+                field_type = (type_t)dlps->hd->f1->topt;
+                break;
+              default:
+                Warn::impos("get_access bad designator list");
+            }
+            break;
+          }
+          if (dlps == 0)
+            Warn::impos("get_access can't find field %s", (string_t)*name);
+          return new AggrField(atype, is_tagged, fields->hd->name, field_type);
+        default:
+          Warn::impos("get_access on bad pattern: %s", pat2string(p));
+      }
+  }
+}
+
+// Compute the paths for each argument when disassembling a constructor.
+static path_t getoarg($(path_t, con_t pcon) @env, int i) {
+  let &$(obj, pcon) = env;
+  access_t acc      = get_access(pcon->orig_pat, i);
+  return new List(new PathNode{pcon->orig_pat, acc}, obj);
+}
+static list_t<path_t> getoargs(con_t pcon, path_t obj) {
+  let env = $(obj, pcon);
+  return List::tabulate_c(pcon->arity, getoarg, &env);
+}
+
+// Succeeds returning the right-hand-side if the pattern matches the
+// description and every pattern matches the associated description
+// in the work stack, or if the original object matches one of the rules.
+static decision_t match(simple_pat_t p, path_t obj, term_desc_t dsc, context_t ctx,
+                        work_stack_t work, rhs_t right_hand_side, match_t rules) {
+  switch (p) {
+    case &Any:
+      return and_match(augment(ctx, dsc), work, right_hand_side, rules);
+    case &Con(pcon, pargs):
+      switch (static_match(pcon, dsc)) {
+        case Yes:
+          context_t ctx2                = new List(new $(pcon, NULL), ctx);
+          work_stack_frame_t work_frame = new $(pargs, getoargs(pcon, obj), getdargs(pcon, dsc));
+          work_stack_t work2            = new List(work_frame, work);
+          return and_match(ctx2, work2, right_hand_side, rules);
+        case No:
+          return or_match(build_desc(ctx, dsc, work), rules);
+        default:
+          context_t ctx2                = new List(new $(pcon, NULL), ctx);
+          work_stack_frame_t work_frame = new $(pargs, getoargs(pcon, obj), getdargs(pcon, dsc));
+          work_stack_t work2            = new List(work_frame, work);
+          let s                         = and_match(ctx2, work2, right_hand_side, rules);
+          let f = or_match(build_desc(ctx, add_neg(dsc, pcon), work), rules);
+          return ifeq(obj, pcon, s, f);
+      }
+  }
+}
+
+// Given a decision tree, call not_exhaust for each Failure node
+// and call rhs_appears for each Success node.  Note that Failure
+// implies the patterns are not exhaustive.  Note also that if
+// any rhs for a match does not show up in the decision tree, then
+// the associated pattern was redundant.
+static void check_exhaust_overlap(decision_t d, void not_exhaust(`a, term_desc_t),
+                                  `a env1, void rhs_appears(`b, rhs_t), `b env2,
+                                  bool @exhaust_done) {
+  switch (d) {
+    case &Tcpat::Failure(td):
+      if (!(*exhaust_done)) {
+        not_exhaust(env1, td);
+        *exhaust_done = true;
+      }
+      break;
+    case &Success(r):
+      rhs_appears(env2, r);
+      break;
+    case &SwitchDec(_, cases, def):
+      for (; cases != NULL; cases = cases->tl) {
+        let $(_, d) = *cases->hd;
+        check_exhaust_overlap(d, not_exhaust, env1, rhs_appears, env2, exhaust_done);
+      }
+      check_exhaust_overlap(def, not_exhaust, env1, rhs_appears, env2, exhaust_done);
+      break;
+  }
+}
+
+// Builds the decision tree for the switches, then checks to see
+// if there are any failure nodes (pattern is inexhaustive) or if
+// any pattern doesn't show up in the tree (pattern is redundant.)
+// Both are considered errors as far as the type-checker is concerned.
+static $(simple_pat_t, rhs_t) @get_match(int @ctr, switch_clause_t swc) {
+  simple_pat_t sp0 = compile_pat(swc->pattern);
+  rhs_t rhs        = new Rhs{false, swc->pattern->loc, swc->body};
+  simple_pat_t sp;
+  if (swc->where_clause != NULL) {
+    let w = PatOrWhere{.where_clause = swc->where_clause};
+    sp    = tuple_pat(list(sp0, int_pat(*ctr, w)), w);
+    *ctr  = (*ctr) + 1;
+  } else
+    sp = tuple_pat(list(sp0, new Any), PatOrWhere{.where_clause = NULL});
+  return new $(sp, rhs);
+}
+
+// Turn a descriptor into an example for reporting an inexhaustive match
+datatype exn{Desc2string};
+datacon(exn, Desc2string);
+
+static string_t descs2string(list_t<term_desc_t>);
+static string_t desc2string(term_desc_t d) {
+  switch (d) {
+    case &Pos(c, ds):
+      let n = c->name;
+      pat_t p;
+      switch (c->orig_pat) {
+        case {.where_clause = _}:
+          return desc2string(ds->hd);
+        case {.pattern = p2}:
+          p = p2;
+          break;
+      }
+      switch (p->r) {
+        case &Wild_p:
+          return "_";
+        case &Var_p(vd, _):
+          return qvar2string(vd->name);
+        case &Reference_p(vd, _):
+          return aprintf("*%s", qvar2string(vd->name));
+        case &TagInt_p(tv, vd):
+          return aprintf("%s<`%s>", qvar2string(vd->name), *tv->name);
+        case &Pointer_p(_):
+          return aprintf("&%s", descs2string(ds));
+        case &Aggr_p(atype, _, _, dlps, _):
+          switch (compress((type_t)atype)) {
+            case &AppType(&AggrCon(ainfo), _):
+              let ad = get_known_aggrdecl(ainfo);
+              if (ad->kind == UnionA)
+                switch (dlps) {
+                  case &List{&$(&List{&FieldName(f), _}, _), _}:
+                    return aprintf("%s{.%s = %s}", qvar2string(ad->name), *f, descs2string(ds));
+                  default:
+                    break;
+                }
+              return aprintf("%s{%s}", qvar2string(ad->name), descs2string(ds));
+            case &AnonAggrType(_, is_tuple, _):
+              if (is_tuple)
+                return aprintf("$(%s)", descs2string(ds));
+              else
+                return aprintf("{%s}", descs2string(ds));
+            default:
+              Warn::impos2("bad type in aggr_p");
+          }
+        case &Datatype_p(_, tuf, _, _):
+          if (ds == NULL)
+            return aprintf("%s", qvar2string(tuf->name));
+          else
+            return aprintf("%s(%s)", qvar2string(tuf->name), descs2string(ds));
+        case &Null_p:
+          return "NULL";
+        case &Int_p(_, i):
+          return aprintf("%d", i);
+        case &Char_p(c):
+          return aprintf("%d", c);
+        case &Float_p(f, i):
+          return f;
+        case &Enum_p(_, ef):
+          fallthru(ef);
+        case &AnonEnum_p(_, ef):
+          return qvar2string(ef->name);
+        case &Exp_p(e):
+          return exp2string(e);
+        default:
+          throw &Desc2string_val;
+      }
+    case &Neg(s):
+      if (Set::is_empty(s))
+        return "_";
+      let c = Set::choose(s);
+      // we need to figure out what the type of the pattern is
+      // orig_pat is NULL when we have an && clause on a pattern
+      if (tagcheck(c->orig_pat.where_clause))
+        throw &Desc2string_val;
+      let orig_pat = c->orig_pat.pattern;
+      switch (compress((type_t)orig_pat->topt)) {
+        case &AppType(&IntCon(_, Char_sz), _):
+          // find a character not in the constructor set
+          for (int i = 0; i < 256; i++)
+            if (!Set::member(s, char_con((char)i, orig_pat)))
+              return aprintf("%d", i);
+          throw &Desc2string_val;
+        case &AppType(&IntCon(_, _), _):
+          // find an integer not in the constructor set
+          for (unsigned int i = 0; i < (0 - 1); i++)
+            if (!Set::member(s, int_con((int)i, c->orig_pat)))
+              return aprintf("%d", i);
+          throw &Desc2string_val;
+        case &PointerType(PtrInfo(_, _, PtrAtts{.nullable = n, ...})):
+          if (force_type2bool(false, n) && !Set::member(s, null_con(orig_pat)))
+            return "NULL";
+          return "&_";
+        case &AppType(&DatatypeCon({.KnownDatatype = &tud}), _):
+          if (tud->is_extensible)
+            throw &Desc2string_val;
+          let fields = tud->fields->v;
+          int span   = List::length(fields);
+          for (; fields; fields = fields->tl) {
+            string_t n = *((*fields->hd->name)[1]);
+            let args   = fields->hd->typs;
+            if (!Set::member(s, new Con_s(Name_v(n), 0, NULL, c->orig_pat)))
+              return (List::length(args) == 0) ? n : aprintf("%s(...)", n);
+          }
+          throw &Desc2string_val;
+        case &AppType(&AggrCon(ainfo), _):
+          let ad = get_known_aggrdecl(ainfo);
+          if (ad->kind != UnionA)
+            throw &Desc2string_val;
+          let fields             = ad->impl->fields;
+          int span               = List::length(fields);
+          let &$(_, &union_name) = ad->name;
+          for (; fields; fields = fields->tl) {
+            string_t n = *fields->hd->name;
+            if (!Set::member(s, new Con_s(Name_v(n), 0, NULL, c->orig_pat)))
+              return aprintf("%s{.%s = _}", union_name, n);
+          }
+          throw &Desc2string_val;
+        default:
+          throw &Desc2string_val;
+      }
+  }
+}
+static stringptr_t desc2stringptr(term_desc_t d) { return new (desc2string(d)); }
+static string_t descs2string(list_t<term_desc_t> ds) {
+  let ss            = List::map(desc2stringptr, ds);
+  stringptr_t comma = new ",";
+  for (let x = ss; x != NULL; x = x->tl)
+    if (x->tl != NULL) {
+      x->tl = new List{comma, x->tl};
+      x     = x->tl;
+    }
+  return strconcat_l(ss);
+}
+
+static void not_exhaust_err(seg_t loc, term_desc_t desc) {
+  try {
+    let s = desc2string(desc);
+    Warn::err2(loc, "patterns may not be exhaustive.\n\tmissing case for ", s);
+  } catch {
+    case &Desc2string:
+      Warn::err2(loc, "patterns may not be exhaustive.");
+      break;
+  }
+}
+static void rule_occurs(int dummy, rhs_t rhs) { rhs->used = true; }
+
+void check_switch_exhaustive(seg_t loc, tenv_t te, list_t<switch_clause_t> swcs,
+                             decision_opt_t @dopt) {
+  // We represent "pat && e" as (simple_pat,i) where i is a unique integer.
+  // We represent patterns without where clauses as (simple_pat,_).
+  // This way, if we have the same pattern repeated, we get exhuastiveness
+  // right as long as one of the copies does not have a where-clause.
+  let where_ctr   = 0;
+  let env         = &where_ctr;
+  let match_rules = List::map_c(get_match, env, swcs);
+  let dec_tree    = match_compile(match_rules);
+  *dopt           = dec_tree;
+  // print_decision_tree(dec_tree);
+  let ex_done = false;
+  check_exhaust_overlap(dec_tree, not_exhaust_err, loc, rule_occurs, 0, &ex_done);
+  for (; match_rules != NULL; match_rules = match_rules->tl) {
+    let &$(_, &Rhs{b, loc2, _}) = match_rules->hd;
+    if (!b) {
+      Warn::err2(loc2,
+                 "redundant pattern (check for misspelled constructors in "
+                 "earlier patterns)");
+      // print_dec_tree(dec_tree, print_swrhs, 0);
+      break;  // only give one error
+    }
+  }
+}
+
+// Build the decision tree for the pattern.  If Failure occurs, then
+// the pattern is not exhaustive (a warning).  There's no way to get
+// something that's redundant (unless we add support for "or" patterns
+// of some sort.)
+static void not_exhaust_warn($(seg_t, bool) @pr, term_desc_t desc) {
+  (*pr)[1] = false;
+  try {
+    let s = desc2string(desc);
+    Warn::warn2((*pr)[0], "pattern not exhaustive.\n\tmissing case for ", s);
+  } catch {
+    case &Desc2string:
+      Warn::warn2((*pr)[0], "pattern not exhaustive.");
+      break;
+  }
+}
+static void dummy_fn(int i, rhs_t rhs) { return; }
+
+bool check_let_pat_exhaustive(seg_t loc, tenv_t te, pat_t p, decision_opt_t @dopt) {
+  rhs_t rhs       = new Rhs{false, p->loc, skip_stmt(0)};
+  let match_rules = new List(new $(compile_pat(p), rhs), NULL);
+  let dec_tree    = match_compile(match_rules);
+  let exhaust_env = $(loc, true);
+  let ex_done     = false;
+  check_exhaust_overlap(dec_tree, not_exhaust_warn, &exhaust_env, dummy_fn, 0, &ex_done);
+  *dopt = dec_tree;
+  return exhaust_env[1];
+}
+
+// Check that the patterns in a catch switch are non-overlapping.
+// There's an implicit "re-throw on wild" pattern here, so no need
+// to check for exhaustiveness.
+static $(simple_pat_t, rhs_t) @get_match2(switch_clause_t swc) {
+  simple_pat_t sp0 = compile_pat(swc->pattern);
+  // must rule out where clauses since we do not compile the patterns
+  // properly otherwise (see below).
+  if (swc->where_clause != NULL) {
+    Warn::err2(swc->where_clause->loc, "&&-clauses not supported in exception handlers.");
+  }
+  rhs_t rhs = new Rhs{false, swc->pattern->loc, swc->body};
+  return new $(sp0, rhs);
+}
+static void not_exhaust_err2(seg_t loc, term_desc_t d) {
+  // skip
+}
+void check_catch_overlap(seg_t loc, tenv_t te, list_t<switch_clause_t> swcs, decision_opt_t @dopt) {
+  // JGM FIX!  need to deal with where clauses now that we use the decision tree
+  // We ignore where clauses here because catch's need not be exhaustive.
+  let match_rules = List::map(get_match2, swcs);
+  let dec_tree    = match_compile(match_rules);
+  *dopt           = dec_tree;
+  let ex_done     = false;
+  check_exhaust_overlap(dec_tree, not_exhaust_err2, loc, rule_occurs, 0, &ex_done);
+  for (; match_rules != NULL; match_rules = match_rules->tl) {
+    // skip the last of the match rules since that's the default case
+    if (match_rules->tl == NULL)
+      break;
+    let &$(_, &Rhs{b, loc2, _}) = match_rules->hd;
+    if (!b) {
+      Warn::err2(loc2,
+                 "redundant pattern (check for misspelled constructors in "
+                 "earlier patterns)");
+      break;  // give only one error
+    }
+  }
+}
+
+bool has_vars(Core::opt_t<list_t<$(vardecl_t *, exp_opt_t) @>> pat_vars) {
+  for (let l = pat_vars->v; l != NULL; l = l->tl)
+    if ((*l->hd)[0] != NULL)
+      return true;
+  return false;
+}

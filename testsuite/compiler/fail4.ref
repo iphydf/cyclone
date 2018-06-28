@@ -1,0 +1,13 @@
+
+cyclone/testsuite/compiler/fail4.cyc:4:2: qualified names in declarations unimplemented (Foo::x)
+cyclone/testsuite/compiler/fail4.cyc:9:2: qualified names in declarations unimplemented (Foo::f30)
+cyclone/testsuite/compiler/fail4.cyc:14:16: qualified datatype field declarations not allowed
+cyclone/testsuite/compiler/fail4.cyc:17:10: undeclared identifier x
+cyclone/testsuite/compiler/fail4.cyc:22:23: F41 is a constant, not a function
+cyclone/testsuite/compiler/fail4.cyc:27:2: F42 is an enum constructor, not a function
+cyclone/testsuite/compiler/fail4.cyc:31:2: undeclared identifier x
+cyclone/testsuite/compiler/fail4.cyc:35:6: unbound struct/union name F102
+cyclone/testsuite/compiler/fail4.cyc:44:2: bad occurrence of type name F122
+cyclone/testsuite/compiler/fail4.cyc:46:0: F88 is not a datatype field
+
+COMPILATION FAILED!

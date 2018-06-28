@@ -1,0 +1,414 @@
+/* Cycdoc: produce documentation from commented .h files.
+   Copyright (C) 2001 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+{
+#include <string.h>
+
+#include "cyclone/library/compiler/absynpp.h"
+#include "cyclone/library/compiler/lex.h"
+#include "cyclone/library/compiler/parse.h"
+#include "cyclone/library/compiler/warn.h"
+#include "cyclone/library/std/arg.h"
+#include "cyclone/library/std/filename.h"
+#include "cyclone/library/std/lexing.h"
+#include "cyclone/library/std/lineno.h"
+
+using Core;
+using List;
+
+datatype Comment {
+  MatchDecl(mstring_t);
+  Standalone(mstring_t);
+};
+
+typedef datatype Comment @comment_t;
+
+extern $(int, comment_t) *token(Lexing::Lexbuf<`a> lexbuf);
+}
+
+let nostar = [^'*']
+let okstar = '*'+[^'*''/']
+
+rule token "$(int,comment_t)*" = parse
+| "/*** " (nostar | okstar)* "*/"
+      { let start = lexbuf->lex_start_pos + 5;
+        let len = lexbuf->lex_curr_pos-lexbuf->lex_start_pos - 7;
+        return new $(lexeme_start(lexbuf),
+                     new Standalone(substring(lexbuf->lex_buffer, start, len)));
+      }
+
+| "/** " (nostar|okstar)* "*/"
+      { let start = lexbuf->lex_start_pos + 4;
+        let len = lexbuf->lex_curr_pos-lexbuf->lex_start_pos - 6;
+        return new $(lexeme_start(lexbuf),
+                     new MatchDecl(substring(lexbuf->lex_buffer, start, len)));
+      }
+
+| eof { return NULL; }
+| _   { return token (lexbuf); }
+
+{
+using Absyn;
+
+static void dump_begin() {
+  /* MUST START LINE */
+  puts(
+      "%%HEVEA \\begin{latexonly}\n"
+      "\\begin{list}{}{"
+      "\\setlength\\itemsep{0pt}"
+      "\\setlength\\topsep{0pt}"
+      "\\setlength\\leftmargin{\\parindent}"
+      "\\setlength\\itemindent{-\\leftmargin}}"
+      "\\item[]"
+      "\\colorbox{cycdochighlight}{\\ttfamily"
+      "\\begin{minipage}[b]{\\textwidth}\n"
+      "%%HEVEA \\end{latexonly}\n"
+      "%%HEVEA \\begin{rawhtml}<dl><dt>"
+      "<table><tr><td bgcolor=\"c0d0ff\">\\end{rawhtml}\n"
+      "\\begin{tabbing}");
+}
+
+static void dump_middle() {
+  puts(
+      "\\end{tabbing}\n"
+      "%%HEVEA \\begin{latexonly}\n"
+      "\\end{minipage}}\\\\\\strut\n"
+      "%%HEVEA \\end{latexonly}\n"
+      "%%HEVEA \\begin{rawhtml}</td></tr></table><dd>\\end{rawhtml}");
+}
+
+static void dump_end() {
+  /* MUST START LINE */
+  puts(
+      "%%HEVEA \\begin{latexonly}\n"
+      "\\end{list}\\smallskip\n"
+      "%%HEVEA \\end{latexonly}\n"
+      "%%HEVEA \\begin{rawhtml}</dl>\\end{rawhtml}");
+}
+
+/* Print s, replacing "..[..].." with "..\texttt{..}.."
+ *   Only outermost brackets are affected.  Brackets must
+ *   nest properly. */
+static void pr_comment(FILE @outf, string_t s) {
+  int depth = 0;
+  int len = strlen(s);
+
+  for (int i = 0; i < len; i++) {
+    char c = s[i];
+    if (c != '[') {
+      fputc(c, outf);
+      continue;
+    }
+    fputs("\\texttt{", outf);
+    i++;
+    depth++;
+    for (; i < len; i++) {
+      char c = s[i];
+      if (c == ']') {
+        depth--;
+        if (depth == 0) {
+          fputc('}', outf);
+          break; /* exit inner for-loop */
+        }
+      } else if (c == '[')
+        depth++;
+      fputc(c, outf);
+    }
+  }
+}
+
+/* State variables for command-line args */
+static list_t<stringptr_t> cycdoc_files = NULL;
+static void add_other(string_t<`H> s) { cycdoc_files = new List(new s, cycdoc_files); }
+
+static bool no_other(string_t<`H> s) { return false; }
+
+static string_t cyclone_cc = "gcc";
+static void set_compiler(string_t<`H> s) { cyclone_cc = s; }
+
+static list_t<stringptr_t> cycargs = NULL;
+static void add_cycarg(string_t<`H> s) { cycargs = new List(new s, cycargs); }
+
+/* Dump a declaration followed by a comment */
+static void dumpdecl(decl_t d, string_t comment) {
+  dump_begin();
+  /* FIX: we use printf("%s",...) here because sometimes ... turns
+   * out to be NULL.  puts throws Null_exception, but printf just
+   * returns.  Maybe puts should not throw an exception ??
+   * Actually it's weirder: puts should be throwing Failure!! */
+  printf("%s", PP::string_of_doc(Absynpp::decl2doc(d), 50));
+  dump_middle();
+  pr_comment(stdout, comment);
+  printf("\n");
+  dump_end();
+}
+
+/* Is a character special to /bin/sh (except for single quote)? */
+static bool is_other_special(char c) {
+  switch (c) {
+    case '\\':
+    case '"':
+    case ';':
+    case '&':
+    case '(':
+    case ')':
+    case '|':
+    case '^':
+    case '<':
+    case '>':
+    case ' ':
+    case '\n':
+    case '\t':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* Escape any characters special to /bin/sh */
+static string_t sh_escape_string(string_t<`H> s) {
+  let len = strlen(s);
+
+  /* Count the number of single quotes and other special chars in s */
+  let single_quotes = 0;
+  let other_special = 0;
+
+  for (int i = 0; i < len; i++) {
+    let c = s[i];
+    if (c == '\'')
+      single_quotes++;
+    else if (is_other_special(c))
+      other_special++;
+  }
+
+  /* No special chars to escape */
+  if (single_quotes == 0 && other_special == 0)
+    return s;
+
+  /* No single quotes, we can just single quote s */
+  if (single_quotes == 0)
+    return strconcat_l(List::list(new "'", new (string_t) s, new "'"));
+
+  /* We'll quote all special chars by prefixing with a backslash */
+  let len2 = len + single_quotes + other_special;
+  mstring_t s2 = new { for
+      i < len2 + 1 : '\0'
+  };  // add trailing NUL
+  let i = 0;
+  let j = 0;
+  for (; i < len; i++) {
+    let c = s[i];
+    if (c == '\'' || is_other_special(c))
+      s2[j++] = '\\';
+    s2[j++] = c;
+  }
+  return s2;
+}
+
+static stringptr_t sh_escape_stringptr(stringptr_t<`H, `H> sp) { return new sh_escape_string(*sp); }
+
+/* Given a starting position (character number) return the
+ * character number paired with a pos_t that can be passed
+ * to the lineno routines */
+// FIX: this should be in lineno.cyc
+static Lineno::pos_t new_pos() { return new Lineno::Pos("", Core::new_string(0), 0, 0); }
+
+static $(int, Lineno::pos_t) @start2pos(int x) { return new $(x, new_pos()); }
+
+/* Return the starting position (character number) of a declaration */
+static int decl2start(Absyn::decl_t d) { return d->loc; }
+
+/* Filter a list of (pos_t,`a) pairs by file name */
+static list_t<$(Lineno::pos_t, `a) @> this_file(string_t file, list_t<$(Lineno::pos_t, `a) @`H> x) {
+  let result = NULL;
+
+  for (; x != NULL; x = x->tl)
+    if (strcmp((*x->hd)[0]->logical_file, file) == 0)
+      result = new List(x->hd, result);
+  result = List::imp_rev(result);
+  return result;
+}
+
+/* Return the line number of a pos_t */
+static int lineno(Lineno::pos_t p) { return p->line_no; }
+
+static list_t<decl_t> flatten_decls(list_t<decl_t, `H> decls) {
+  let result = NULL;
+
+  while (decls != NULL) {
+    switch (decls->hd->r) {
+      case &Namespace_d(_, tdl):
+        fallthru(tdl);
+      case &Using_d(_, tdl):
+        fallthru(tdl);
+      case &ExternC_d(tdl):
+        fallthru(tdl);
+      case &ExternCinclude_d(tdl, ...):
+        decls = List::append(tdl, decls->tl);
+        break;
+      case &Aggr_d(_):
+      case &Var_d(_):
+      case &Datatype_d(_):
+      case &Enum_d(_):
+      case &Typedef_d(_):
+      case &Fn_d(_):
+      case &Let_d(...):
+      case &Letv_d(_):
+      case &Porton_d:
+      case &Portoff_d:
+      case &Tempeston_d:
+      case &Tempestoff_d:
+      case &Region_d(...):
+        result = new List(decls->hd, result);
+        decls = decls->tl;
+        break;
+    }
+  }
+  return List::imp_rev(result);
+}
+
+/* Main loop */
+static void process_file(string_t<`H> filename) {
+  let basename = Filename::chop_extension(filename);
+  /* Preprocess the file so we can parse it */
+  let preprocfile = (const char @)strconcat(basename, ".cyp");
+  let cycargs_string = str_sepstr(
+      new List(new (string_t) "", List::map(sh_escape_stringptr, List::rev(cycargs))), " ");
+  let cmd = (const char @)aprintf("%s %s -E -o %s -x c %s", cyclone_cc, cycargs_string,
+                                  sh_escape_string(preprocfile), sh_escape_string(filename));
+
+  if (system(cmd) != 0) {
+    fprintf(stderr, "\nError: preprocessing\n");
+    return;
+  }
+
+  /* Parse the file into a list of declarations */
+  Warn::reset(preprocfile);
+  FILE @in_file = (FILE @)fopen(preprocfile, "r");
+  Lex::lex_init(true);  // must forget typedefs, may as well flush symbols too
+  let decls = Parse::parse_file(in_file);
+  Lex::lex_init(true);  // garbage collect those big tries
+  file_close((FILE @)in_file);
+  decls = flatten_decls(decls);
+  /* Find the location (pos_t) of each declaration */
+  let poss = List::map(start2pos, List::map(decl2start, decls));
+  Lineno::poss_of_abss(preprocfile, poss);
+  remove(preprocfile);
+  let pos_decls = List::zip(List::map(snd, poss), decls);
+  /* Filter out declarations from other files (from #include) */
+  pos_decls = this_file(filename, pos_decls);
+  let lineno_decls =
+      List::zip(List::map(lineno, List::map(fst, pos_decls)), List::map(snd, pos_decls));
+  /* Scan the file again, this time for the comments */
+  /* Note, we don't use the preprocfile, because it has no comments */
+  let f = (FILE @)fopen((const char @)filename, "r");
+  let lb = Lexing::from_file(f);
+  let comments = NULL;
+  let indices = NULL;
+  let tok;
+  while ((tok = token(lb)) != NULL) {
+    let $(index, comment) = *tok;
+    comments = new List(comment, comments);
+    indices = new List(index, indices);
+  }
+  fclose(f);
+  comments = List::imp_rev(comments);
+  indices = List::imp_rev(indices);
+  /* Find the location (pos_t) of each comment */
+  let poss = List::map(start2pos, indices);
+  Lineno::poss_of_abss(filename, poss);
+  let lineno_comments = List::zip(List::map(lineno, List::map(snd, poss)), comments);
+
+  /* Print all decls followed immediately by comments;
+   * discard all other decls and comments */
+  while (lineno_decls != NULL && lineno_comments != NULL) {
+    let &$(dline, decl) = lineno_decls->hd;
+    let &$(cline, comment) = lineno_comments->hd;
+    switch (comment) {
+      case &Standalone(cmt):
+        pr_comment(stdout, cmt);
+        printf("\n");
+        lineno_comments = lineno_comments->tl;
+        break;
+      case &MatchDecl(cmt):
+        if (cline < dline) {
+          /* comment comes before decl; discard it */
+          lineno_comments = lineno_comments->tl;
+          continue;
+        }
+        if (lineno_decls->tl != NULL) {
+          let &$(dline2, _) = lineno_decls->tl->hd;
+          if (dline2 < cline) {
+            /* comment comes after the second decl; discard first decl */
+            lineno_decls = lineno_decls->tl;
+            continue;
+          }
+        }
+        /* Print the decl and the comment */
+        //      printf("Decl on line %d, comment on line %d:\n",dline,cline);
+        dumpdecl(decl, cmt);
+        fflush(stdout);
+        lineno_decls = lineno_decls->tl;
+        lineno_comments = lineno_comments->tl;
+        break;
+    }
+  }
+}
+
+using Arg;
+extern "C" void GC_blacklist_warn_clear();
+
+int main(int argc, string_t<`H> ?`H argv)
+{
+  /* Don't print garbage collector warnings about allocations of
+   * blacklisted blocks.  This turns up on OS X and possibly other
+   * BSD systems (??) */
+  GC_blacklist_warn_clear();
+
+  Arg::speclist_t<`H, `H> options =
+      List::list(new $("-D", true, "<name>[=<value>]", new Flag_spec(add_cycarg),
+                       "Pass definition to preprocessor"),
+                 new $("-cc", false, "<compiler", new String_spec(set_compiler),
+                       "Use this binary as the C preprocessor"),
+                 new $("-I", true, "<dir>", new Flag_spec(add_cycarg),
+                       "Add to the list of directories to search for include files"));
+
+  Arg::parse(options, add_other, no_other, "Options:", argv);
+
+  if (cycdoc_files == NULL) {
+    Arg::usage(options,
+               "Usage: cycdoc [options] file1 file2 ...\n"
+               "Options:");
+    exit(1);
+  }
+
+  /* Set this so that the pretty-printer library knows we want to
+   * produce TeX output */
+  PP::tex_output = true;
+
+  /* Set this so the absyn printer does not print out extern, etc. */
+  Absynpp::set_params(&Absynpp::tc_params_r);
+  Absynpp::print_for_cycdoc = true;
+
+  for (let l = List::rev(cycdoc_files); l != NULL; l = l->tl)
+    process_file(*l->hd);
+
+  return 0;
+}
+}

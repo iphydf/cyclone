@@ -1,0 +1,20 @@
+load("//cyclone:build_defs.bzl", "cyc_test", "cycyacc")
+
+cycyacc(
+    name = "foo_tab",
+    src = "foo.cyy",
+)
+
+cyc_test(
+    name = "foo",
+    size = "small",
+    srcs = [
+        "foo.cyc",
+        ":foo_tab",
+    ],
+    linkopts = ["-lpthread"],
+    deps = [
+        "//cyclone/library/std",
+        "//cyclone/testsuite:cyctest",
+    ],
+)

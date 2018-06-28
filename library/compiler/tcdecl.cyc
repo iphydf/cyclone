@@ -1,0 +1,716 @@
+/* Type checking declarations.
+   Copyright (C) 2001 Greg Morrisett
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+#include <string.h>
+#include "absynpp.h"
+#include "attributes.h"
+#include "cyclone/library/std/dict.h"
+#include "kinds.h"
+#include "tcdecl.h"
+#include "tcutil.h"
+#include "unify.h"
+#include "warn.h"
+using Absyn;
+using Absynpp;
+using Core;
+using List;
+
+namespace Tcdecl;
+
+/////////// errors ////////////
+
+datatype exn{Incompatible};
+datatype exn.Incompatible Incompatible_val = Incompatible;
+void merr(seg_t loc, string_t<`r2> *msg1, string_t fmt, ... inject parg_t<`r +`r2 +`H> ap)
+    __attribute__((format(printf, 3, 4))) {
+  string_t fmt2;
+  if (strlen(*msg1) == 0)
+    fmt2 = strconcat("%s", fmt);
+  else
+    fmt2 = strconcat("%s ", fmt);
+  parg_t<`r +`r2 +`H> ? ap2 = new {for
+      i < numelts(ap) + 1 : i == 0
+          ? ((parg_t<`r +`r2 +`H>)(new String_pa((string_t<`r +`r2 +`H>)(*msg1))))
+          : ap[i - 1]
+  };
+  Warn::verr(loc, fmt2, ap2);
+}
+
+///////// functions for merging /////////
+
+static void merge_scope_err(scope_t s0, scope_t s1, string_t t, string_t v, seg_t loc,
+                            string_t *msg) {
+  string_t s0_str = (s0 == Public) ? "public " : scope2string(s0);
+  string_t s1_str = (s1 == Public) ? "public " : scope2string(s1);
+  merr(loc, msg, "%s %s is %sbut expected scope is %s", t, v, s1_str, s0_str);
+}
+
+$(scope_t, bool)
+merge_scope(scope_t s0, scope_t s1, string_t t, string_t v, seg_t loc, string_t *msg,
+            bool externCmerge) {
+  switch ($(s0, s1)) {
+      // ExternC is compatible with ExternC
+    case $(ExternC, ExternC):
+      break;
+      // ExternC is compatible with Public or Extern when externCmerge is true
+    case $(ExternC, Public):
+    case $(ExternC, Extern):
+    case $(Public, ExternC):
+    case $(Extern, ExternC):
+      if (externCmerge)
+        break;
+      else
+        fallthru;
+    case $(ExternC, _):
+    case $(_, ExternC):
+      merge_scope_err(s0, s1, t, v, loc, msg);
+      return $(s1, false);
+      // Extern is compatible with everything else
+    case $(_, Extern):
+      s1 = s0;
+      break;
+    case $(Extern, _):
+      break;
+      // Public, Abstract, Static are comptatible with themselves only
+    case $(Static, Static):
+    case $(Public, Public):
+    case $(Abstract, Abstract):
+    case $(Register, Register):
+      break;
+    default:
+      merge_scope_err(s0, s1, t, v, loc, msg);
+      return $(s1, false);
+  }
+  return $(s1, true);
+}
+
+static bool check_type(seg_t loc, type_t t0, type_t t1) {
+  // FIX: we should not use unification for this
+  return Unify::unify_and_constrain(loc, t0, t1);
+}
+
+// FIX?: Why do we not use Evexp for this?
+static unsigned int get_uint_const_value(exp_t e) {
+  switch (e->r) {
+    case &Const_e({.Int_c = $(_, x)}):
+      return (unsigned int)x;
+    default:
+      throw new Invalid_argument("Tcdecl::get_uint_const_value");
+  }
+}
+
+static list_t<$(tvar_t, type_t) @> build_tvs_map(list_t<tvar_t> tvs0, list_t<tvar_t> tvs1) {
+  list_t<$(tvar_t, type_t) @> inst = NULL;
+  for (; tvs0 != NULL; tvs0 = tvs0->tl, tvs1 = tvs1->tl)
+    inst = new List(new $(tvs1->hd, new VarType(tvs0->hd)), inst);
+  return inst;
+}
+
+static bool check_tvs(list_t<tvar_t> tvs0, list_t<tvar_t> tvs1, string_t t, string_t v, seg_t loc,
+                      string_t *msg) {
+  // reject if different number of type variables or different kinds
+  if (List::length(tvs0) != List::length(tvs1)) {
+    merr(loc, msg, "%s %s has a different number of type parameters", t, v);
+    return false;
+  }
+  let x0 = tvs0;
+  let x1 = tvs1;
+  for (; x0 != NULL; x0 = x0->tl, x1 = x1->tl) {
+    Unify::unify_kindbound(x0->hd->kind, x1->hd->kind);
+    let c0 = Kinds::force_kb(x0->hd->kind);
+    let c1 = Kinds::force_kb(x1->hd->kind);
+    if (c0 == c1)
+      continue;
+    merr(loc, msg, "%s %s has a different kind (%s) for type parameter %s (%s)", t, v,
+         kind2string(c0), *x0->hd->name, kind2string(c1));
+    return false;
+  }
+  return true;
+}
+
+static bool check_atts(attributes_t atts0, attributes_t atts1, string_t t, string_t v, seg_t loc,
+                       string_t *msg) {
+  if (Atts::same_atts(atts0, atts1))
+    return true;
+  merr(loc, msg, "%s %s has different attributes", t, v);
+  return false;
+}
+
+struct Aggrdecl *merge_aggrdecl(aggrdecl_t d0, aggrdecl_t d1, seg_t loc, string_t *msg) {
+  let v   = Absynpp::qvar2string(d0->name);  // build the complete name
+  let res = true;
+  // when an incompatibility is found, either we set res to false and continue,
+  // or we return NULL immediately
+
+  // check aggrkind
+  if (!(d0->kind == d1->kind))
+    return NULL;
+
+  // check type variables
+  if (!check_tvs(d0->tvs, d1->tvs, "type", v, loc, msg))
+    return NULL;
+
+  // check scopes
+  let $(new_scope, res_scope) = merge_scope(d0->sc, d1->sc, "type", v, loc, msg, true);
+  if (!res_scope)
+    res = false;
+
+  // check attributes
+  if (!check_atts(d0->attributes, d1->attributes, "type", v, loc, msg))
+    res = false;
+
+  aggrdecl_t d2;  // future result
+  // check fields and region-partial order
+  switch ($(d0->impl, d1->impl)) {
+    case $(_, NULL):
+      d2 = d0;
+      break;
+    case $(NULL, _):
+      d2 = d1;
+      break;
+    case $(&AggrdeclImpl(exist_vars0, qb0, f0s, tagged0, ec0),
+           &AggrdeclImpl(exist_vars1, qb1, f1s, tagged1, ec1)):
+
+      // both declare fields, so they must agree (with renaming w.r.t. tyvars)
+      if (!check_tvs(exist_vars0, exist_vars1, "type", v, loc, msg))
+        return NULL;
+
+      // build the map
+      let inst = build_tvs_map(append(d0->tvs, exist_vars0), append(d1->tvs, exist_vars1));
+
+      // check region partial order under the map
+      // FIX: a semantic equality check would be more permissive
+      /*     for(; rgn_po0 != NULL && rgn_po1 != NULL;  */
+      /* 	rgn_po0=rgn_po0->tl, rgn_po1=rgn_po1->tl) {       */
+      /*       check_type((*rgn_po0->hd)[0], (*rgn_po1->hd)[0]); */
+      /*       check_type((*rgn_po0->hd)[1], (*rgn_po1->hd)[1]); */
+      /*     } */
+      let ec11 = Tcutil::rsubst_effconstr(heap_region, inst, ec1);
+      if (Tcutil::cmp_effect_constraints(ec0, ec11)) {
+        merr(loc, msg, "Effect constraints do not match");
+      }
+
+      // check each field under the map
+      for (; f0s != NULL && f1s != NULL; f0s = f0s->tl, f1s = f1s->tl) {
+        let &Aggrfield(fn0, tq0, t0, width0, atts0, req0) = f0s->hd;
+        let &Aggrfield(fn1, tq1, t1, width1, atts1, req1) = f1s->hd;
+        // names, qualifiers, types, widths, and attributes all must agree
+        if (strptrcmp(fn0, fn1) != 0) {
+          merr(loc, msg, "%s %s : field name mismatch %s != %s", "type", v, *fn0, *fn1);
+          return NULL;  // we don't need further messages
+        }
+        if (!Atts::same_atts(atts0, atts1)) {
+          merr(loc, msg, "%s %s : attribute mismatch on field %s", "type", v, *fn0);
+          res = false;
+        }
+        if (!equal_tqual(tq0, tq1)) {
+          merr(loc, msg, "%s %s : qualifier mismatch on field %s", "type", v, *fn0);
+          res = false;
+        }
+        if ((width0 != NULL && width1 != NULL &&
+             get_uint_const_value((exp_t)width0) != get_uint_const_value((exp_t)width1)) ||
+            (width0 == NULL && width1 != NULL) || (width0 != NULL && width1 == NULL)) {
+          merr(loc, msg, "%s %s : bitfield mismatch on field %s", "type", v, *fn0);
+          res = false;
+        }
+        if (req0 != NULL && req1 != NULL) {
+          type_t subst_w1 = Tcutil::substitute(inst, new ValueofType(req1));
+          if (!check_type(loc, new ValueofType(req0), subst_w1)) {
+            merr(loc, msg, "type %s : mismatch on @requires clauses: %s != %s", v, exp2string(req0),
+                 exp2string(req1));
+            res = false;
+          }
+        } else if ((req0 == NULL && req1 != NULL) || (req0 != NULL && req1 == NULL)) {
+          merr(loc, msg, "type %s : mismatch on @requires clauses", v);
+          res = false;
+        }
+
+        type_t subst_t1 = Tcutil::substitute(inst, t1);
+        if (!check_type(loc, t0, subst_t1)) {
+          merr(loc, msg, "type %s : type mismatch on field %s: %s != %s", v, *fn0, typ2string(t0),
+               typ2string(subst_t1));
+          Unify::explain_failure();
+          res = false;
+        }
+      }
+      // check for field-number mismatch
+      if (f0s != NULL) {
+        merr(loc, msg, "type %s is missing field %s", v, *(f0s->hd->name));
+        res = false;
+      }
+      if (f1s != NULL) {
+        merr(loc, msg, "type %s has extra field %s", v, *(f1s->hd->name));
+        res = false;
+      }
+      // check that @tagged qualifiers agree
+      if (tagged0 != tagged1) {
+        merr(loc, msg, "%s : previous declaration disagrees with @tagged qualifier", v);
+        res = false;
+      }
+
+      d2 = d0;
+      break;
+  }
+
+  if (!res)
+    return NULL;
+  if (new_scope == d2->sc)
+    return d2;
+  d2     = new *d2;
+  d2->sc = new_scope;  // update the scope
+  return d2;
+}
+
+static inline string_t is_x2string(bool is_x) { return is_x ? "@extensible datatype" : "datatype"; }
+
+// try to merge the 2 fields, return NULL if something's wrong
+// otherwise return f0 or (if necessary) a copy of f0 with the right scope.
+static struct Datatypefield *merge_datatypefield(datatypefield_t f0, datatypefield_t f1,
+                                                 list_t<$(tvar_t, type_t) @`H,`H> inst, string_t t,
+                                                 string_t v, string_t *msg) {
+  seg_t loc = f1->loc;
+
+  // check name
+  if (strptrcmp((*f0->name)[1], (*f1->name)[1]) != 0) {
+    merr(loc, msg, "%s %s: field name mismatch %s != %s", t, v, *((*f1->name)[1]),
+         *((*f0->name)[1]));
+    return NULL;
+  }
+
+  let name = *(*f0->name)[1];
+
+  // check scope (for xdatatypes)
+  let $(new_scope, res) =
+      merge_scope(f0->sc, f1->sc, aprintf("in %s %s, field", t, v), name, loc, msg, false);
+
+  // must have same number of types
+  let typs0 = f0->typs;
+  let typs1 = f1->typs;
+  if (List::length(typs0) != List::length(typs1)) {
+    merr(loc, msg, "%s %s, field %s: parameter number mismatch", t, v, name);
+    res = false;
+  }
+  // for all types
+  for (; typs0 != NULL && typs1 != NULL; typs0 = typs0->tl, typs1 = typs1->tl) {
+    // must have same qualifier
+    if (!equal_tqual((*typs0->hd)[0], (*typs1->hd)[0])) {
+      merr(loc, msg, "%s %s, field %s: parameter qualifier", t, v, name);
+      res = false;
+    }
+    type_t subst_t1 = Tcutil::substitute(inst, (*typs1->hd)[1]);
+    // and be the same type
+    if (!check_type(loc, (*typs0->hd)[1], subst_t1)) {
+      merr(loc, msg, "%s %s, field %s: parameter type mismatch %s != %s", t, v, name,
+           typ2string((*typs0->hd)[1]), typ2string(subst_t1));
+      Unify::explain_failure();
+      res = false;
+    }
+  }
+
+  if (!res)
+    return NULL;
+  if (f0->sc == new_scope)
+    return f0;
+  let f2 = new *f0;
+  f2->sc = new_scope;
+  return f2;
+}
+
+static $(tqual_t, type_t)
+    @substitute_datatypefield_f2(list_t<$(tvar_t, type_t) @`H,`H> inst, $(tqual_t, type_t) @x) {
+  let &$(tq, t) = x;
+  return new $(tq, Tcutil::substitute(inst, t));
+}
+
+// given d0->tvs and d1->tvs, given the mapping inst1 = build_tvs_map(d0->tvs,
+// d1->tvs), rewrite the types of datatypefield f1 so that it could be added to
+// d0
+static datatypefield_t substitute_datatypefield(list_t<$(tvar_t, type_t) @`H,`H> inst1,
+                                                datatypefield_t f1) {
+  let f0   = new *f1;
+  f0->typs = List::map_c(substitute_datatypefield_f2, inst1, f1->typs);
+
+  return f0;
+}
+
+// merge the fields of 2 datatypedecls d0 and d1 in a list that fits d0->tvs
+// the fields are supposed to be sorted
+// set *res to false if some duplicate fields are compatible
+// set *incl to false if f1s is not included in f0s
+static list_t<datatypefield_t> merge_xdatatype_fields(
+    list_t<datatypefield_t,`H> f0s, list_t<datatypefield_t,`H> f1s,
+    list_t<$(tvar_t, type_t) @`H,`H> inst, list_t<tvar_t,`H> tvs0, list_t<tvar_t,`H> tvs1,
+    bool @res, bool @incl, string_t t, string_t v, seg_t loc, string_t *msg) {
+  // what follows is variant of 'merge'
+  // where we test inclusion at the same time
+  // and where we call merge_datatypefield when 2 fields have the same name
+  list_t<datatypefield_t> @f2sp = new NULL;  // future fields (unless f1s is included in f0s)
+  let next                      = f2sp;
+  int cmp                       = -1;  // memoize comparison
+
+  for (; f0s != NULL && f1s != NULL; f1s = f1s->tl) {
+    while (f0s != NULL && (cmp = qvar_cmp(f0s->hd->name, f1s->hd->name)) < 0) {
+      let node = new List(f0s->hd, NULL);
+      *next    = node;
+      next     = &node->tl;
+      f0s      = f0s->tl;
+    }
+    if (f0s == NULL || cmp > 0) {
+      // f1s->hd is not in f0s, let's add it to f2s
+      *incl    = false;
+      let node = new List(substitute_datatypefield(inst, f1s->hd), NULL);
+      *next    = node;
+      next     = &node->tl;
+    } else {
+      // the names match, let's check the complete field and then add it to f2s
+      let f2 = merge_datatypefield(f0s->hd, f1s->hd, inst, t, v, msg);
+      if (f2 != NULL) {
+        if (f2 != f0s->hd)
+          *incl = false;
+        let node = new List((datatypefield_t)f2, NULL);
+        *next    = node;
+        next     = &node->tl;
+      } else {
+        *res = false;
+      }
+      f0s = f0s->tl;
+    }
+  }
+
+  // add the tail
+  if (f1s != NULL) {
+    *incl = false;
+    *next = f1s;
+  } else
+    *next = f0s;
+
+  return *f2sp;
+}
+
+static $(list_t<`a>, list_t<`a>) split(list_t<`a,`H> f) {
+  if (f == NULL)
+    return $(NULL, NULL);
+  if (f->tl == NULL)
+    return $(f, NULL);
+  let $(f1, f2) = split(f->tl->tl);
+  return $(new List(f->hd, f1), new List(f->tl->hd, f2));
+}
+
+// sort the fields of a xdatatype declaration
+// check for the consistency of duplicate fields
+list_t<datatypefield_t> sort_xdatatype_fields(list_t<datatypefield_t,`H> f, bool @res, var_t v,
+                                              seg_t loc, string_t *msg) {
+  let $(f1, f2) = split(f);
+  if (f1 != NULL && f1->tl != NULL)
+    f1 = sort_xdatatype_fields(f1, res, v, loc, msg);
+  if (f2 != NULL && f2->tl != NULL)
+    f2 = sort_xdatatype_fields(f2, res, v, loc, msg);
+  return merge_xdatatype_fields(f1, f2, NULL, NULL, NULL, res, new true, "@extensible datatype", *v,
+                                loc, msg);
+}
+
+struct Datatypedecl *merge_datatypedecl(datatypedecl_t d0, datatypedecl_t d1, seg_t loc,
+                                        string_t *msg) {
+  let v      = Absynpp::qvar2string(d0->name);  // build the complete name
+  string_t t = "datatype";
+  let res    = true;
+  // when an incompatibility is found, either we set res to false and continue,
+  // or we return NULL immediately
+
+  // check is_extensible
+  if (d0->is_extensible != d1->is_extensible) {
+    merr(loc, msg, "expected %s to be a %s instead of a %s", v, is_x2string(d0->is_extensible),
+         is_x2string(d1->is_extensible));
+    res = false;
+  } else
+    t = is_x2string(d0->is_extensible);
+
+  // check type variables
+  if (!check_tvs(d0->tvs, d1->tvs, t, v, loc, msg))
+    return NULL;
+
+  // check scopes
+  let $(new_scope, res_scope) = merge_scope(d0->sc, d1->sc, t, v, loc, msg, false);
+  if (!res_scope)
+    res = false;
+
+  datatypedecl_t d2;  // future result
+
+  // check fields
+  switch ($(d0->fields, d1->fields)) {
+    case $(_, NULL):
+      d2 = d0;
+      break;
+    case $(NULL, _):
+      d2 = d1;
+      break;
+    case $(&Opt(f0s), &Opt(f1s)):
+      // NOTE: This is one of the places where xdatatype is handled differently!
+      // both declare fields:
+      //   For datatype,  they must agree (with renaming w.r.t. tyvars)
+      //     and we currently don't allow field-reordering.
+      //     (Effects code-generation options!)
+      //     and implicit namespace is the datatype name's namespace
+      //   For xdatatype, allow new fields
+      //     and allow repeats in any order so long as they agree
+      //     and implicit namespace is the current namespace
+      // FIX: check the kinds match up?
+      let inst = build_tvs_map(d0->tvs, d1->tvs);
+
+      // check each field under the map
+      if (d0->is_extensible) {
+        // xdatatype
+        // we assume f0s and f1s are sorted and without repetition
+
+        let incl = true;
+        let f2s =
+            merge_xdatatype_fields(f0s, f1s, inst, d0->tvs, d1->tvs, &res, &incl, t, v, loc, msg);
+
+        if (incl) {
+          d2 = d0;
+        } else {
+          d2         = new *d0;
+          d2->sc     = new_scope;  // to avoid the reallocation below
+          d2->fields = new Opt(f2s);
+        }
+      } else {
+        // datatype
+        for (; f0s != NULL && f1s != NULL; f0s = f0s->tl, f1s = f1s->tl)
+          merge_datatypefield(f0s->hd, f1s->hd, inst, t, v, msg);
+        if (f0s != NULL) {
+          merr(loc, msg, "%s %s is missing field %s", t, v, *((*f0s->hd->name)[1]));
+          res = false;
+        }
+        if (f1s != NULL) {
+          merr(loc, msg, "%s %s has extra field %s", t, v, *((*f1s->hd->name)[1]));
+          res = false;
+        }
+        d2 = d0;
+      }
+      break;
+  }
+
+  if (!res)
+    return NULL;
+  if (new_scope == d2->sc)
+    return d2;
+  d2     = new *d2;
+  d2->sc = new_scope;
+  return d2;
+}
+
+struct Enumdecl *merge_enumdecl(enumdecl_t d0, enumdecl_t d1, seg_t loc, string_t *msg) {
+  let v   = Absynpp::qvar2string(d0->name);  // build the complete name
+  let res = true;
+
+  // check scopes
+  let $(new_scope, res_scope) = merge_scope(d0->sc, d1->sc, "enum", v, loc, msg, true);
+  if (!res_scope)
+    res = false;
+
+  enumdecl_t d2;  // future result
+
+  // check fields
+  switch ($(d0->fields, d1->fields)) {
+    case $(_, NULL):
+      d2 = d0;
+      break;
+    case $(NULL, _):
+      d2 = d1;
+      break;
+    case $(&Opt(f0s), &Opt(f1s)):
+      // both declare fields, so they must agree exactly
+      for (; f0s != NULL && f1s != NULL; f0s = f0s->tl, f1s = f1s->tl) {
+        let &Enumfield{&$(_, fname0), tag0, loc0} = f0s->hd;
+        let &Enumfield{&$(_, fname1), tag1, loc1} = f1s->hd;
+        // names and tags must agree
+        if (strptrcmp(fname0, fname1) != 0) {
+          merr(loc, msg, "enum %s: field name mismatch %s != %s", v, *fname0, *fname1);
+          res = false;
+        }
+        if (get_uint_const_value((exp_t)tag0) != get_uint_const_value((exp_t)tag1)) {
+          merr(loc, msg, "enum %s, field %s, value mismatch", v, *fname1);
+          res = false;
+        }
+      }
+      if (f0s != NULL || f1s != NULL) {
+        merr(loc, msg, "enum %s declarations: number of fields differs", v);
+        res = false;
+      }
+      d2 = d0;
+      break;
+  }
+
+  if (!res)
+    return NULL;
+  if (d2->sc == new_scope)
+    return d2;
+  d2     = new *d2;
+  d2->sc = new_scope;
+  return d2;
+}
+
+static $(scope_t, bool)
+    check_var_or_fn_decl(scope_t sc0, type_t t0, tqual_t tq0, attributes_t atts0, scope_t sc1,
+                         type_t t1, tqual_t tq1, attributes_t atts1, string_t t, string_t v,
+                         seg_t loc, string_t *msg) {
+  let res = true;
+
+  // check scope
+  let $(new_scope, res_scope) = merge_scope(sc0, sc1, t, v, loc, msg, false);
+  if (!res_scope)
+    res = false;
+
+  // check type
+  if (!check_type(loc, t0, t1)) {
+    let s1 = typ2string(t0);
+    let s2 = typ2string(t1);
+    if (strlen(s1) + strlen(s2) + strlen(t) + strlen(v) + strlen("  was declared  instead of ") >
+        70)
+      merr(loc, msg, "%s %s was declared \n\t%s\n instead of \n\t%s", t, v, s2, s1);
+    else
+      merr(loc, msg, "%s %s was declared %s instead of %s", t, v, s2, s1);
+    Unify::explain_failure();
+    res = false;
+  }
+
+  // check tqual
+  if (!equal_tqual(tq0, tq1)) {
+    merr(loc, msg, "%s %s has different type qualifiers", t, v);
+    res = false;
+  }
+
+  // check attribute
+  if (!Atts::same_atts(atts0, atts1)) {
+    merr(loc, msg, "%s %s has different attributes", t, v);
+    fprintf(stderr, "\tprevious attributes: ");
+    for (; atts0 != NULL; atts0 = atts0->tl)
+      fprintf(stderr, "%s ", attribute2string(atts0->hd));
+    fprintf(stderr, "\n\tcurrent attributes: ");
+    for (; atts1 != NULL; atts1 = atts1->tl)
+      fprintf(stderr, "%s ", attribute2string(atts1->hd));
+    fprintf(stderr, "\n");
+    res = false;
+  }
+
+  return $(new_scope, res);
+}
+
+struct Vardecl *merge_vardecl(vardecl_t d0, vardecl_t d1, seg_t loc, string_t *msg) {
+  let v = qvar2string(d0->name);  // build the complete name
+
+  // check scopes, types, tquals and attributes
+  let $(new_scope, res) =
+      check_var_or_fn_decl(d0->sc, d0->type, d0->tq, d0->attributes, d1->sc, d1->type, d1->tq,
+                           d1->attributes, "variable", v, loc, msg);
+
+  if (!res)
+    return NULL;
+  if (d0->sc == new_scope)
+    return d0;
+  let d2 = new *d0;
+  d2->sc = new_scope;
+  return d2;
+}
+
+struct Typedefdecl *merge_typedefdecl(typedefdecl_t d0, typedefdecl_t d1, seg_t loc,
+                                      string_t *msg) {
+  let v = qvar2string(d0->name);  // build the complete name
+
+  // check type variables
+  if (!check_tvs(d0->tvs, d1->tvs, "typedef", v, loc, msg))
+    return NULL;
+
+  // build the map
+  let inst = build_tvs_map(d0->tvs, d1->tvs);
+
+  // check types
+  if (d0->defn != NULL && d1->defn != NULL) {
+    type_t subst_defn1 = Tcutil::substitute(inst, (type_t)d1->defn);
+    if (!check_type(loc, (type_t)d0->defn, subst_defn1)) {
+      merr(loc, msg, "typedef %s does not refer to the same type: %s != %s", v,
+           typ2string(subst_defn1), typ2string((type_t)d0->defn));
+      return NULL;
+    }
+  }
+  return d0;
+}
+
+datatype Binding *merge_binding(binding_t b0, binding_t b1, seg_t loc, string_t *msg) {
+  switch ($(b0, b1)) {
+    case $(&Global_b(d0), &Global_b(d1)):
+      let d2 = merge_vardecl(d0, d1, loc, msg);
+      if (d2 == NULL)
+        return NULL;
+      if (d2 == d0)
+        return b0;
+      if (d2 == d1)
+        return b1;
+      return new Global_b(d2);
+    case $(&Global_b(d0), &Funname_b(d1)):
+      let $(_, res) = check_var_or_fn_decl(
+          d0->sc, d0->type, d0->tq, d0->attributes, d1->sc, (type_t)d1->cached_type, empty_tqual(0),
+          d1->i.attributes, "function", qvar2string(d0->name), loc, msg);
+      if (!res)
+        return NULL;
+      d0->is_proto = true;  // seen a decl ... so var binding is a prototype
+      return b1;
+    case $(&Funname_b(_), &Funname_b(d1)):
+      merr(loc, msg, "redefinition of function %s", qvar2string(d1->name));
+      return NULL;
+    case $(&Funname_b(d0), &Global_b(d1)):
+      let $(_, res) = check_var_or_fn_decl(
+          d0->sc, (type_t)d0->cached_type, empty_tqual(0), d0->i.attributes, d1->sc, d1->type,
+          d1->tq, d1->attributes, "variable", qvar2string(d0->name), loc, msg);
+      if (!res)
+        return NULL;
+      d1->is_proto = true;
+      return b0;
+    default:
+      return NULL;
+  }
+}
+
+struct Xdatatypefielddecl *merge_xdatatypefielddecl(xdatatypefielddecl_t d0,
+                                                    xdatatypefielddecl_t d1, seg_t loc,
+                                                    string_t *msg) {
+  let &Xdatatypefielddecl(b0, f0) = d0;
+  let &Xdatatypefielddecl(b1, f1) = d1;
+  let v                           = qvar2string(f0->name);
+
+  // check names of xdatatypes
+  if (qvar_cmp(b0->name, b1->name) != 0) {
+    merr(loc, msg, "@extensible datatype %s and %s both have a field named %s",
+         qvar2string(b0->name), qvar2string(b1->name), v);
+    return NULL;
+  }
+
+  // check tvars of xdatatypes
+  if (!check_tvs(b0->tvs, b1->tvs, "@extensible datatype", qvar2string(b0->name), loc, msg))
+    return NULL;
+
+  let inst1 = build_tvs_map(b0->tvs, b1->tvs);
+
+  // try to merge the 2 fields
+  let f2 = merge_datatypefield(f0, f1, inst1, "@extensible datatype field", v, msg);
+  if (f2 == NULL)
+    return NULL;
+  if (f2 == f0)
+    return d0;
+  return new Xdatatypefielddecl(b0, f2);
+}

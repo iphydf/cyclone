@@ -1,0 +1,143 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 Greg Morrisett
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+{
+#include "cyclone/library/std/lexing.h"
+#include <string.h>
+#include "cyclone/library/std/lineno.h"
+
+namespace Lineno;
+
+enum token_val {
+  NEWLINE,
+  LINEDEF,
+  END
+};
+
+}
+
+let newline = ('\n' | '\r' | "\r\n")
+
+/* Return LINEDEF for lines that look like directives that the
+   preprocessor leaves in its output to indicate what lines of
+   a preprocessed file correspond to what unpreprocessed file, e.g.,
+      # 3 "include/core.h"
+   Return NEWLINE for any other lines that end in newline,
+   including some other lines that start with #.  This is
+   useful for cycdoc, which needs to work on unpreprocessed
+   files --- it needs the comments --- and so we have to
+   cope with, e.g., #ifdef.
+   Return END for a line that ends the file without newline.
+*/
+rule token "enum token_val" = parse
+  "#" [' ' '\t']* ['0'-'9']+ [^ '\n' '\r']* newline { return LINEDEF; }
+| [^ '\n' '\r']* newline     { return NEWLINE; }
+| [^ '\n' '\r']* eof         { return END; }
+
+{
+using Core;
+using Lexing;
+
+struct Pos {
+  string_t logical_file;
+  mstring_t line;
+  int    line_no;
+  int    col;
+};
+
+static $(mstring_t,int)* parse_linedef(mstring_t line) {
+  try {
+    int i = 0;
+    while (i < numelts(line) && (line[i] < '0' || line[i] > '9')) ++i;
+    int j = i;
+    while (j < numelts(line) && line[j] >= '0' && line[j] <= '9') ++j;
+    if (i == numelts(line)) return NULL; // if there's no number
+    int number = 0;
+    if (sscanf(substring(line,i,j-i),"%d",&number) != 1)
+      return NULL;
+    while (j < numelts(line) && line[j] != '"') ++j;
+    int k = ++j;
+    while (k < numelts(line) && line[k] != '"') ++k;
+    if (j == numelts(line) || k == numelts(line)) return NULL; // if no name
+    mstring_t fname = substring(line,j,k-j);
+    return new $(fname,number);
+  } catch { default: return NULL; }
+}
+
+int place_cmp($(int,pos_t)@ place1, $(int,pos_t)@ place2) {
+  return intcmp((*place1)[0],(*place2)[0]);
+}
+
+// mutates second argument's elements
+void poss_of_abss(string_t<`r> filename, List::list_t<$(int,pos_t)@,`H> places) {
+  places = List::merge_sort(place_cmp, places);
+  FILE @f = file_open(filename, "r");
+  try {
+    Lexbuf<Function_lexbuf_state<FILE@>> lbuf = from_file(f);
+    string_t<`r+`H> source_file = filename;
+    let line        = 1;
+    mstring_t this_line;
+    let eol;
+    let next;
+
+    while (places != NULL) {
+      while (true) {
+	next      = token(lbuf);
+	eol       = lexeme_end(lbuf);
+        /* NOTE: eol is the index of the char AFTER the lexeme */
+	this_line = lexeme(lbuf); // FIX: expensive string copy
+
+	if (next == END || eol > (*places->hd)[0])
+	  break;
+
+        if (next == NEWLINE) ++line;
+        else {
+	  $(mstring_t,int)* fno = parse_linedef(this_line);
+	  if (fno == NULL) {
+	    ++line;
+            // Commented out because it produces spurious warnings in cycdoc.
+	    // fprintf(stderr, "Unknown directive: %s\n", this_line);
+	  } else {
+	    source_file = (*fno)[0];
+	    line        = (*fno)[1];
+	  }
+        }
+      }
+      while (places != NULL && (next == END || eol > (*places->hd)[0])) {
+	let p = (*places->hd)[1];
+	p->logical_file = strdup(source_file);
+	p->line         = this_line;
+	p->line_no      = line;
+	p->col          = strlen(this_line)-(eol-(*places->hd)[0]);
+        if (p->col < 0) p->col = 0;
+	places = places->tl;
+      }
+      ++line;
+    }
+  } catch { case y: file_close(f); throw (y); }
+  file_close(f);
+  return;
+}
+
+pos_t pos_of_abs(string_t filename, int abs) {
+  pos_t ans = new Pos("",new_string(0),0,0);
+  poss_of_abss(filename, new List::List(new $(abs,ans),NULL));
+  return ans;
+}
+
+}

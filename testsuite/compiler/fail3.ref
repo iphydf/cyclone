@@ -1,0 +1,32 @@
+
+cyclone/testsuite/compiler/fail3.cyc:4:3: dereference of possibly uninitialized pointer
+cyclone/testsuite/compiler/fail3.cyc:15:6: expression may not be fully initialized
+cyclone/testsuite/compiler/fail3.cyc:23:6: expression may not be initialized
+cyclone/testsuite/compiler/fail3.cyc:30:5: dereference of possibly uninitialized pointer
+cyclone/testsuite/compiler/fail3.cyc:37:5: dereference of possibly uninitialized pointer
+cyclone/testsuite/compiler/fail3.cyc:44:8: expression may not be fully initialized
+cyclone/testsuite/compiler/fail3.cyc:53:22: dereference of possibly uninitialized pointer
+cyclone/testsuite/compiler/fail3.cyc:57:10: function may not return a value
+cyclone/testsuite/compiler/fail3.cyc:61:2: function may not return a value
+cyclone/testsuite/compiler/fail3.cyc:66:2: `noreturn' function might return
+cyclone/testsuite/compiler/fail3.cyc:69:2: `noreturn' function might (implicitly) return
+cyclone/testsuite/compiler/fail3.cyc:74:2: last catch clause may implicitly fallthru
+cyclone/testsuite/compiler/fail3.cyc:92:2: `noreturn' function might return
+cyclone/testsuite/compiler/fail3.cyc:95:2: `noreturn' function might return
+cyclone/testsuite/compiler/fail3.cyc:100:11: switch clause may implicitly fallthru
+cyclone/testsuite/compiler/fail3.cyc:113:4: aliased expression x was overwritten
+cyclone/testsuite/compiler/fail3.cyc:112:2: function parameter x without 'consume' attribute no longer set to its original value
+cyclone/testsuite/compiler/fail3.cyc:124:14: expression attempts to copy a consumed alias-free value
+cyclone/testsuite/compiler/fail3.cyc:128:2: function consumes parameter y which is does not have the 'consume' attribute
+cyclone/testsuite/compiler/fail3.cyc:132:2: function consumes value pointed to by parameter y, which does not have the 'consume' attribute
+cyclone/testsuite/compiler/fail3.cyc:136:2: function parameter y without 'consume' attribute no longer set to its original value
+cyclone/testsuite/compiler/fail3.cyc:141:3: attempt to dereference an alias-free that has already been copied
+cyclone/testsuite/compiler/fail3.cyc:146:11: attempt to dereference a consumed alias-free pointer
+cyclone/testsuite/compiler/fail3.cyc:150:27: aliased pattern expression not an l-value: qnew (Core::unique_qual)1
+cyclone/testsuite/compiler/fail3.cyc:155:6: cannot track alias-free pointers through multiple assignments
+cyclone/testsuite/compiler/fail3.cyc:160:14: expression attempts to copy a consumed alias-free value
+cyclone/testsuite/compiler/fail3.cyc:168:11: expression attempts to copy a consumed alias-free value
+cyclone/testsuite/compiler/fail3.cyc:177:8: cannot swap value into zeroterm array not known to be 0
+cyclone/testsuite/compiler/fail3.cyc:179:2: cannot swap value into zeroterm array not known to be 0
+
+COMPILATION FAILED!

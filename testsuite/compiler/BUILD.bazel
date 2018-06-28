@@ -1,0 +1,41 @@
+[genrule(
+    name = "%s_out" % cyc[:-4],
+    srcs = [
+        cyc,
+        "lib/core.h",
+        "lib/stdio.h",
+    ],
+    outs = ["%s.out" % cyc[:-4]],
+    cmd = " ".join([
+        "$(CC)",
+        "-nostdinc",
+        "-xc",
+        "-E",
+        "-isystem cyclone/testsuite/compiler/lib",
+        "$(location %s)" % cyc,
+        "-o temp.cyc",
+        "&&",
+        "$(location //cyclone/tools/cyclone)",
+        "--manyerrors",
+        "temp.cyc",
+        "-o /dev/null",
+        "> $@",
+        "2>&1 || true",
+    ]),
+    tools = ["//cyclone/tools/cyclone"],
+    toolchains = ["@rules_cc//cc:current_cc_toolchain"],
+) for cyc in glob(["*.cyc"])]
+
+[sh_test(
+    name = ref[:-4],
+    size = "small",
+    srcs = ["runtest.sh"],
+    args = [
+        "$(location %s)" % ref,
+        "$(location :%s_out)" % ref[:-4],
+    ],
+    data = [
+        ref,
+        ":%s_out" % ref[:-4],
+    ],
+) for ref in glob(["*.ref"])]

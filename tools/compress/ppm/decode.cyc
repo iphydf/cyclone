@@ -1,0 +1,31 @@
+/* Decodes the encoded input file. */
+#include "stdio.h"
+#include "cyclone/tools/compress/ppm/model.h"
+#include "cyclone/tools/compress/ppm/arithcode.h"
+
+void decode_file()
+{
+    int symbol, eof_sym;
+
+    init_symbols();
+
+    eof_sym = eof_symbol();
+
+    startinputingbits();
+    startdecoding();
+    while ((symbol = decode_symbol()) < eof_sym)
+        putchar( symbol );
+}
+
+void main(argc, argv)
+int argc;
+string_t? argv;
+{
+
+    argv++;
+    argv++;
+    if (argc > 2)
+	init_arguments(argc,argv,3);
+
+    decode_file();
+}

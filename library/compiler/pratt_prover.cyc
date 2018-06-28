@@ -1,0 +1,2419 @@
+/* Pratt's Difference-Constraint Solving Algorithm for Assertions.
+   Copyright (C) 2001 Greg Morrisett, Yanling Wang, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+#include "absynpp.h"
+#include "assndef.h"
+#include "cyclone/library/std/dict.h"
+#include "cyclone/library/std/hashtable.h"
+#include "cyclone/library/std/list.h"
+#include "cyclone/library/std/set.h"
+#include "cyclone/library/std/xarray.h"
+#include "evexp.h"
+#include "flags.h"
+#include "tcutil.h"
+#include "warn.h"
+
+namespace Hashtable {
+  extern `b *`r lookup_ptr_opt(table_t<`a,`b,`r> t, `a key);
+}
+
+using AssnDef;
+using List;
+
+namespace PrattProver;
+
+#define UINT_MAX 0xFFFFFFFFU
+
+#define INT_MAX 0x7FFFFFFF
+// use static int instead of define here
+// to avoid a c warning about 0x80000000 being unsigned only
+static const int INT_MIN = -INT_MAX - 1;
+
+#define LLONG_MAX 0x7FFFFFFFFFFFFFFFll
+static const long long LLONG_MIN = -LLONG_MAX - 1;
+
+// typedef signed long long dist_length_t;
+// #define MIN_DIST LLONG_MIN
+typedef signed int dist_length_t;
+#define MIN_DIST (INT_MIN)
+//#define PROVER_DEBUG
+
+/**********************************************************************
+This is a simple constraint solver that can (conservatively) determine
+the unsatisfiability of a quantifier-free assertion, where the primitive
+assertions involve signed and unsigned int terms and [in]equations.
+The solver is based on Pratt's difference constraint algorithm, but
+has been suitably adapted to deal with modular arithmetic.
+
+The algorithm that we use here is roughly as follows:
+
+   (1) We (conceptually) compute the DNF of an assertion A, yielding
+    A1 || A2 || ... || An  where the Ai's are conjunctions of
+    primitive relations.
+
+   (2) For each Ai, we build two distance graphs representing the difference
+    between signed and unsigned terms.
+
+   (3) We then close the graph by computing the shortest path from each
+    term to another, and by performing congruence closure w.r.t. the
+    uninterpreted functions (e.g., numelts).  We also attempt to "break"
+    terms involving addition of a constant (e.t., x+3) by adding edges
+    x+3 ---(-3)---> x. However, we must be careful in doing this due to the
+    issues described below.  We use the information in the graph to try to
+    prove that over/underflow cannot happen, in which case the edges are
+    safe to add.
+
+   (4) Finally, if we detect a cycle in one of the graphs
+       t --c0--> t1 --c1--> t2 --c2--> ... --> tn --cn--> t
+    and the sum of the ci's is negative, then we have a contradiction since
+    this would imply t - t < 0.  We can thus determine that Ai is false.
+
+   (5) If all of the graphs are found to be inconsistent, then we know A is
+false.
+
+   (6) A number of ad hoc passes are added to further find inconsistencies.
+       For instance, we have a pass that looks for X == T in the graph and
+       substitutes T for X in the rest of the graph.
+
+In practice, we incrementally convert the assertion to graphs and try to
+prune inconsistent graphs as early as possible.  This avoids building graphs
+proportional to the DNF which could be exponential in the size of A.
+This conversion is done in an accumulator style, where we are threading
+through a list of graphs representing a disjunction.  That is, we compute
+A && (G1 || ... || Gn).  If A is a primitive relation or conjunction, we
+distribute it across all the graphs.  If A is a disjunction, (A1 || A2),
+then we clone the list of graphs and compute Ai && (G1 || ... || Gn) and
+A2 && (G1 || ... || Gn), appending the resulting lists of graphs that
+remain consistent.
+
+We currently perform the all-paths and other closure operations in a graph
+when we hit a disjunction (or at the end.)  These allow us to prune graphs
+relatively frequently and thus keep the space overheads reasonable.  It is
+not clear how often we should do closure, since on the one hand, they are
+relatively expensive passes, but on the other hand, they help to eliminate
+whole graphs which not only saves space, but also avoids work down
+the line.
+
+The graphs are represented as sparse matrices with an implicit diagonal of
+0, and where non-existent entries represent infinite upper bounds on
+distance.
+
+Notes on invariants:
+--------------------
+Terms of type int or unsigned int represent machine words (i.e., values
+in the range [0..2^32-1].)  Care must be taken when interpreting the
+operations and the tests to avoid confusion with integers (Z).  For
+example, t1 S<= t2 does not imply t1+1 S<= t2+1.
+
+We define u : Env -> Term -> Z and s : Env -> Term -> Z as interpretation
+functions mapping terms (of integral type) to integers as follows, where
+Env : Var -> [0..2^32-1].
+
+  u[Uint(i)]e = i
+  u[Var(x)]e  = e(x)
+  u[Binop(Plus,t1,t2,_)]e = (u[t1] + u[t2]) % 2^32
+  u[Binop(Minus,t1,t2,_)]e = (u[t1] - u[t2]) % 2^32
+  u[Binop(Times,t1,t2,_)]e = u[t1] * u[t2]) % 2^32
+
+  s[t]e = u[t] - 2^31
+
+Then the interpretations of the primitive relations U<=, S<=, and ==
+are defined as:
+    [t1 U<= t2]e iff u[t1]e <= u[t2]e
+    [t1 S<= t2]e iff s[t1]e <= s[t2]e
+    [t1 == t2]e  iff u[t1]e = u[t2]e
+
+We will leave the environment e implicit in what follows.
+
+Our graph tracks *mathematical* distances between terms.
+In particular, an unsigned edge t1 ---i---> t2  represents
+the fact that u[t1] - u[t2] <= i and a signed edge
+t1 ---i---> t2 represents s[t1] - s[t2] <= i.  Note that
+ideally, we would use an integer (bignum) to represent the distance i,
+but to save space and time, we only put edges in that can be
+represented by a machine int, at the loss of some completeness.
+Furthermore, when propagating distance information, we must check
+for over or under flow.
+
+It is important to note that equalities and inequalities in the
+assertions (which describe machine words, arithmetic, and relations)
+do not directly translate to these distance edges.  For example,
+suppose we have the assertion x - y == c.  It is tempting to
+think we can add x --c--> y and y -(-c)-> x to the unsigned graph.
+However, [x - y == c] does not imply y - x <= -c.  Picking x to be
+1 and y to be 2, we have (1 - 2) % 2^32 = -1 % 2^32 = 2^32 - 1.
+Yet while 1 - 2 <= 2^32-1, it is not the case that 2 - 1 <= 1 - 2^32.
+In general, we can only add the y -(-c)-> x edge when x is truly
+greater than y (and of course c and -c fit within an int.)
+
+The functions break_term() and break_term_in_graph() encapsulate the
+logic necessary for determining when it is safe to add these edges.
+Because they depend upon whether or not a term may overflow (or underflow),
+and this information may only become apparent later on (e.g., we discover
+that x is actually 5, so x-2 does not underflow) we must do the
+term breaking as part of the closure process.
+*********************************************************************/
+
+//
+// Forward declaration -- represents an equivalence class for terms
+// (and also a row within a graph.)
+struct Node;
+typedef struct Node node_t;
+
+// An entry in the sparse matrix -- records the target node of the
+// edge and the distance as a (signed) integer.
+typedef struct Distance {
+  struct Distance *next;
+  node_t @target;
+  dist_length_t dist;
+} distance_t;
+
+// shortest path information from some source s to this node
+@tagged union ShortestPathInfo {
+  dist_length_t Infinity;  // the distance from s to this node is infinity, int unused
+  dist_length_t Shortest;  // the final shortest distance from s to this node
+  dist_length_t Current;   // the current distance from s to this node
+};
+typedef union ShortestPathInfo shortestpathinfo_t;
+shortestpathinfo_t infinity = {.Infinity = (dist_length_t)0};
+
+// Represents a row within a graph.
+struct Node {
+  node_t *next;                     // next row in graph
+  term_t rep;                       // term this node represents
+  bool broken_as_signed : 1;        // whether we have broken out any
+  bool broken_as_unsigned : 1;      // constants (see below)
+  distance_t *unsigned_distances;   // distance edges with this node's term
+  distance_t *signed_distances;     // as the source
+  dist_length_t signeddistFromS;    // used in the shortest path algorithms to record
+  dist_length_t unsigneddistFromS;  // distance from the source S to this node
+  shortestpathinfo_t shortest_path_info;
+};
+
+typedef Hashtable::table_t<term_t, node_t @> term_node_map_t;
+
+// A graph is essentially a pair of sparse matrices of
+// (node_t,node_t)->distance.  We represent the matrices by having
+// a node row for each term.
+typedef struct Graph {
+  struct Graph *next;
+  node_t *rows;         // we keep the rows sorted by rep order
+  term_node_map_t map;  // quick lookup of node for a term
+  bool changed;
+} graph_t;
+
+static unsigned num_graphs(graph_t *`H gs) {
+  unsigned c = 0;
+  for (; gs != NULL; gs = gs->next)
+    ++c;
+  return c;
+}
+
+static term_node_map_t empty_map(unsigned n) {
+  return Hashtable::create(n, Core::ptrcmp, termhash);
+  // Hashtable::create(n,termcmp,termhash);
+}
+
+// An empty graph represents the proposition "true".
+static graph_t @true_graph() { return new Graph{NULL, NULL, empty_map(17), false}; }
+
+static int constraints_added = 0;
+static int graphs_copied     = 0;
+static int max_lookup        = 0;
+static int already_seen_hits = 0;
+
+static void print_shortestpathinfo(shortestpathinfo_t info) {
+  switch (info) {
+    case {.Infinity = _}:
+      fprintf(stderr, "not reachable from s\n");
+      break;
+    case {.Shortest = d}:
+      fprintf(stderr, "shortest distance from s is %d\n", d);
+      break;
+    case {.Current = d}:
+      fprintf(stderr, "current distance from s is %d\n", d);
+      break;
+  }
+  return;
+}
+// Print out a graph.
+void print_graph(graph_t @g) {
+  fprintf(stderr, "{");
+  if (g->rows == NULL)
+    fprintf(stderr, "<true>");
+  else {
+    for (let rs = g->rows; rs != NULL; rs = rs->next) {
+      let &Node{_, rep, _, _, uds, sds, _, _, _} = (node_t @)rs;
+      let s                                      = term2string(rep);
+      // fprintf(stderr,"row %s:",s);
+      // if (uds == NULL) fprintf(stderr,"\n");
+      // print_shortestpathinfo(rs->shortest_path_info);
+      // fprintf(stderr,"unsigned shortest dist from S: %d\n",
+      //      rs->unsigneddistFromS);
+      // fprintf(stderr,"signed shortest dist from S: %d\n",
+      //      rs->signeddistFromS);
+      for (; uds != NULL; uds = uds->next)
+        fprintf(stderr, "  %s - %s U<= %d\n ", s, term2string(uds->target->rep), uds->dist);
+      for (; sds != NULL; sds = sds->next)
+        fprintf(stderr, "  %s - %s S<= %d\n ", s, term2string(sds->target->rep), sds->dist);
+    }
+  }
+  fprintf(stderr, "}\n");
+}
+
+// Print out a list of graphs.
+void print_graphs(graph_t *`H g) {
+  fprintf(stderr, "Graphs:-----------\n");
+  if (g == NULL)
+    fprintf(stderr, "<false>\n");
+  else {
+    for (int i = 0; g != NULL; i++, g = g->next) {
+      fprintf(stderr, "graph %d:\n", i);
+      print_graph(g);
+    }
+  }
+  fprintf(stderr, "------------------\n");
+}
+
+// This exception is thrown when we discover that a graph is inconsistent.
+datatype exn{Inconsistent};
+datatype exn.Inconsistent inconsistent = Inconsistent;
+
+// forward declarations
+static node_t @term2node(graph_t @`r g, term_t t);
+static void set_distance(graph_t @g, term_t s, term_t t, dist_length_t dist, bool is_signed);
+static void add_constraint(graph_t @g, term_t t1, prim_reln_t p, term_t t2);
+static void add_eq(graph_t @g, term_t t1, term_t t2);
+static $(bool, unsigned, term_opt_t) subst_term_with_const(graph_t @g, term_t t);
+static dist_length_t *lookup_dist(node_t @`H source, node_t @`H target, bool is_signed);
+
+static exp_t strip_cast(exp_t e) {
+LOOP:
+  switch (e->r) {
+    case &Absyn::Cast_e(tp2, e2, ...):
+      switch (Absyn::compress(tp2)) {
+        case &Absyn::AppType(&Absyn::IntCon(_, s), _):
+          if (s == Absyn::Int_sz || s == Absyn::Long_sz) {
+            e = e2;
+            goto LOOP;
+          }
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+  return e;
+}
+
+// Depending upon the type of a term, we can sometimes add extra
+// information to a graph.  For instance, if t : int@{42} then we
+// can add numelts(t) <= 42, and if t : tag_t<valueof(e)> then
+// we can add t == e.
+static void add_type_info(graph_t @g, term_t term) {
+  // for all terms t, we should know that:
+  // s[t] - 0 <= INT_MAX
+  // 0 - u[t] <= 0
+  let z = zero();
+  set_distance(g, term, z, (dist_length_t)INT_MAX, true);
+  set_distance(g, z, term, (dist_length_t)0, false);
+  switch (term) {
+    case &Unop(Absyn::Numelts, x, _):
+      // add term s< INT_MAX and term u< INT_MAX and 0 u<= term
+      set_distance(g, term, z, (dist_length_t)INT_MAX - 1, false);
+      // also add x as a node to pick up any constant bounds information
+      term2node(g, x);
+      break;
+    case &Alloc(_, _, n, _, _):
+      // an allocation node -- we know it's not null and that the numelts is n
+      add_constraint(g, z, ULt, term);  // not null
+      add_constraint(g, numelts_term(term), ULte, n);
+      break;
+    case &Addr(...):
+      // the address of a variable -- we know it's not null
+      add_constraint(g, z, ULt, term);
+      break;
+    default:
+      break;
+  }
+  let topt = get_term_type(term);
+  if (topt != NULL) {
+    type_t t = (type_t)topt;
+    let eopt = Tcutil::get_type_bound(t);
+    if (eopt != NULL && Tcutil::is_pure_exp((exp_t)eopt)) {
+      term_t t1 = numelts_term(term);
+      // sigh -- must get rid of a cast to int/long
+      exp_t e = strip_cast((exp_t)eopt);
+      // FIX? should vcgen e...
+      term_t t2;
+      let $(cn, known) = Evexp::eval_const_uint_exp(e);
+      if (known)
+        t2 = uint(cn);
+      else
+        t2 = cnst(e);
+      // FIX -- if the term is a * type, then we need to say something
+      // like ((term == 0) ==> numelts(term) == 0) &&
+      //      ((term != 0) ==> numelts(term) <= t2)
+      if (!Tcutil::is_nullable_pointer_type(t, false)) {
+        add_constraint(g, t2, ULte, t1);
+        add_constraint(g, t2, SLte, t1);
+        add_constraint(g, z, ULt, term);
+        // in the case of an array, we know the bound exactly
+        if (Tcutil::is_array_type(t)) {
+          add_constraint(g, t1, ULte, t2);
+          add_constraint(g, t1, SLte, t2);
+        }
+      }
+    }
+    switch (Absyn::compress(t)) {
+      case &Absyn::AppType(&Absyn::IntCon(Absyn::Unsigned, _), _):
+        add_constraint(g, z, ULte, term);
+        break;
+      case &Absyn::AppType(&Absyn::TagCon, &List{v, _}):
+        switch (Absyn::compress(v)) {
+          case &Absyn::ValueofType(e):
+            let c = cnst(e);
+            add_eq(g, term, c);
+            break;
+          case v2:
+            let c = cnst(Absyn::valueof_exp(v2, 0));
+            add_eq(g, term, c);
+            break;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+// Given a term, look up its row and if not found, then add the term
+// to the graph.
+static node_t @term2node(graph_t @`r g, term_t t) {
+  // first see if we can find it directly.
+  let nopt = Hashtable::lookup_ptr_opt(g->map, t);
+  if (nopt != NULL)
+    return *nopt;
+  // couldn't find it -- insert it...but only if it's not too large.
+  if (term_size(t) > Flags::max_vc_term_size)
+    t = fresh_var(NULL, get_term_type(t));
+  node_t *@ `H +`r prev = &g->rows;
+  for (let r = g->rows; r != NULL; r = r->next) {
+    //++count;
+    // if (count > max_lookup) max_lookup = count;
+    node_t @n = (node_t @)r;
+    let rep   = n->rep;
+    let c     = termcmp(t, rep);
+    if (c > 1)
+      break;
+    if (c == 0) {
+      Hashtable::insert(g->map, t, n);
+      return n;
+    }
+    prev = &n->next;
+  }
+  node_t @n;
+  switch (t) {
+    case &Binop(Absyn::Plus, t1, &Uint(c2, _), _):
+      n = new Node{*prev, t, false, false, NULL, NULL, 0, 0, infinity};
+      break;
+    default:
+      n = new Node{*prev, t, true, true, NULL, NULL, 0, 0, infinity};
+      break;
+  }
+  Hashtable::insert(g->map, t, n);
+  *prev = n;
+  add_type_info(g, t);
+  return n;
+}
+
+// Given a pair of nodes, look up their distance (if any) -- return
+// NULL if no distance is found.  Special case when source and target
+// are the same -- we always return a distance of zero.  Care should
+// be taken not to update the zero!
+static dist_length_t *lookup_dist(node_t @`H source, node_t @`H target, bool is_signed) {
+  static dist_length_t zero = (dist_length_t)0;
+  if (source == target)
+    return &zero;
+  distance_t *ds = is_signed ? source->signed_distances : source->unsigned_distances;
+  for (; ds != NULL; ds = ds->next)
+    if (ds->target == target)
+      return &ds->dist;
+  return NULL;
+}
+
+// returns true iff t --0--> r and r --0--> t
+// or else          r --c--> zero and zero --(-c)--> r and
+//                  t --c--> zero and zero --(-c)--> t and
+static bool eq_nodes(node_t @`H r, node_t @`H t, bool is_signed) {
+  if (r == t)
+    return true;
+  let rt_dist = lookup_dist(r, t, is_signed);
+  let tr_dist = lookup_dist(t, r, is_signed);
+  return (rt_dist != NULL && *rt_dist == (dist_length_t)0 && tr_dist != NULL &&
+          *tr_dist == (dist_length_t)0);
+}
+
+static bool equal_nodes(node_t @`H s, node_t @`H r) {
+  return eq_nodes(s, r, false) || eq_nodes(s, r, true);
+}
+
+static bool equal_terms(graph_t @g, term_t t1, term_t t2) {
+  if (t1 == t2)
+    return true;
+  let $(ok1, c1, _) = subst_term_with_const(g, t1);
+  let $(ok2, c2, _) = subst_term_with_const(g, t2);
+  if (ok1 && ok2 && c1 == c2)
+    return true;
+  let n1 = term2node(g, t1);
+  let n2 = term2node(g, t2);
+  if (equal_nodes(n1, n2))
+    return true;
+  switch ($(t1, t2)) {
+    case $(&Unop(p11, t11, _), &Unop(p21, t21, _)) && p11 == p21:
+      return equal_terms(g, t11, t21);
+    case $(&Binop(p11, t11, t12, _), &Binop(p21, t21, t22, _)) && p11 == p21:
+      return equal_terms(g, t11, t21) && equal_terms(g, t12, t22);
+    case $(&Cast(tp1, t11), &Cast(tp2, t21)):
+      return (Tcutil::typecmp(tp1, tp2) == 0) && equal_terms(g, t11, t21);
+    case $(&Select(t11, t12, _), &Select(t21, t22, _)):
+      return equal_terms(g, t11, t21) && equal_terms(g, t12, t22);
+    case $(&Update(t11, t12, t13), &Update(t21, t22, t23)):
+      return equal_terms(g, t11, t21) && equal_terms(g, t12, t22) && equal_terms(g, t13, t23);
+    case $(&Proj(t1, i1, _), &Proj(t2, i2, _)):
+      return (i1 == i2) && equal_terms(g, t1, t2);
+    case $(&AggrUpdate(t1, i1, v1), &AggrUpdate(t2, i2, v2)):
+      return (i1 == i2) && equal_terms(g, t1, t2) && equal_terms(g, v1, v2);
+    case $(&Aggr(is_union1, tag1, ts1, _), &Aggr(is_union2, tag2, ts2, _)):
+      for (; ts1 != NULL && ts2 != NULL; ts1 = ts1->tl, ts2 = ts2->tl)
+        if (!equal_terms(g, ts1->hd, ts2->hd))
+          return false;
+      return (tag1 == tag2 && is_union1 == is_union2);
+    case $(&Tagof(t1), &Tagof(t2)):
+      return equal_terms(g, t1, t2);
+    default:
+      return false;
+  }
+  return false;
+}
+
+// Append two lists of graphs, representing a disjunction
+static graph_t *graph_append(graph_t *`H g1, graph_t *`H g2) {
+  if (g1 == NULL)
+    return g2;
+  if (g2 == NULL)
+    return g1;
+  graph_t @p = g1;
+  for (let x = p->next; x != NULL; p = x, x = p->next) /* skip */
+    ;
+  p->next = g2;
+  return g1;
+}
+
+// checking if the sum or difference of two signed integers overflows
+static inline $(bool, int) is_signed_int_overflow(int c1, int c2) {
+  if (c2 < 0) {
+    if (c1 < INT_MIN - c2) {
+      return $(true, -1);  // an underflow
+    }
+  } else {
+    if (c1 > INT_MAX - c2) {
+      return $(true, 1);  // an overflow
+    }
+  }
+
+  return $(false, c1 + c2);  // no overflow
+}
+
+// checking if c1+c2-c3 overflows
+// this is used in johnson algorithm to readjust the weight so that the graph
+// is nonnegative
+// it is also used when we finished johnson algorithm and recover the weight
+// back to original.
+static inline $(bool, int) is_signed_int_plusminus_overflow(int c1, int c2, int c3) {
+  // c2 and c3 have the same sign (c2-c3) won't overflow
+  if (c2 >= 0 && c3 >= 0 || c2 < 0 && c3 <= 0)
+    return is_signed_int_overflow(c1, c2 - c3);
+  // c1 and c3 have the same sign (c1-c3) won't overflow
+  if (c1 >= 0 && c3 >= 0 || c1 < 0 && c3 <= 0)
+    return is_signed_int_overflow(c2, c1 - c3);
+  // both c1 and c2 have the same sign and is different from c3
+
+  // c3<0 then c1,c2>=0, c1+c2-c3 definitely overflow
+  if (c3 == INT_MIN)
+    return $(true, 1l);  // overflow happens
+  // now c1,c2,-c3 have the same sign
+  let $(flag, sum) = is_signed_int_overflow(c1, c2);
+  if (flag)
+    return $(true, sum);  // overflow or underflow happens
+  else
+    return is_signed_int_overflow(sum, (-c3));
+}
+
+// checking if the sum or difference of two signed longlong overflowed
+// assuming size of long long is 64, assumming the highest bit
+// as the sign bit.
+static inline $(bool, signed long long)
+    is_signed_longlong_overflow(signed long long c1, signed long long c2) {
+  if (c2 < 0) {
+    if (c1 < LLONG_MIN - c2) {
+      return $(true, -1);  // an underflow
+    }
+  } else {
+    if (c1 > LLONG_MAX - c2) {
+      return $(true, 1);  // an overflow
+    }
+  }
+
+  return $(false, c1 + c2);  // no overflow
+}
+
+// checking if c1+c2-c3 overflows
+// this is used in johnson algorithm to readjust the weight so that the graph
+// is nonnegative
+// it is also used when we finished johnson algorithm and recover the weight
+// back to original.
+static inline $(bool, signed long long)
+    is_signed_longlong_plusminus_overflow(signed long long c1, signed long long c2,
+                                          signed long long c3) {
+  // c2 and c3 have the same sign (c2-c3) won't overflow
+  if (c2 >= 0 && c3 >= 0 || c2 <= 0 && c3 <= 0)
+    return is_signed_longlong_overflow(c1, c2 - c3);
+  // c1 and c3 have the same sign (c1-c3) won't overflow
+  if (c1 >= 0 && c3 >= 0 || c1 <= 0 && c3 <= 0)
+    return is_signed_longlong_overflow(c2, c1 - c3);
+  // both c1 and c2 have the same sign and is different from c3
+
+  // c3<0 then c1,c2>=0, c1+c2-c3 definitely overflow
+  if (c3 == LLONG_MIN)
+    return $(true, 1l);  // overflow happens
+  // now c1,c2,-c3 have the same sign
+  let $(flag, sum) = is_signed_longlong_overflow(c1, c2);
+  if (flag)
+    return $(true, sum);  // overflow or underflow happens
+  else
+    return is_signed_longlong_overflow(sum, (-c3));
+}
+// assumes source and target do not have a distance between them in the
+// graph.  inserts a new distance reflecting source - target <= d.
+static void new_distance(node_t @`H source, node_t @`H target, bool is_signed, dist_length_t d) {
+  let dist = new Distance{NULL, target, d};
+  if (is_signed) {
+    dist->next               = source->signed_distances;
+    source->signed_distances = dist;
+  } else {
+    dist->next                 = source->unsigned_distances;
+    source->unsigned_distances = dist;
+  }
+}
+
+static inline void set_dist(graph_t @g, node_t @`H i, node_t @`H j, dist_length_t dist,
+                            bool is_signed) {
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "adding %s dist: %s --> %s (%d)\n", is_signed ? "signed" : "unsigned",
+          term2string(i->rep), term2string(j->rep), dist);
+#endif
+  // equivalent terms are always at distance 0.
+  if (i == j) {
+    if (dist < (dist_length_t)0)
+      throw(&inconsistent);
+    else
+      return;
+  }
+  let ij_dist = lookup_dist(i, j, is_signed);
+  // if we already have a shorter path, then this constraint is redundant
+  // otherwise, we update the weight for this edge if the edge existed
+  // or add this new edge if the edge did not exist
+  // we also set a mark saying that the graph changed
+  // testing if the new edge weight will cause a negative cycle
+  if (ij_dist != NULL) {
+    if (*ij_dist < dist)
+      return;
+    *ij_dist = dist;
+  } else {
+    new_distance(i, j, is_signed, dist);
+  }
+  g->changed = true;
+  // we are adding a shorter edge from i to j, now get the distance
+  // from j to i and see if two distances add up to <0. be aware of
+  // overflow when you add up two distances.
+  let ji_dist = lookup_dist(j, i, is_signed);
+  if (ji_dist != NULL) {
+    let $(overflow, sum) = is_signed_int_overflow(*ji_dist, dist);
+    if (sum < 0) {
+#ifdef PROVER_DEBUG
+      fprintf(stderr, "inconsistency found in set_dist\n");
+#endif
+      throw &inconsistent;
+    }
+  }
+  return;
+}
+
+static int num_of_nodes(graph_t @g) {
+  int n = 0;
+  for (let node = g->rows; node != NULL; node = node->next) {
+    n++;
+  }
+  return n;
+}
+
+// Given a graph throws Inconsistent when
+// the algorithm detects a negative weight cycle.
+// the idea is to use the bellman-ford algorithm for single-source
+// shortest paths.
+// We add an extra node S to the graph, and add edges with weight 0
+// from S to all the nodes in the graph.  Then we compute the
+// shortest path from S to all the nodes in the graph,
+// If there is a negative cycle in the graph, it should be reachable
+// from S and bellman-ford algorithm will be able to detect it
+static void bellman_ford(int dummy, graph_t @g) {
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "bellman-ford algorithm\n");
+#endif
+  int n = num_of_nodes(g);
+  // initialize the path weight from the added source (S)
+  for (let node = g->rows; node != NULL; node = node->next) {
+    node->signeddistFromS   = 0;
+    node->unsigneddistFromS = 0;
+  }
+
+  // so the number of elements in the graph is n;
+  // we are using bellman_ford algorithm
+  for (let i = 0; i < n; i++) {
+    // the inner two loops traverse all the edges in the graph
+    for (let node = g->rows; node != NULL; node = node->next) {
+      dist_length_t du_unsigned = node->unsigneddistFromS;
+      for (let dists = node->unsigned_distances; dists != NULL; dists = dists->next) {
+        dist_length_t uv_unsigned = dists->dist;
+        dist_length_t dv_unsigned = dists->target->unsigneddistFromS;
+        // dv_unsigned is already the smallest we can keep track of,
+        // so we won't make any progress here.
+        if (dv_unsigned == MIN_DIST)
+          continue;
+        let $(overflow, sum) = is_signed_int_overflow(du_unsigned, uv_unsigned);
+        // no overflow, and du+uv < dv, relax dv
+        if (!overflow && sum < dv_unsigned)
+          dists->target->unsigneddistFromS = sum;
+        // underflow happened, du + uv <= MIN_DIST,
+        if (overflow && sum < 0)
+          dists->target->unsigneddistFromS = MIN_DIST;
+      }
+      dist_length_t du_signed = node->signeddistFromS;
+      for (let dists = node->signed_distances; dists != NULL; dists = dists->next) {
+        dist_length_t uv_signed = dists->dist;
+        dist_length_t dv_signed = dists->target->signeddistFromS;
+        // dv_signed is already the smallest we can keep track of,
+        // so we won't make any progress here.
+        if (dv_signed == MIN_DIST)
+          continue;
+        let $(overflow, sum) = is_signed_int_overflow(du_signed, uv_signed);
+        // no overflow, and du+uv < dv, relax dv
+        if (!overflow && sum < dv_signed)
+          dists->target->signeddistFromS = sum;
+        // underflow happened
+        if (overflow && sum < 0)
+          dists->target->signeddistFromS = MIN_DIST;
+      }
+    }
+  }
+  // now we have computed the shortest path from S to u
+  // in the graph with at most n+1 nodes
+  // if this is still not the shortest path from S to u
+  // then there is a negative cycle reachable from S
+  for (let node = g->rows; node != NULL; node = node->next) {
+    dist_length_t du_unsigned = node->unsigneddistFromS;
+    for (let dists = node->unsigned_distances; dists != NULL; dists = dists->next) {
+      dist_length_t uv_unsigned = dists->dist;
+      dist_length_t dv_unsigned = dists->target->unsigneddistFromS;
+      // dv_unsigned is already the smallest we can keep track of,
+      // so we do not conclude inconsistency here.
+      if (dv_unsigned == MIN_DIST)
+        continue;
+      let $(overflow, sum) = is_signed_int_overflow(du_unsigned, uv_unsigned);
+      // there is a shorter path
+      if (!overflow && sum < dv_unsigned || overflow && sum < 0) {
+#ifdef PROVER_DEBUG
+        fprintf(stderr, "inconsistency found in bellman-ford\n");
+#endif
+        throw &inconsistent;
+      }
+    }
+    dist_length_t du_signed = node->signeddistFromS;
+    for (let dists = node->signed_distances; dists != NULL; dists = dists->next) {
+      dist_length_t uv_signed = dists->dist;
+      dist_length_t dv_signed = dists->target->signeddistFromS;
+      // dv_signed is already the smallest we can keep track of,
+      // so we do not conclude inconsistency here.
+      if (dv_signed == MIN_DIST)
+        continue;
+      let $(overflow, sum) = is_signed_int_overflow(du_signed, uv_signed);
+      if (!overflow && sum < dv_signed || overflow && sum < 0) {
+#ifdef PROVER_DEBUG
+        fprintf(stderr, "inconsistency found in bellman-ford\n");
+#endif
+        throw &inconsistent;
+      }
+    }
+  }
+  return;
+}
+
+/* TODO:
+
+Get rid of current ShortestPathInfo.
+
+We want two queues, current and shortest, corresponding to the
+two states that we have now.  So add to each node a pair of queue
+links, a current distance value, and a flag indicating which queue if
+any the node is in.
+
+This avoids allocating the list cells (but makes nodes bigger) and
+avoids calling initialize_dist_set.  The latter is true because
+when we are done, we can clear the flags of everything in the
+shortest queue (instead of all of the nodes in the graph.)
+By using two links for the queue, we can easily delete the minimum
+without re-traversing the current queue.  Might be able to get
+rid of flag by cleverly encoding state in two queue pointers:
+both NULL, it's infinite.  both set, it's current.  one set and
+it's shortest.  Then we're not really growing nodes at all...
+
+The biggest problem with this is that extract_min is still linear
+in the size of the current queue.  We need a data structure where
+we can delete the minimum, delete a particular node, and insert
+a node.  Fibonacci heaps would work...
+*/
+
+// find the node in the list q with the smallest shortest distance, remove
+// it from the queue and return the node.
+// returns NULL when the queue is empty.
+static node_t *extract_min(list_t<node_t @`H,`H> @q) {
+  let min = *q;
+  if (min == NULL)
+    return NULL;
+  let minprev = NULL;
+  let d       = min->hd->shortest_path_info.Current;
+  let xprev   = min;
+  for (let x = min->tl; x != NULL; x = x->tl) {
+    let n = x->hd;
+    switch (n->shortest_path_info) {
+      case {.Current = dn}:
+        if (dn < d) {
+          min     = x;
+          d       = dn;
+          minprev = xprev;
+        }
+        break;
+      default:
+        Warn::impos("pratt_prover::extract_min!");
+    }
+    xprev = x;
+  }
+  // now delete min from *q
+  if (minprev == NULL) {
+    *q = min->tl;
+    return min->hd;
+  } else {
+    minprev->tl = min->tl;
+    return min->hd;
+  }
+}
+
+// update shortest paths for all nodes accessible from u -- place
+// these nodes in q to be processed later.
+static void relaxation(node_t @u, list_t<node_t @`H,`H> @q, bool is_signed) {
+  distance_t *dists;
+  dist_length_t su;
+  let su = u->shortest_path_info.Shortest;
+  if (is_signed)
+    dists = u->signed_distances;
+  else
+    dists = u->unsigned_distances;
+  for (; dists != NULL; dists = dists->next) {
+    switch (dists->target->shortest_path_info) {
+      case {.Shortest = _}:
+        break;  // already has the final shortest path, no action
+      case {.Current = sv}:
+        // should already be in the queue
+        dist_length_t uv     = dists->dist;
+        let $(overflow, sum) = is_signed_int_overflow(su, uv);
+        if (!overflow && sum < sv)
+          dists->target->shortest_path_info = ShortestPathInfo{.Current = sum};
+        break;
+      case {.Infinity = _}:
+        dist_length_t uv     = dists->dist;
+        let $(overflow, sum) = is_signed_int_overflow(su, uv);
+        if (!overflow) {
+          // add the node to the queue
+          *q                                = new List{dists->target, *q};
+          dists->target->shortest_path_info = ShortestPathInfo{.Current = sum};
+        }
+        break;
+    }
+  }
+  return;
+}
+
+// we finished computing the shortest distance from s to all nodes,
+// d(s,v) is stored in v->shortest_path_info
+// now we put this information into the s->dist
+static void set_shortest_dist_from_s(node_t @`H s, graph_t @`H g, bool is_signed) {
+  for (let node = g->rows; node != NULL; node = node->next) {
+    switch (node->shortest_path_info) {
+      case {.Shortest = d}:
+        set_dist(g, s, node, d, is_signed);
+        node->shortest_path_info = infinity;
+        break;
+      default:
+        break;
+    }
+  }
+}
+// compute single-source shortest path from s to
+// all nodes in a graph g with no negative weight edges
+static void dijkstra(node_t @`H s, graph_t @`H g) {
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "dijkstra algorithm\n");
+#endif
+  // use a priority q to hold the nodes that need to be processed
+  list_t<node_t @> q = NULL;
+  // first compute the shortest unsigned distance from s to all other vertices
+  node_t *current_shortest_node = s;
+  s->shortest_path_info         = ShortestPathInfo{.Current = 0};
+  do {
+    switch (current_shortest_node->shortest_path_info) {
+      case {.Current = d}:
+        current_shortest_node->shortest_path_info.Shortest = d;
+        break;
+      default:
+        Warn::impos("pratt_prover oops -- node is not current!");
+    }
+    relaxation(current_shortest_node, &q, false);
+    current_shortest_node = extract_min(&q);
+  } while (current_shortest_node != NULL);
+  // note:  resets all nodes to have infinity for distance
+  set_shortest_dist_from_s(s, g, false);
+
+  // then compute the shortest signed distance from s to all other vertices
+  current_shortest_node = s;
+  s->shortest_path_info = ShortestPathInfo{.Current = 0};
+  do {
+    switch (current_shortest_node->shortest_path_info) {
+      case {.Current = d}:
+        current_shortest_node->shortest_path_info.Shortest = d;
+        break;
+      default:
+        Warn::impos("pratt_prover oops -- node is not current!");
+    }
+    relaxation(current_shortest_node, &q, true);
+    current_shortest_node = extract_min(&q);
+  } while (current_shortest_node != NULL);
+  // note: resets all nodes to have infinity for distance
+  set_shortest_dist_from_s(s, g, true);
+  return;
+}
+
+// compute all-pair shortest paths for a graph with negative weight
+// 1) calls bellman-ford to see if there is any negative cycle
+// 2) change the weight of all edges so that they are nonegative
+// 3) calls dijkstra for each vertex to compute all-pair shortest paths
+// 4) change the weight back so that the represent the original
+//    weight value
+// see Corman90 26.3 Johnson's algorithm
+static void johnson(int dummy, graph_t @`H g) {
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "johnson algorithm\n");
+#endif
+  // there is no new edges added to the graph since
+  // the last shortest path computation
+  if (!g->changed)
+    return;
+    // bellman ford to test if there is any negative weight cycle
+    // could really omit this step because we've already run bellman_ford before
+    // calling johnson
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "******************* run bellman_ford****************\n");
+  print_graph(g);
+#endif
+  bellman_ford(0, g);
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "******************* done bellman_ford****************\n");
+  print_graph(g);
+#endif
+  // no inconsistency thrown so there is no negative weight cycle
+  // reweighs all the edges in the graph to make their weight nonnegative
+  for (let node = g->rows; node != NULL; node = node->next) {
+    dist_length_t du_unsigned = node->unsigneddistFromS;
+    distance_t *pre_dists, *dists;
+    for (pre_dists = NULL, dists = node->unsigned_distances; dists != NULL;
+         pre_dists = dists, dists = dists->next) {
+      dist_length_t uv_unsigned = dists->dist;
+      dist_length_t dv_unsigned = dists->target->unsigneddistFromS;
+      // since after bellmanford, dx_unsigned is the shortest path,
+      // so uv_unsigned + du_unsigned >= dv_unsigned
+      // this ensures the new weight to be non negative
+      let $(overflow, sum) =
+          is_signed_int_plusminus_overflow(uv_unsigned, du_unsigned, dv_unsigned);
+      if (!overflow)
+        dists->dist = sum;
+      else {
+        // the weight is too big to be represented in dist_length_t,
+        // we have to remove the edge.
+        if (pre_dists == NULL)
+          node->unsigned_distances = dists->next;
+        else
+          pre_dists->next = dists->next;
+      }
+    }
+    dist_length_t du_signed = node->signeddistFromS;
+    for (pre_dists = NULL, dists = node->signed_distances; dists != NULL;
+         pre_dists = dists, dists = dists->next) {
+      dist_length_t uv_signed = dists->dist;
+      dist_length_t dv_signed = dists->target->signeddistFromS;
+      // same argument as for the signed weight
+      let $(overflow, sum) = is_signed_int_plusminus_overflow(uv_signed, du_signed, dv_signed);
+      if (!overflow)
+        dists->dist = sum;
+      else {  // overflow happens, the weight is too big
+        dists->dist = 0;
+        if (pre_dists == NULL)
+          node->signed_distances = dists->next;
+        else
+          pre_dists->next = dists->next;
+      }
+    }
+  }
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "*************adjusted weight****************\n");
+  print_graphs(g);
+#endif
+
+  // now for each vertex, we run dijkstra to calculate shortest path
+  // this is OK because now all weights are nonnegative
+  for (let node = g->rows; node != NULL; node = node->next) {
+    dijkstra(node, g);
+  }
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "*************done dijkstra****************\n");
+  print_graphs(g);
+#endif
+
+  // now recover the original weight (possibily negative) for
+  // distance between two vertices
+  for (let node = g->rows; node != NULL; node = node->next) {
+    dist_length_t du_unsigned = node->unsigneddistFromS;
+    distance_t *pre_dists, *dists;
+    for (pre_dists = NULL, dists = node->unsigned_distances; dists != NULL;
+         pre_dists = dists, dists = dists->next) {
+      dist_length_t uv_unsigned = dists->dist;
+      dist_length_t dv_unsigned = dists->target->unsigneddistFromS;
+      let $(overflow, sum) =
+          is_signed_int_plusminus_overflow(uv_unsigned, dv_unsigned, du_unsigned);
+      if (!overflow)
+        dists->dist = sum;
+      else if (sum > 0) {
+        // we have to remove the edge.
+        if (pre_dists == NULL)
+          node->unsigned_distances = dists->next;
+        else
+          pre_dists->next = dists->next;
+      } else {
+        // underflow happens
+        dists->dist = MIN_DIST;
+      }
+    }
+    dist_length_t du_signed = node->signeddistFromS;
+    for (pre_dists = NULL, dists = node->signed_distances; dists != NULL;
+         pre_dists = dists, dists = dists->next) {
+      dist_length_t uv_signed = dists->dist;
+      dist_length_t dv_signed = dists->target->signeddistFromS;
+      // same argument as for the signed weight
+      let $(overflow, sum) = is_signed_int_plusminus_overflow(uv_signed, dv_signed, du_signed);
+      if (!overflow)
+        dists->dist = sum;
+      else if (sum > 0) {
+        // overflow happened
+        // we have to remove the edge.
+        if (pre_dists == NULL)
+          node->unsigned_distances = dists->next;
+        else
+          pre_dists->next = dists->next;
+      } else {
+        // underflow happens
+        dists->dist = MIN_DIST;
+      }
+    }
+  }
+
+#ifdef PROVER_DEBUG
+  fprintf(stderr, "no inconsistency from johnson\n");
+#endif
+  return;
+}
+// same as above but maps terms to nodes first.
+static void set_distance(graph_t @g, term_t it, term_t jt, dist_length_t dist, bool is_signed) {
+  let i = term2node(g, it);
+  let j = term2node(g, jt);
+  set_dist(g, i, j, dist, is_signed);
+}
+
+// Used in copy_graphs below to copy a set of edges from one graph to another.
+static distance_t *copy_distances(graph_t @newg, distance_t *`r _ds) {
+  distance_t *res       = NULL;
+  distance_t *`r +`H ds = _ds;
+  for (; ds != NULL; ds = ds->next) {
+    let t = ds->target->rep;
+    res   = new Distance{res, term2node(newg, t), ds->dist};
+  }
+  return res;
+}
+
+// Reverse a list of nodes in place.
+static node_t *revnodes(node_t *`H n) {
+  if (n == NULL)
+    return NULL;
+  node_t *first  = n;
+  node_t *second = n->next;
+  n->next        = NULL;
+  while (second != NULL) {
+    node_t *temp = second->next;
+    second->next = first;
+    first        = second;
+    second       = temp;
+  }
+  return first;
+}
+
+// Produce a copy of the list of graphs.  Used to checkpoint the
+// state of the prover when we hit a disjunction.
+static graph_t *copy_graphs(graph_t *`r _gopt) {
+  graph_t *res         = NULL;
+  graph_t *`r +`H gopt = _gopt;
+  for (; gopt != NULL; gopt = gopt->next) {
+    ++graphs_copied;
+    let g = (graph_t @)gopt;
+    // let b = Hashtable::num_buckets(g->map);
+    graph_t @newg =
+        new Graph{.next = res, .rows = NULL, .map = empty_map(17), .changed = g->changed};
+    res = newg;
+    // insert a row for each term
+    node_t *newrs = NULL;
+    for (let rs = g->rows; rs != NULL; rs = rs->next) {
+      newrs = new Node{newrs, rs->rep, rs->broken_as_signed, rs->broken_as_unsigned, NULL, NULL, 0,
+                       0,     infinity};
+      Hashtable::insert(newg->map, rs->rep, newrs);
+    }
+    newrs      = revnodes(newrs);
+    newg->rows = newrs;
+    // process each row again adding in distance edges
+    for (let rs = g->rows; rs != NULL; rs = rs->next, newrs = newrs->next) {
+      newrs->unsigned_distances = copy_distances(newg, rs->unsigned_distances);
+      newrs->signed_distances   = copy_distances(newg, rs->signed_distances);
+    }
+  }
+  return res;
+}
+
+// used to control iteration
+static bool graphs_change = false;
+
+// Applies f to each of the graphs in gs.  If f throws Inconsistent,
+// then the graph is removed from the list gs (imperatively).
+// Returns the resulting list of graphs.
+static graph_t *app_graphs(void(@f)(`env, graph_t @`H), `env e, graph_t *`H gs) {
+  graph_t *prev = NULL;
+  for (let g = gs; g != NULL; g = g->next) {
+    try {
+      f(e, g);
+      prev = g;
+    } catch {
+      case &Inconsistent:
+        graphs_change = true;
+        if (prev == NULL) {
+          gs = g->next;
+        } else {
+          prev->next = g->next;
+        }
+        break;
+    }
+  }
+  return gs;
+}
+
+static bool is_relation(Absyn::primop_t p) {
+  switch (p) {
+    case Absyn::Gt:
+    case Absyn::Lt:
+    case Absyn::Gte:
+    case Absyn::Lte:
+    case Absyn::UGt:
+    case Absyn::ULt:
+    case Absyn::UGte:
+    case Absyn::ULte:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static unsigned eval_binop(Absyn::primop_t p, unsigned c1, unsigned c2) {
+  // wangyl: FIX??  here we are assuming that all operations are performed
+  // on 32 bit words, and their type (whether sighed/unsigned) would not
+  // change the result of the operation.
+  switch (p) {
+    case Absyn::Plus:
+      return c1 + c2;
+    case Absyn::Times:
+      return c1 * c2;
+    case Absyn::Minus:
+      return c1 - c2;
+    case Absyn::UDiv:
+      return c1 / c2; /* FIX: c2 == 0? */
+    case Absyn::UMod:
+      return c1 % c2; /* FIX: c2 == 0? */
+    case Absyn::Div:
+      return (int)c1 / (int)c2;
+    case Absyn::Mod:
+      return (int)c1 % (int)c2;
+    case Absyn::Eq:
+      return c1 == c2;
+    case Absyn::Neq:
+      return c1 != c2;
+    case Absyn::Bitand:
+      return c1 & c2;
+    case Absyn::Bitor:
+      return c1 | c2;
+    case Absyn::Bitxor:
+      return c1 ^ c2;
+    case Absyn::Bitlshift:
+      return c1 << c2;
+    case Absyn::Bitlrshift:
+      return c1 >> c2;
+    default:
+      Warn::impos(aprintf("Invalid binop %s during constant evaluation", Absynpp::prim2string(p)));
+  }
+  return 0;
+}
+
+static unsigned eval_unop(Absyn::primop_t p, unsigned c) {
+  switch (p) {
+    case Absyn::Not:
+      return !c;
+    case Absyn::Bitnot:
+      return ~c;
+    case Absyn::Plus:
+      return c;
+    case Absyn::Minus:
+      return -c;
+    default:
+      Warn::impos(aprintf("Invalid unop %s during constant evaluation", Absynpp::prim2string(p)));
+  }
+  return 0;
+}
+
+static $(bool, unsigned int) eq_node_const(node_t @`H n, node_t @`H z, bool is_signed) {
+  let n2z = lookup_dist(n, z, is_signed);
+  let z2n = lookup_dist(z, n, is_signed);
+  // dist_length_t -> int conversion should be safe here because a term's signed
+  // value should be between [INT_MIN, INT_MAX] and a term's unsigned value should
+  // be between [0,UINT_MAX] all of which could be presented by an unsigned int.
+  if (n2z != NULL && z2n != NULL && -(*z2n) == *n2z)
+    return $(true, (unsigned int)*n2z);
+  return $(false, 0xBAD);
+}
+
+// return $(true,c) if n -- c --> z and z -- (-c) --> n
+// where either both edges are unsigned or both are signed
+static $(bool, unsigned int) equal_node_const(node_t @`H n, node_t @`H z) {
+  let $(ok, c) = eq_node_const(n, z, true);
+  if (!ok)
+    return eq_node_const(n, z, false);
+  else
+    return $(ok, c);
+}
+
+// when ok, the term t is equal to the value i in the graph g.
+static $(bool, unsigned, term_opt_t) subst_term_with_const(graph_t @g, term_t t) {
+  term_opt_t newterm = NULL;
+  switch (t) {
+    case &Uint(c, _):
+      return $(true, c, NULL);
+    case &Binop(p, t1, t2, topt):
+      // wangyl: for relations, since we are not keeping track of
+      // whether we are comparing between signed or unsigned here
+      // so we can't actually evaluate it correctly
+      if (is_relation(p))
+        break;
+      let $(ok1, c1, nt1) = subst_term_with_const(g, t1);
+      let $(ok2, c2, nt2) = subst_term_with_const(g, t2);
+      // t1(or t2) was partially substituted with constant
+      // and is equivalent to a new term.
+      if (nt1 != NULL) {
+        newterm = binop(p, nt1, t2, topt);
+        add_eq(g, t, newterm);
+      }
+      if (nt2 != NULL) {
+        newterm = binop(p, t1, nt2, topt);
+        add_eq(g, t, newterm);
+      }
+      if (ok1) {
+        newterm = binop(p, uint(c1), t2, topt);
+        add_eq(g, t, newterm);
+      }
+      if (ok2) {
+        newterm = binop(p, t1, uint(c2), topt);
+        add_eq(g, t, newterm);
+      }
+      if (ok1 && ok2) {
+        return $(true, eval_binop(p, c1, c2), NULL);
+      }
+      break;
+    case &Unop(p, t1, topt):
+      if (p == Absyn::Numelts)
+        break;
+      let $(ok1, c1, _) = subst_term_with_const(g, t1);
+      if (ok1) {
+        add_eq(g, t, uint(eval_unop(p, c1)));
+        return $(true, eval_unop(p, c1), NULL);
+      }
+      break;
+    default:
+      break;
+  }
+  if (t == newterm)
+    newterm = NULL;
+  let n_node   = term2node(g, t);
+  let z_node   = term2node(g, zero());
+  let $(ok, c) = equal_node_const(n_node, z_node);
+  if (ok)
+    return $(true, c, newterm);
+  return $(false, 0xbad, newterm);
+}
+
+// Used in substitution closure below.
+// The idea here is that if we can replace t2 by t1, then we might
+// be able to do more reductions.  For now, we only replace variables.
+static inline bool better_term(term_t t1, term_t t2) {
+loop:
+  switch ($(t1, t2)) {
+    // logic variables provide no info -- any term is better.  Pick
+    // some ordering on the variables so that we can break ties.
+    case $(&LogicVar(_, i, _), &LogicVar(_, j, _)):
+      return i < j;
+    case $(_, &LogicVar(...)):
+      return true;
+    case $(&LogicVar(...), _):
+      return false;
+
+    case $(&Uint(_, _), &Uint(_, _)):
+      return false;
+    case $(&Uint(...), _):
+      return true;
+    case $(_, &Uint(...)):
+      return false;
+    // addresses are like constants, so they are better than other terms.
+    case $(&Addr(...), &Addr(...)):
+      return false;
+    case $(&Addr(...), _):
+      return true;
+    case $(_, &Addr(...)):
+      return false;
+    // same with allocation points
+    case $(&Alloc(...), &Alloc(...)):
+      return false;
+    case $(&Alloc(...), _):
+      return true;
+    case $(_, &Alloc(...)):
+      return false;
+    // if the sub-terms are better, then this term is better.
+    case $(&Offsetf(t1a, _, _), &Offsetf(t2a, _, _)):
+      t1 = t1a;
+      t2 = t2a;
+      goto loop;
+    case $(&Offseti(t1a, t1b, _), &Offseti(t2a, t2b, _)):
+      if (!better_term(t1a, t2a))
+        return false;
+      t1 = t1b;
+      t2 = t2b;
+      goto loop;
+    default:
+      return false;
+  }
+}
+
+// returns true if t1 occurs within t2.
+static bool occurs_i(term_t t1, term_t t2, Set::set_t<term_t,`H> @seen) {
+loop:
+  if (t1 == t2)
+    return true;
+  if (Set::member(*seen, t2))
+    return false;
+  *seen = Set::insert(*seen, t2);
+  switch (t2) {
+    case &Unop(_, s, _):
+      t2 = s;
+      goto loop;
+    case &Binop(_, s1, s2, _):
+      if (occurs_i(t1, s1, seen))
+        return true;
+      t2 = s2;
+      goto loop;
+    case &Cast(_, s):
+      t2 = s;
+      goto loop;
+    case &Select(s1, s2, _):
+      if (occurs_i(t1, s1, seen))
+        return true;
+      t2 = s2;
+      goto loop;
+    case &Update(s1, s2, s3):
+      if (occurs_i(t1, s1, seen) || occurs_i(t2, s2, seen))
+        return true;
+      t2 = s3;
+      goto loop;
+    case &Aggr(_, _, ss, _):
+      for (; ss != NULL; ss = ss->tl)
+        if (occurs_i(t1, ss->hd, seen))
+          return true;
+      return false;
+    case &Proj(s, _, _):
+      t2 = s;
+      goto loop;
+    case &AggrUpdate(s1, _, s2):
+      if (occurs_i(t1, s1, seen))
+        return true;
+      t2 = s2;
+      goto loop;
+    case &Addr(_, s, _):
+      t2 = s;
+      goto loop;
+    case &Alloc(_, _, s1, s2, _):
+      if (occurs_i(t1, s1, seen))
+        return true;
+      t2 = s2;
+      goto loop;
+    case &Offsetf(s, _, _):
+      t2 = s;
+      goto loop;
+    case &Offseti(s1, s2, _):
+      if (occurs_i(t1, s1, seen))
+        return true;
+      t2 = s2;
+      goto loop;
+    case &Tagof(s):
+      t2 = s;
+      goto loop;
+    default:
+      return false;
+  }
+}
+
+static bool occurs(term_t t1, term_t t2) {
+  let seen = Set::empty(termcmp);
+  return occurs_i(t1, t2, &seen);
+}
+
+static inline bool is_var_term(term_t t) {
+  switch (t) {
+    case &LogicVar(...):
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Substitute better terms where possible in the graph.  In particular,
+// should replace a variable X with T when we have X==T.  When vars_only
+// is true, only considers substituting for variables (and not larger
+// terms.)
+static void subst_close_graph(bool vars_only, graph_t @g) {
+  // Build a table that maps a term t to the "best" term that it
+  // is equal to.  See above for definition of best.  Then augment
+  // the graph by substituting the best term for t throughout the
+  // graph unless the best term includes the term we're substituting
+  // for (else we get an infinite loop.)
+
+  let z_node      = term2node(g, zero());
+  term_table_t eq = empty_term_table();
+  bool changed    = false;
+  for (let rs = g->rows; rs != NULL; rs = rs->next) {
+    let t1 = rs->rep;
+    if (vars_only && !is_var_term(t1))
+      continue;
+    let best = t1;
+    // see if t1 is equal to some integer
+    let dzero = lookup_dist(rs, z_node, false);
+    let zerod = lookup_dist(z_node, rs, false);
+    if (dzero != NULL && zerod != NULL && *dzero == -(*zerod)) {
+      best = uint((unsigned int)*dzero);
+    } else {
+      dzero = lookup_dist(rs, z_node, true);
+      zerod = lookup_dist(z_node, rs, true);
+      if (dzero != NULL && zerod != NULL && *dzero == -(*zerod)) {
+        best = uint((unsigned int)*dzero);
+      }
+    }
+    // find the "best" term that t1 is equal to.
+    for (let ts = g->rows; ts != NULL; ts = ts->next) {
+      let t2 = ts->rep;
+      if (better_term(t2, best) && eq_nodes(rs, ts, false) && !occurs(best, t2)) {
+        best = t2;
+      }
+    }
+    if (t1 != best) {
+      // apply the substitution to the best term
+      best = subst_table(eq, best);
+      // check that t1 doesn't occur in the best term.  If so, then
+      // map t1 to best in the substitution.
+      if (!occurs(t1, best)) {
+        changed = true;
+#ifdef PROVER_DEBUG
+        fprintf(stderr, "mapping %s to %s\n", term2string(t1), term2string(best));
+#endif  // PROVER_DEBUG
+        Hashtable::insert(eq, t1, best);
+      }
+    }
+  }
+  if (!changed)
+    return;
+  // Now apply the substitution to each term in the graph, adding
+  // appropriate equality constraints.  This will end up adding
+  // new nodes to the graph, from the co-domain of the substitution.
+  // However, the substitution applied to that co-domain should yield
+  // the same term, so we won't loop forever.
+  for (let rs2 = g->rows; rs2 != NULL; rs2 = rs2->next) {
+    let t  = rs2->rep;
+    let t2 = subst_table(eq, t);
+    if (t != t2) {
+      add_eq(g, t, t2);
+    }
+  }
+}
+
+static graph_t *subst_close_graphs(graph_t *`H gs) { return app_graphs(subst_close_graph, 0, gs); }
+
+static bool address_disjoint(graph_t @g, term_t a1, term_t a2);
+
+// Try to prove that two terms are definitely not equal.
+static bool neq_terms(graph_t @g, term_t t1, term_t t2) {
+  switch ($(t1, t2)) {
+    case $(&Uint(i, ...), &Uint(j, ...)):
+      return i != j;
+    case $(t, &Uint(i, ...)):
+      fallthru(i, t);
+    case $(&Uint(i, ...), t):
+      // t < i         or   i < t,        same as
+      // t - 0 < i     or   0 - t < -i,   same as
+      // t - 0 <= i-1  or   0 - t <= -(i+1)
+      let n    = term2node(g, t);
+      let z    = term2node(g, zero());
+      let nzud = lookup_dist(n, z, false);
+      if (i != INT_MIN && nzud != NULL && *nzud < ((dist_length_t)i - 1))
+        return true;
+      let nzsd = lookup_dist(n, z, true);
+      if (i != INT_MIN && nzsd != NULL && *nzsd < ((dist_length_t)(signed)i - 1))
+        return true;
+      let znud = lookup_dist(z, n, false);
+      if (i != INT_MAX && znud != NULL && *znud < -((dist_length_t)i + 1))
+        return true;
+      let znsd = lookup_dist(z, n, true);
+      if (i != INT_MAX && znsd != NULL && *znsd < -((dist_length_t)(signed)i + 1))
+        return true;
+      return false;
+    default:
+      // check that t1 - t2 <= -c  &&  c > 0
+      //    t1 - t2 <= -c  ==>
+      //    t1 <= t2 - c   ==>
+      //    t1 < t2
+      let n1    = term2node(g, t1);
+      let n2    = term2node(g, t2);
+      let n12ud = lookup_dist(n1, n2, false);
+      if (n12ud != NULL && *n12ud < -1)
+        return true;
+      let n21ud = lookup_dist(n2, n1, false);
+      if (n21ud != NULL && *n21ud < -1)
+        return true;
+      let n12sd = lookup_dist(n1, n2, true);
+      if (n12sd != NULL && *n12sd < -1)
+        return true;
+      let n21sd = lookup_dist(n2, n1, true);
+      if (n21sd != NULL && *n21sd < -1)
+        return true;
+      return address_disjoint(g, t1, t2);
+  }
+}
+
+// return true if a1 and a2 represent addresses to non-overlapping
+// regions of memory.  For now, we can only prove this when a1 and a2
+// have distinct roots (addresses of program variables, alloc points)
+// or the same root but different offsets.  This is similar to a
+// function in assndef.cyc with the same name, but it can leverage
+// the graph to prove inequalities.
+static bool address_disjoint(graph_t @g, term_t a1, term_t a2) {
+LOOP:
+  switch ($(a1, a2)) {
+    case $(&Addr(x, _, _), &Addr(y, _, _)):
+      return x != y;
+    case $(&Addr(...), &Alloc(...)):
+      return true;
+    case $(&Alloc(...), &Addr(...)):
+      return true;
+    case $(&Alloc(e1, i1, t1, nv1, _), &Alloc(e2, i2, t2, nv2, _)):
+      return (e1 != e2 || i1 != i2 || neq_terms(g, t1, t2));
+    case $(&Offsetf(t1, i1, _), &Offsetf(t2, i2, _)):
+      if (equal_terms(g, t1, t2) && i1 != i2)
+        return true;
+      a1 = t1;
+      a2 = t2;
+      goto LOOP;
+    case $(&Offsetf(t1, ...), _):
+      a1 = t1;
+      goto LOOP;
+    case $(_, &Offsetf(t2, ...)):
+      a2 = t2;
+      goto LOOP;
+    case $(&Offseti(t1, t2, _), &Offseti(t3, t4, _)):
+      if (equal_terms(g, t1, t3) && neq_terms(g, t2, t4))
+        return true;
+      a1 = t1;
+      a2 = t2;
+      goto LOOP;
+    case $(&Offseti(t1, ...), _):
+      a1 = t1;
+      goto LOOP;
+    case $(_, &Offseti(t2, ...)):
+      a2 = t2;
+      goto LOOP;
+    default:
+      return false;
+  }
+}
+
+// Try to reduce as many terms as possible using the graph to
+// establish [in]equalities.
+static void reduce_terms(int dummy, graph_t @g) {
+  for (let rs = g->rows; rs != NULL; rs = rs->next) {
+    let t = rs->rep;
+    switch (t) {
+      case &Select(&Update(m, a1, v), a2, topt):
+        // select(update(m,a,v,a)) --> v
+        if (equal_terms(g, a1, a2))
+          add_eq(g, t, v);
+        // select(update(m,a1,v),a2) --> select(m,a2) when a1 disjoint a2
+        else if (address_disjoint(g, a1, a2))
+          add_eq(g, t, select(m, a2, topt));
+        // FIX: could search for other Update terms equal to Update(m,a1,v)
+        break;
+      case &Update(&Update(m, a1, v1), a2, v2):
+        // update(update(m,a,v1),a,v2) --> update(m,a,v2)
+        if (equal_terms(g, a1, a2))
+          add_eq(g, t, update(m, a2, v2));
+        // update(update(m,a1,v1),a2,v2) -->
+        //   update(update(m,a2,v2),a1,v1) when a1 disjoint a2 && a1 < a2
+        else if (address_disjoint(g, a1, a2) && termcmp(a1, a2) < 0)
+          add_eq(g, t, update(update(m, a2, v2), a1, v1));
+        // FIX: could search for other Update terms equal to Update(m,a1,v)
+        break;
+      case &Proj(t1, i, topt):
+        // see if we can find an aggregate equal to t1
+        for (let ts = g->rows; ts != NULL; ts = ts->next) {
+          let u = ts->rep;
+          switch (u) {
+            case &Aggr(...):
+              if (eq_nodes(rs, ts, false)) {
+                add_eq(g, t, proj(u, i, topt));
+                goto Found1;
+              }
+              break;
+            default:
+              break;
+          }
+        }
+      Found1:
+        break;
+      case &AggrUpdate(t1, i, t2):
+        // see if we can find an aggregate equal to t1
+        for (let ts = g->rows; ts != NULL; ts = ts->next) {
+          let u = ts->rep;
+          switch (u) {
+            case &Aggr(...):
+              if (eq_nodes(rs, ts, false)) {
+                add_eq(g, t, aggr_update(u, i, t2));
+                goto Found2;
+              }
+              break;
+            default:
+              break;
+          }
+        }
+      Found2:
+        break;
+      case &Tagof(t1):
+        // see if we can find an aggregate equal to t1
+        for (let ts = g->rows; ts != NULL; ts = ts->next) {
+          let u = ts->rep;
+          switch (u) {
+            case &Aggr(...):
+              if (eq_nodes(rs, ts, false)) {
+                add_eq(g, t, tagof_tm(u));
+                goto Found3;
+              }
+              break;
+            default:
+              break;
+          }
+        }
+      Found3:
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+static graph_t *reduce_close_graphs(graph_t *`H gs) { return app_graphs(reduce_terms, 0, gs); }
+
+// find out if s[t] = s[t1+c2] =? s[t1] + c2
+// or if u[t] = u[t1+c2] = u[t1]+c2
+static $(bool, term_t, int) break_term(graph_t @g, term_t t, bool is_signed) {
+  switch (t) {
+    case &Binop(Absyn::Plus, t1, &Uint(c2, _), _):
+      if ((int)c2 >= 0) {
+        if (is_signed) {
+          let dist = lookup_dist(term2node(g, t1), term2node(g, zero()), true);
+          // want to show that s[t1]+c2 not overflowing, i.e., s[t1] <=
+          // INT_MAX-c2
+          if (dist != NULL && *dist <= (dist_length_t)(signed)(INT_MAX - c2)) {
+            return $(true, t1, (int)c2);
+          }
+        } else {
+          // want to show that u[t1]+c2 not overflowing, i.e., u[t1] <=
+          // UINT_MAX-c2 we can't represent UINT_MAX-c2 in int, so approximate it
+          // with INT_MAX FIX : need to relax INT_MAX to UINT_MAX-c2 when
+          // dist_length_t gets bigger
+          let dist = lookup_dist(term2node(g, t1), term2node(g, zero()), false);
+          if (dist != NULL && *dist <= (dist_length_t)INT_MAX) {
+            return $(true, t1, (int)c2);
+          }
+        }
+      } else {  // int(c2) < 0
+        if (is_signed) {
+          // want to show that s[t1]+c2 not underflowing, i.e., 0-s[t1] <=
+          // c2-INT_MIN
+          let dist = lookup_dist(term2node(g, zero()), term2node(g, t1), true);
+          if (dist != NULL && *dist <= (dist_length_t)(signed)(c2 - INT_MIN)) {
+            return $(true, t1, (int)c2);
+          }
+        } else {
+          // want to show that u[t1]+c2 does not underflow, i.e.u[t1] >= -c2
+          let dist = lookup_dist(term2node(g, zero()), term2node(g, t1), false);
+          if (dist != NULL && *dist <= (dist_length_t)(signed)c2) {
+            return $(true, t1, (int)c2);
+          }
+        }
+      }
+      break;
+    default:
+      break;
+  }
+  return $(false, t, 0u);
+}
+
+static void break_term_in_graph(int dummy, graph_t @g) {
+  for (let rs = g->rows; rs != NULL; rs = rs->next) {
+    if (!rs->broken_as_signed) {
+      let $(ok, t1, c1) = break_term(g, rs->rep, true);
+      if (ok) {
+        rs->broken_as_signed = true;
+        set_distance(g, rs->rep, t1, (dist_length_t)c1, true);
+        // FIX : -INT_MIN couldn't be represented right now
+        // but it will be ok when we have a bigger dist_length_t
+        if (c1 != INT_MIN)
+          set_distance(g, t1, rs->rep, -(dist_length_t)c1, true);
+      }
+    }
+    if (!rs->broken_as_unsigned) {
+      let $(ok, t1, c1) = break_term(g, rs->rep, false);
+      if (ok) {
+        rs->broken_as_unsigned = true;
+        set_distance(g, rs->rep, t1, (dist_length_t)c1, false);
+        // FIX : -INT_MIN couldn't be represented right now
+        // but it will be ok when we have a bigger dist_length_t
+        if (c1 != INT_MIN)
+          set_distance(g, t1, rs->rep, -(dist_length_t)c1, false);
+      }
+    }
+    let $(ok, c1, _) = subst_term_with_const(g, rs->rep);
+    // we know that rs->rep == c, we try to solve subpart of rs->rep;
+    if (ok) {
+      switch (rs->rep) {
+        case &Binop(Absyn::Plus, t1, &Uint(c2, _), _):
+          rs->broken_as_signed   = true;
+          rs->broken_as_unsigned = true;
+          add_eq(g, t1, uint(c1 - c2));
+          break;
+        default:
+          break;
+      }
+    }
+  }
+}
+
+static graph_t *break_term_in_graphs(graph_t *`H gs) {
+  return app_graphs(break_term_in_graph, 0, gs);
+}
+
+// given a node t in graph g
+// return -1 if s[t] < 0 or u[t] > INT_MAX
+// return 1 if s[t] >= 0 or u[t] <= INT_MAX
+// return 0 if unknown
+static int range_of_term(graph_t @g, node_t @`H t) {
+  node_t @zero_node = term2node(g, zero());
+  // 0 - u[t] <= INT_MIN, so u[t] > INT_MAX
+  let dist = lookup_dist(zero_node, t, false);
+  if (dist != NULL && *dist <= (dist_length_t)(signed)INT_MIN)
+    return -1;
+  // u[t] - 0 <= INT_MAX, so u[t] <= INT_MAX
+  let dist = lookup_dist(t, zero_node, false);
+  if (dist != NULL && *dist <= (dist_length_t)INT_MAX)
+    return 1;
+  // 0 - s[t] <= 0, so s[t] >= 0
+  let dist = lookup_dist(zero_node, t, true);
+  if (dist != NULL && *dist <= (dist_length_t)0)
+    return 1;
+  // s[t] - 0 <= -1 so s[t] < 0
+  let dist = lookup_dist(t, zero_node, true);
+  if (dist != NULL && *dist <= (dist_length_t)-1)
+    return -1;
+  // don't know enough information to determine t's range
+  return 0;
+}
+
+// if we know that src u<= INT_MAX or src s>= 0
+// and that        tgt u<= INT_MAX or tgt s>= 0
+// then u[src] - u[tgt] <= c if and only if
+//      s[src] - s[tgt] <= c
+// if we know that src u> INT_MAX or src s< 0
+// and that        tgt u> INT_MAX or tgt s< 0
+// then u[src] - u[tgt] <= c if and only if
+//      s[src] - s[tgt] <= c
+static void associate_ud_sd_in_graph(int dummy, graph_t @g) {
+  int range_of_src, range_of_tgt;
+  for (let rs = g->rows; rs != NULL; rs = rs->next) {
+    range_of_src = range_of_term(g, rs);
+    if (range_of_src != 0) {
+      for (let uds = rs->unsigned_distances; uds != NULL; uds = uds->next) {
+        range_of_tgt = range_of_term(g, uds->target);
+        if (range_of_src == range_of_tgt) {
+          set_distance(g, rs->rep, uds->target->rep, uds->dist, true);
+        }
+      }
+      for (let sds = rs->signed_distances; sds != NULL; sds = sds->next) {
+        range_of_tgt = range_of_term(g, sds->target);
+        if (range_of_src == range_of_tgt) {
+          set_distance(g, rs->rep, sds->target->rep, sds->dist, false);
+        }
+      }
+    }
+  }
+  return;
+}
+
+static graph_t *associate_ud_sd_in_graphs(graph_t *`H gs) {
+  return app_graphs(associate_ud_sd_in_graph, 0, gs);
+}
+// convert a primitive assertion to a constraint and add it to the graph.
+// throws &inconsistent if the resulting graph is inconsistent.
+// This does not deal with equality constraints -- those should've already
+// been eliminated.
+static void add_constraint(graph_t @g, term_t t1, prim_reln_t p, term_t t2) {
+  ++constraints_added;
+  switch ($(t1, t2)) {
+    case $(&Uint(c1, _), &Uint(c2, _)):
+      switch (p) {
+        case ULt:
+          if (c1 < c2)
+            return;
+          break;
+        case ULte:
+          if (c1 <= c2)
+            return;
+          break;
+        case SLt:
+          if (((int)c1) < ((int)c2))
+            return;
+          break;
+        case SLte:
+          if (((int)c1) <= ((int)c2))
+            return;
+          break;
+        default:
+          Warn::impos("Vcgen: found bad primop in add_constraint");
+      }
+#ifdef PROVER_DEBUG
+      fprintf(stderr, "inconsistency found in comparing two constants\n");
+#endif  // PROVER_DEBUG
+      throw &inconsistent;
+    case $(_, &Uint(c2, _)):
+      // we have t1 p c2
+      switch (p) {
+        case ULt:
+          // no unsigned integer t could satisfy t u< 0
+          if (c2 == 0) {
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "inconsistency: add constraint x u< 0 \n");
+#endif  // PROVER_DEBUG
+            throw &inconsistent;
+          }
+          c2 = c2 - 1;
+          fallthru;
+        case ULte:
+          // FIX : (unsigned)c2 might not be represented by int
+          // but might be ok when dist_length_t gets bigger
+          if (c2 <= (unsigned)INT_MAX)
+            set_distance(g, t1, zero(), (dist_length_t)(unsigned)c2, false);
+          return;
+        case SLt:
+          // no signed integer t could satisfy t s< INT_MIN
+          if (c2 == INT_MIN) {
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "inconsistency: add constraint x s< INT_MIN \n");
+#endif  // PROVER_DEBUG
+            throw &inconsistent;
+          }
+          c2 = c2 - 1;
+          fallthru;
+        case SLte:
+          // the value of (int)c2 should be representable by an integer.
+          set_distance(g, t1, zero(), (dist_length_t)(signed)c2, true);
+          return;
+        default:
+          Warn::impos("Vcgen: found bad primop in add_constraint");
+      }
+    case $(&Uint(c1, _), _):
+      // we have c1 p t2
+      switch (p) {
+        case ULt:
+          // no unsigned integer t could be greater than the biggest unsigned
+          if (c1 == UINT_MAX) {
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "inconsistency: add constraint UINT_MAX u< x \n");
+#endif  // PROVER_DEBUG
+            throw &inconsistent;
+          }
+          c1 = c1 + 1;
+          fallthru;
+        case ULte:
+          // u[c1] <= u[t2] => 0 - u[t2] <= -u[c1]
+          // 0 - u[t2] <= -u[c1]
+          // FIX: -c1 might not be represented in int
+          // need to be fixed when dist_length_t gets bigger
+          if (c1 > INT_MAX)
+            set_distance(g, zero(), t2, INT_MIN, false);
+          else
+            set_distance(g, zero(), t2, -((dist_length_t)(unsigned)c1), false);
+          return;
+        case SLt:
+          // no signed integer could be greater than the biggest signed int
+          if (c1 == INT_MAX) {
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "inconsistency: add constraint INT_MAX s< x \n");
+#endif  // PROVER_DEBUG
+            throw &inconsistent;
+          }
+          c1 = c1 + 1;
+          fallthru;
+        case SLte:
+          // FIX: -INT_MIN can't be represented by int
+          // need to be fixed when dist_length_t gets bigger
+          if (c1 == INT_MIN)
+            return;
+          return set_distance(g, zero(), t2, -((dist_length_t)(signed)c1), true);
+        default:
+          Warn::impos("Vcgen: found bad primop in add_constraint");
+      }
+    default:
+      break;
+  }
+  // nothing special about the terms -- have to add them as standard
+  // sort of constraints.
+  switch (p) {
+    case ULt:
+      // u[t1] < u[t2] => u[t1] - u[t2] <= -1
+      return set_distance(g, t1, t2, (dist_length_t)-1, false);
+    case ULte:
+      // u[t1] <= u[t2] => u[t1] - u[t2] <= 0
+      return set_distance(g, t1, t2, (dist_length_t)0, false);
+    case SLt:
+      // s[t1] < s[t2] => s[t1] - s[t2] <= -1
+      return set_distance(g, t1, t2, (dist_length_t)-1, true);
+    case SLte:
+      // s[t1] <= s[t2] => s[t1] - s[t2] <= 0
+      return set_distance(g, t1, t2, (dist_length_t)0, true);
+    default:
+      Warn::impos("Vcgen:found bad primop in add_constraint");
+  }
+}
+
+// try to set t1 == t2
+static void add_eq(graph_t @g, term_t t1, term_t t2) {
+  if (t1 == t2)
+    return;
+  add_constraint(g, t1, ULte, t2);
+  add_constraint(g, t2, ULte, t1);
+  add_constraint(g, t1, SLte, t2);
+  add_constraint(g, t2, SLte, t1);
+}
+
+static void add_prim($(term_t, prim_reln_t, term_t) @p, graph_t @`H g) {
+  let $(t1, p, t2) = *p;
+  if (p == Eq)
+    add_eq(g, t1, t2);
+  else
+    add_constraint(g, t1, p, t2);
+}
+
+datatype exn{TooLarge};
+datatype exn.TooLarge too_large = TooLarge;
+
+static Set::set_t<term_t> get_pointer_terms(term_t t, Set::set_t<term_t,`H> s) {
+LOOP:
+  let topt = get_term_type(t);
+  if (topt != NULL && Tcutil::is_nullable_pointer_type((type_t)topt, false) &&
+      Tcutil::get_type_bound((type_t)topt) != NULL)
+    s = Set::insert(s, t);
+  switch (t) {
+    case &Cast(_, t1):
+      t = t1;
+      goto LOOP;
+    case &Unop(_, t1, _):
+      t = t1;
+      goto LOOP;
+    case &Binop(_, t1, t2, _):
+      s = get_pointer_terms(t1, s);
+      t = t2;
+      goto LOOP;
+    default:
+      break;
+  }
+  return s;
+}
+
+static Set::set_t<term_t> get_graph_pointer_terms(graph_t *`r _g, Set::set_t<term_t,`H> s) {
+  graph_t *`r +`H g = _g;
+  for (; g != NULL; g = g->next)
+    for (let rs = g->rows; rs != NULL; rs = rs->next)
+      s = get_pointer_terms(rs->rep, s);
+  return s;
+}
+
+static void add_ptr_info($(term_t t, term_t, term_t bnd) @env, graph_t @`H g) {
+  let $(t, tnumelts, bnd) = *env;
+  // check to see if 0 u< t -- i.e., 0 - t u<= -1
+  let dist = lookup_dist(term2node(g, zero()), term2node(g, t), false);
+  if (dist != 0 && *dist <= -1) {
+    add_constraint(g, bnd, ULte, tnumelts);
+    add_constraint(g, bnd, SLte, tnumelts);
+  }
+}
+
+static graph_t *add_ptr_type_info(term_t t, graph_t *`H gs) {
+  type_t type     = (type_t)get_term_type(t);
+  exp_t e         = strip_cast((exp_t)Tcutil::get_type_bound(type));
+  term_t bnd      = cnst(e);
+  term_t tnumelts = numelts_term(t);
+  let env         = $(t, tnumelts, bnd);
+  return app_graphs(add_ptr_info, &env, gs);
+}
+
+// certain bits of type information are best expressed as explicit
+// assertions.  For instance, when t : int*{c}, then we would like
+// to add or(t == 0, c <= numelts(t)).  So we add these facts to the
+// assertion explicitly before converting it to the graph representation.
+static graph_t *add_type_assns(graph_t *`H gs) {
+  Set::set_t<term_t> ptrs = get_graph_pointer_terms(gs, Set::empty(termcmp));
+  return Set::fold(add_ptr_type_info, ptrs, gs);
+}
+
+// if c < numelts(x) then 0 < numelts(x+k) for all k < c.
+static void add_numelts_info(int dummy, graph_t @`H g) {
+  let zeronode = term2node(g, zero());
+  // look for terms of the form numelts(x+k)
+  for (let n = g->rows; n != NULL; n = n->next) {
+    switch (n->rep) {
+      case &Unop(Absyn::Numelts, &Offseti(x, &Uint(uk, _), _), _):
+        int k = (int)uk;
+        if (k > 0) {
+          // look for terms of the form numelts(x)
+          let numelts_x   = numelts_term(x);
+          let n_numelts_x = term2node(g, numelts_x);
+          // c < numelts(x) same as zero() - numelts(x) U<= -(c+1)
+          let dist_opt = lookup_dist(zeronode, n_numelts_x, false);
+          if (dist_opt != NULL) {
+            // dist_length_t -> int conversion
+            // conversion from signed long long -> int should be safe here
+            // because numelts(x) < INT_MAX, so c<INT_MAX
+            int j = (int)*dist_opt;
+            // at this point, we know -numelts(x) U<= j so numelts(x) >= -j
+            int negj = -j;
+            // if negj > 0 then we know numelts(x) > negj-1
+            if (negj > 0) {
+              int c = negj - 1;
+              // if k<=c then (c-k) < numelts(x+k)
+              if (k <= c) {
+                // fprintf(stderr,"fired: %d U< %s\n",c-k,term2string(n->rep));
+                add_constraint(g, uint(c - k), ULt, n->rep);
+              }
+            }
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+static graph_t *add_numelts_info_graphs(graph_t *`H gs) {
+  return app_graphs(add_numelts_info, 0, gs);
+}
+
+// a1 and a2 should be a set of primitive relations (e.g., from widen_it).
+// filters out of a2 all of the assertions that are implied by a1
+// and returns a conjunction (i.e., set) of assertions that could
+// not be proved by a1.  If a1 is itself inconsistent, returns NULL.
+assn_set_opt_t filter_implies(assn_set_t a1, assn_set_t a2) {
+  // first filter out all of the conjuncts in a2 that are in a1
+  a2                 = Set::diff(a2, a1);
+  list_t<assn_t> a2s = Set::to_list(a2);
+  // don't bother when a2 is empty
+  if (a2s == NULL)
+    return Set::empty(assncmp);
+  graph_t @g         = true_graph();
+  list_t<assn_t> a1s = Set::to_list(a1);
+  // build an initial graph corresponding to a1 -- if it's
+  // inconsistent (i.e., false) then return the empty set
+  // since false implies anything.
+  try {
+    for (; a1s != NULL; a1s = a1s->tl) {
+      let a = a1s->hd;
+      // fprintf(stderr,"adding %s to context graph\n",assn2string(a));
+    LOOP:
+      switch (a) {
+        case &Prim(&Uint(0, _), Neq, t2):
+          fallthru(t2);
+        case &Prim(t1, Neq, &Uint(0, _)):
+          // special case:  when we have unsigned terms
+          // then we can treat t1 != 0 as t1 > 0.  This avoids generating
+          // a bunch of paths.
+          type_opt_t topt = AssnDef::get_term_type(t1);
+          if (topt == NULL || Tcutil::is_signed_type((type_t)topt))
+            continue;
+          a = ult(zero(), t1);
+          goto LOOP;
+        case &Prim(_, Neq, _):
+          continue;
+        case &Prim(t1, p, t2):
+          if (p == Eq) {
+            // adds t1 <= t2 and t2 <= t1 -- throws Inconsistent if
+            // the resulting graph is detected as inconsistent locally.
+            add_eq(g, t1, t2);
+          } else {
+            // adds the constraint -- throws Inconsistent if
+            // the resulting graph is detected as inconsistent locally.
+            add_constraint(g, t1, p, t2);
+          }
+          // if we got here, we think the graph is still consistent.
+          continue;
+        default:
+          continue;
+      }
+    }
+    // added all of the hypothetical constraints -- close them off
+    // fprintf(stderr,"closing context\n");
+    associate_ud_sd_in_graph(0, g);
+    break_term_in_graph(0, g);
+    subst_close_graph(true, g);
+    subst_close_graph(false, g);
+    reduce_terms(0, g);
+    johnson(0, g);
+    add_type_assns(g);
+    add_numelts_info(0, g);
+    // fprintf(stderr,"done closing context\n");
+  } catch {
+    case &Inconsistent:
+      return NULL;
+  }
+
+  assn_set_t res = Set::empty(assncmp);
+  for (; a2s != NULL; a2s = a2s->tl) {
+    let orig_a = a2s->hd;
+    let a      = not(orig_a);
+    // fprintf(stderr,"seeing if context implies %s\n",assn2string(a));
+  LOOP2:
+    switch (a) {
+      case &Prim(&Uint(0, _), Neq, t2):
+        fallthru(t2);
+      case &Prim(t1, Neq, &Uint(0, _)):
+        // special case:  when we have unsigned terms
+        // then we can treat t1 != 0 as t1 > 0.  This avoids generating
+        // a bunch of paths.
+        type_opt_t topt = AssnDef::get_term_type(t1);
+        if (topt == NULL || Tcutil::is_signed_type((type_t)topt)) {
+          res = Set::insert(res, orig_a);
+          continue;
+        }
+        a = ult(zero(), t1);
+        goto LOOP2;
+      case &Prim(_, Neq, _):
+        res = Set::insert(res, orig_a);
+        continue;
+      case &Prim(t1, p, t2):
+        graph_t @g2;
+        if (a2s->tl != NULL)
+          g2 = (graph_t @)copy_graphs(g);
+        else
+          g2 = g;
+        try {
+          // fprintf(stderr,"inserting constraint\n");
+          if (p == Eq) {
+            // adds t1 <= t2 and t2 <= t1 -- throws Inconsistent if
+            // the resulting graph is detected as inconsistent locally.
+            add_eq(g2, t1, t2);
+          } else {
+            // adds the constraint -- throws Inconsistent if
+            // the resulting graph is detected as inconsistent locally.
+            add_constraint(g2, t1, p, t2);
+          }
+          // if we got here, we think the graph is still consistent.
+          // try doing some closure operations...
+          // fprintf(stderr,"closing after constraint\n");
+          /*
+          associate_ud_sd_in_graph(0,g2);
+          break_term_in_graph(0,g2);
+          subst_close_graph(true,g2);
+          subst_close_graph(false,g2);
+          reduce_terms(0,g2);
+          johnson(0,g2);
+          add_type_assns(g);
+          add_numelts_info(0,g);
+          */
+          // fprintf(stderr,"done closing\n");
+        } catch {
+          case &Inconsistent:
+            // fprintf(stderr,"able to prove %s\n",assn2string(a));
+            continue;
+        }
+        fallthru;
+      default:
+        res = Set::insert(res, orig_a);
+        continue;
+    }
+  }
+  return res;
+}
+
+// returns true only if [a] can be proven to be inconsistent (i.e., false)
+static bool inconsist(assn_t a) {
+  // we start with the graph "true"
+  graph_t @g = true_graph();
+  // ands is the list of assn's we need to "and" into the graph if we
+  // haven't yet found an inconsistency.
+  list_t<assn_t,`H> ands = NULL;
+  // ors is a list of checkpoints -- graphs and their ands lists that
+  // we also need to prove as being inconsistent.
+  list_t<$(graph_t @`H, list_t<assn_t,`H>) @`H> ors = NULL;
+  // this records the length of the ors
+  int paths = 0;
+  // we have two loops here to avoid setting an exception handler
+  // on each iteration.  This setup allows us to set an exception
+  // handler only when we manage to succeed in proving a graph is
+  // inconsistent.
+  while (true) {
+    try {
+      while (true) {
+        switch (a) {
+          case &And(a1, a2):
+            // push a1 on the ands, and process a2.  The order is
+            // important here because we're more likely to find an
+            // inconsistency in a2 than in a1, because of the way
+            // that we add assertions to the right.
+            a    = a2;
+            ands = new List{a1, ands};
+            continue;
+          case &Or(a1, a2):
+            // check that we haven't got too many pending graphs to explore
+            paths++;
+            if (paths > Flags::max_vc_paths) {
+              // we've already got too many paths -- widen the assertion
+              a = widen(a);
+              paths--;
+              continue;
+            }
+            // copy the graph and record that we need to and in a2::ands
+            // to g and prove that both paths are inconsistent.  Then
+            // proceed to process a1.
+            graph_t @g2 = (graph_t @)copy_graphs(g);
+            ors         = new List{new $(g2, new List{a2, ands}), ors};
+            a           = a1;
+            continue;
+          case &Prim(&Uint(0, _), Neq, t2):
+            fallthru(t2);
+          case &Prim(t1, Neq, &Uint(0, _)):
+            // special case:  when we have unsigned terms (or memories)
+            // then we can treat t1 != 0 as t1 > 0.  This avoids generating
+            // a bunch of paths.
+            type_opt_t topt = AssnDef::get_term_type(t1);
+            if (topt == NULL || Tcutil::is_signed_type((type_t)topt))
+              fallthru(t1, zero());
+            a = ult(zero(), t1);
+            continue;
+          case &Prim(t1, Neq, t2):
+            // explode t1 != t2 into (t1 < t2) || (t2 < t1)
+            a = and(or (slt(t1, t2), slt(t2, t1)), or (ult(t1, t2), ult(t2, t1)));
+            continue;
+          case &Prim(t1, p, t2):
+            if (p == Eq) {
+              // adds t1 <= t2 and t2 <= t1 -- throws Inconsistent if
+              // the resulting graph is detected as inconsistent locally.
+              add_eq(g, t1, t2);
+            } else {
+              // adds the constraint -- throws Inconsistent if
+              // the resulting graph is detected as inconsistent locally.
+              add_constraint(g, t1, p, t2);
+            }
+            // if we got here, we think the graph is still consistent,
+            // so we need to continue adding in the rest of the ands.
+            fallthru;
+          case &True:
+            // if we have more ands to add to the graph, process them first.
+            if (ands != NULL) {
+              a    = ands->hd;
+              ands = ands->tl;
+              continue;
+            }
+            // otherwise, we're done adding all of the constraints from the
+            // assertion into the graph and still haven't found an
+            // inconsistency.  So work hard to try to find one now.
+            // All of these functions will throw Inconsistent if they
+            // detect an inconsistency.
+            // We might be better off running this periodically, say after
+            // we've added some number of primitive constraints.  But this
+            // minimizes the total work in the case that we can't prove
+            // something...
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "about to close graph\n");
+            print_graph(g);
+#endif
+            associate_ud_sd_in_graph(0, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after associate_ud_sd\n");
+            print_graph(g);
+#endif
+            break_term_in_graph(0, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after break_term\n");
+            print_graph(g);
+            fprintf(stderr, "about to subst_close\n");
+#endif
+            // first substitute out variables for better terms
+            subst_close_graph(true, g);
+            // then substitute "better" terms for other better terms
+            subst_close_graph(false, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after subst_close\n");
+            print_graph(g);
+            fprintf(stderr, "about to reduce\n");
+#endif
+            reduce_terms(0, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after reduce\n");
+            print_graph(g);
+#endif
+            johnson(0, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after johnson\n");
+            print_graph(g);
+#endif
+            add_type_assns(g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after add_type_assns\n");
+            print_graph(g);
+#endif
+            add_numelts_info(0, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after 2nd break_term\n");
+            print_graph(g);
+#endif
+            break_term_in_graph(0, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "after 2nd associate_ud_sd\n");
+            print_graph(g);
+#endif
+            associate_ud_sd_in_graph(0, g);
+#ifdef PROVER_DEBUG
+            fprintf(stderr, "unable to prove inconsistency of graph:\n");
+            print_graph(g);
+#endif
+            // Too bad.  The graph appears to be consistent.  We might as well
+            // return false now.
+            return false;
+          case &False:
+            throw &inconsistent;
+            // we have g && false which is immediately inconsistent.
+        }
+      }
+    } catch {
+        // we've detected that g is inconsistent regardless of what's
+        // in ands.  So throw g away and start processing the or's.
+      case &Inconsistent:
+        if (ors == NULL)
+          // we're in luck -- no more graphs to prove inconsistent.
+          return true;
+        // more graphs to prove as inconsistent.  Pop one off of the ors
+        // stack and proceed.
+        let &$(g2, ands2) = ors->hd;
+        g                 = g2;
+        ands              = ands2;
+        a                 = &true_assn;
+        ors               = ors->tl;
+        break;
+    }
+  }
+}
+
+static bool paths_exhausted = false;
+
+bool constraint_prove(assn_t ctxt, assn_t a) {
+  // try weakening ctxt first:
+  let nota = not(a);
+  // if (inconsist(and(widen(ctxt),nota))) return true;
+  assn_t b = and(ctxt, nota);
+  let res  = inconsist(b);
+  if (!res && Flags::print_unprovable) {
+    fprintf(stderr, "unable to prove inconsistency of \n");
+    fprintf(stderr, "%s", assn2dag(b));
+    if (paths_exhausted) {
+      fprintf(stderr, "(paths exhausted)");
+    }
+    fprintf(stderr, "\n");
+  }
+  return res;
+}

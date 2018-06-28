@@ -1,0 +1,2355 @@
+/* Computing Strongest Post-conditions
+   Copyright (C) 2003 Greg Morrisett
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include <string.h>
+#include "absynpp.h"
+#include "assndef.h"
+#include "attributes.h"
+#include "cf_flowinfo.h"
+#include "cyclone/library/std/cycboot.h"
+#include "cyclone/library/std/dict.h"
+#include "cyclone/library/std/hashtable.h"
+#include "cyclone/library/std/list.h"
+#include "evexp.h"
+#include "flags.h"
+#include "pratt_prover.h"
+#include "tcutil.h"
+#include "unify.h"
+#include "vcgen.h"
+#include "warn.h"
+
+// VCGEN_PROFILE, when defined, will count the size
+// of the code AST, as well as the size of assertions
+// generated (in two ways, (a) directly count the
+// hash table that stores all the assertions ever
+// used; (b) only count assertions in the hash table
+// that describe program states at some program points,
+// ignoring intermediate assertions generated during
+// loop-invariants calculation
+// we would also stop recording summaries of functions
+// when profiling this information
+
+// #define VCGEN_PROFILE
+
+// NO_FUN_SUMMARY, when defined, will not use
+// summary of functions
+
+// #define NO_FUN_SUMMARY
+
+// NO_FUN_PRECOND, when defined, will not use
+// collected precondition for non-escaping static
+// functions
+#define NO_FUN_PRECOND
+// NO_TRY_ASSNMAP, when defined, will not accumulate
+// assertion information for any exceptions thrown
+// this will give a more accurate account of the profiling
+
+// #define NO_TRY_ASSNMAP
+
+#ifdef VCGEN_PROFILE
+#include <sys/time.h>
+extern "C" int gettimeofday(struct timeval *tv, void *tz);
+#endif
+
+namespace Vcgen;
+using AssnDef;
+using List;
+///////////////////// Analysis /////////////////////
+
+static struct Hashtable::Table<Absyn::qvar_t, existassnfn_t> *fn_ens_info_table;
+
+static void insert_fn_info(Absyn::fndecl_t fd, list_t<term_t,`H> pre_memory_and_actuals,
+                           term_t result_term, term_t final_memory, assn_t a) {
+  let fvs = assn_fr_logicvar(a);
+  if (Set::cardinality(fvs) > Flags::max_vc_summary) {
+    a = widen(a);
+  }
+  Hashtable::table_t h;
+  if (fn_ens_info_table == NULL) {
+    h                 = Hashtable::create(37, Absyn::qvar_cmp, Absyn::hash_qvar);
+    fn_ens_info_table = h;
+  } else
+    h = (Hashtable::table_t)fn_ens_info_table;
+  Hashtable::insert(
+      h, fd->name,
+      bound_ts_in_assn(a, new List{result_term, new List{final_memory, pre_memory_and_actuals}}));
+}
+
+static void insert_fn_precond_info(fn_precond_info_t fn_precond_info, exp_t e, assn_t a, term_t mem,
+                                   list_t<term_t,`H> actuals) {
+  let fvs = assn_fr_logicvar(a);
+  if (Set::cardinality(fvs) > Flags::max_vc_summary) {
+    a = widen(a);
+  }
+  let eaf = bound_ts_in_assn(a, new List{mem, actuals});
+  let h   = fn_precond_info;
+  switch (e->r) {
+    case &Absyn::Var_e(&Absyn::Funname_b(fd)):
+      // don't do anything with an escaping function.
+      if (fd->escapes)
+        break;
+      let eafs_opt = Hashtable::lookup_opt(h, fd->name);
+      if (eafs_opt == NULL)
+        Hashtable::insert(h, fd->name, new List{eaf, NULL});
+      else
+        Hashtable::insert(h, fd->name, new List{eaf, *eafs_opt});
+      break;
+    case &Absyn::Instantiate_e(e1, ...):
+      insert_fn_precond_info(h, e1, a, mem, actuals);
+      break;
+    case &Absyn::NoInstantiate_e(e1):
+      insert_fn_precond_info(h, e1, a, mem, actuals);
+      break;
+    default:
+      break;
+  }
+}
+
+// used to add fresh variables for bound variables to a substitution
+static void add_free_var(term_dict_t @S, term_t x) {
+  *S = Dict::insert(*S, x, fresh_var(NULL, get_term_type(x)));
+}
+
+static existassnfn_opt_t lookup_fn_summary_info(exp_t e) {
+  if (fn_ens_info_table == NULL)
+    return NULL;
+  let h = (Hashtable::table_t)fn_ens_info_table;
+  switch (e->r) {
+    case &Absyn::Var_e(&Absyn::Funname_b(fd)):
+      let fensinfo_opt = Hashtable::lookup_opt(h, fd->name);
+      if (fensinfo_opt == NULL)
+        return NULL;
+      else
+        return *fensinfo_opt;
+    case &Absyn::Var_e(&Absyn::Global_b(vd)):
+      let fensinfo_opt = Hashtable::lookup_opt(h, vd->name);
+      if (fensinfo_opt == NULL)
+        return NULL;
+      else
+        return *fensinfo_opt;
+    case &Absyn::Instantiate_e(e1, ...):
+      return lookup_fn_summary_info(e1);
+    default:
+      return NULL;
+  }
+}
+
+////////// Analysis Environment /////////////////////
+
+// it contains information that will be used through out the analysis
+// it is also responsible for collecting information during analysis
+struct Env {
+  // a mapping from statements to accumulated pre-conditions
+  Hashtable::table_t<stmt_t, assn_map_t @> assn_table;
+  // a mapping for successors in the control-flow graph (from jump_analysis)
+  Hashtable::table_t<stmt_t, stmt_opt_t> succ_table;
+  // a mapping from expressions to assertions to be proved
+  // in insert_checks to ensure operation is safe.
+  assn_info_t assn_info;
+  // a mapping from fndecl to list of existassnfn
+  // collected for non-escaping static function
+  fn_precond_info_t fn_precond_info;
+  // the assertion accumulated for the current exception handler if any
+  assn_map_opt_t try_assnmap;
+  // when not-null is used to record the resulting value of an expr-stmt.
+  term_t *exp_stmt;
+  // used to record the result term and assertions for a function.  Only
+  // needed when the function has an ensures clause.  Upon return, we
+  // do an "assignment" to the variable result and then or in with the
+  // res_assnmap.
+  vardecl_opt_t result;
+  assn_map_opt_t res_assnmap;
+  assn_map_opt_t continue_assnmap;
+  // true by default: controls whether we widen assertions at join points
+  bool widen_paths;
+  // determines whether we are interpreting the expression as a "pure"
+  // expression (i.e., as short-hand for an assertion).
+  bool pure_exp;
+  term_t invoke;
+};
+
+typedef struct Env @env_t;
+
+static int hash_ptr(`a s) { return (int)s; }
+
+// creating the initial environment in the beginning of
+// the analysis for a function
+static env_t initial_env(JumpAnalysis::jump_anal_res_t tables, Absyn::fndecl_t fd,
+                         assn_info_t assn_info, fn_precond_info_t fn_precond_info,
+                         assn_map_opt_t res_assnmap, assn_map_opt_t try_assnmap,
+                         vardecl_opt_t result) {
+  let succ_table = Hashtable::lookup(tables->succ_tables, fd);
+  let assn_table = Hashtable::create(57, Core::ptrcmp, hash_ptr);
+  let env        = new Env{.assn_table       = assn_table,
+                    .succ_table       = succ_table,
+                    .assn_info        = assn_info,
+                    .fn_precond_info  = fn_precond_info,
+                    .try_assnmap      = try_assnmap,
+                    .exp_stmt         = NULL,
+                    .result           = result,
+                    .res_assnmap      = res_assnmap,
+                    .continue_assnmap = NULL,
+                    .widen_paths      = !Flags::allpaths,
+                    .pure_exp         = false,
+                    .invoke           = fresh_var(NULL, NULL)};
+  return env;
+}
+
+// creating a bogus environment for processing a pure expression
+// for now, this is only used to turn @requires,@ensures @throws
+// expression in function definition into assertions.
+static env_t bogus_env() {
+  let succ_table      = Hashtable::create(1, Core::ptrcmp, hash_ptr);
+  let assn_table      = Hashtable::create(1, Core::ptrcmp, hash_ptr);
+  let assn_info       = new Hashtable::create(1, Core::ptrcmp, hash_ptr);
+  let fn_precond_info = Hashtable::create(1, Core::ptrcmp, hash_ptr);
+  env_t env           = new Env{.assn_table       = assn_table,
+                      .succ_table       = succ_table,
+                      .assn_info        = assn_info,
+                      .fn_precond_info  = fn_precond_info,
+                      .try_assnmap      = NULL,
+                      .exp_stmt         = NULL,
+                      .result           = NULL,
+                      .res_assnmap      = NULL,
+                      .continue_assnmap = NULL,
+                      .widen_paths      = false,
+                      .pure_exp         = true,
+                      .invoke           = fresh_var(NULL, NULL)};
+  return env;
+}
+
+// addr and alloc functions that tag the term with env->invoke
+static term_t myaddr(env_t env, vardecl_t vd) { return addr(vd, env->invoke); }
+static term_t myalloc(env_t env, exp_t e, term_t nelts, type_opt_t tp) {
+  return alloc(e, nelts, env->invoke, tp);
+}
+
+// widening only makes sure that the assn in assnmap is relaxed
+static assn_map_t may_widen(env_t env, assn_map_t am) {
+  if (env->widen_paths) {
+    return widen_assnmap(am);
+  }
+  return am;
+}
+
+/* the following functions manipulate the assn_table which contains
+   the precondition for each statement in the program. */
+
+// lookup assertions accumulated from previously control flow
+static assn_map_t lookup_stmt_assnmap(env_t env, stmt_t s) {
+  assn_map_t @ *preconopt = Hashtable::lookup_opt(env->assn_table, s);
+  if (preconopt != NULL)
+    return **preconopt;
+  else
+    return false_assnmap();
+}
+
+// update assertions reaching a statement
+static void update_stmt_assnmap(env_t env, stmt_t s, assn_map_t newam) {
+  assn_map_t @ *preconopt = Hashtable::lookup_opt(env->assn_table, s);
+  if (preconopt != NULL)
+    **preconopt = may_widen(env, or_assnmap_assnmap(**preconopt, newam));
+  else
+    Hashtable::insert(env->assn_table, s, new newam);
+}
+
+// replace assertions reaching a statement
+// discard whatever was in there before.
+static void replace_stmt_assnmap(env_t env, stmt_t s, assn_map_t newam) {
+  Hashtable::insert(env->assn_table, s, new newam);
+}
+
+// vcgen for statements. amin is the assertion and mapping that
+// describes the beginning state. return the assertion and mapping
+// that describes the output state.
+static assn_map_t vcgen_stmt(env_t, stmt_t, assn_map_t amin);
+// analyze an expression given a initial machine state and
+// generate a term that represents the r-value of the expression
+// and an assetion and mapping that describes the output state.
+static $(term_t, assn_map_t) vcgen_rexp(env_t, exp_t, assn_map_t);
+// analyze a list of expressions in order and return
+// a list of terms and the final assertion
+static $(list_t<term_t>, assn_map_t) vcgen_rexps(env_t, list_t<exp_t>, assn_map_t);
+// similar to vcgen_rexp except that the term represents the
+// expression's l-value
+static $(term_t, assn_map_t) vcgen_lexp(env_t, exp_t, assn_map_t);
+// analyze a boolean expression. returns assertion-mappings that
+// describe either the machine state when the expression evaluates
+// to true or the machine state when the exp evaluates to false
+static $(assn_map_t, assn_map_t) vcgen_test(env_t, exp_t, assn_map_t);
+
+// analyze a pattern of a term v, the term's lvalue is used during
+// reference pattern, and the result gives an assertion for
+// matching case and one for non-matching case
+static $(assn_map_t, assn_map_t)
+    vcgen_pat(env_t env, Absyn::pat_t p, term_opt_t lvalue, term_t v, assn_map_t amin);
+
+static assn_map_t vcgen_switch(env_t, term_t, list_t<switch_clause_t>, assn_map_t);
+static assn_map_t vcgen_local_decl(env_t, decl_t, assn_map_t);
+
+#ifndef VCGEN_PROFILE
+#define vcgen_debug_stmt vcgen_stmt
+#define vcgen_debug_rexp vcgen_rexp
+#define vcgen_debug_rexps vcgen_rexps
+#define vcgen_debug_lexp vcgen_lexp
+#define vcgen_debug_test vcgen_test
+#define vcgen_debug_pat vcgen_pat
+#define vcgen_debug_switch vcgen_switch
+#define vcgen_debug_local_decl vcgen_local_decl
+#endif
+
+#ifdef VCGEN_PROFILE
+
+// vcgen_debug_xxx is used to collect all
+// post-condition assns
+static struct Hashtable::Table<assn_t, assn_t> *vcgen_debug_assn_set = NULL;
+
+static int assn_easy_cmp(assn_t a1, assn_t a2) { return (int)a1 - (int)a2; }
+static int assn_easy_hash(assn_t a) { return (int)a; }
+static int term_easy_cmp(term_t t1, term_t t2) { return (int)t1 - (int)t2; }
+static int term_easy_hash(term_t t) { return (int)t; }
+
+static Hashtable::table_t<assn_t, assn_t> get_vcgen_debug_assn_set() {
+  Hashtable::table_t<assn_t, assn_t> s;
+  if (vcgen_debug_assn_set == NULL) {
+    s                    = Hashtable::create(211, assn_easy_cmp, assn_easy_hash);
+    vcgen_debug_assn_set = s;
+  } else {
+    s = (Hashtable::table_t<assn_t, assn_t>)vcgen_debug_assn_set;
+  }
+  return s;
+}
+
+static void vcgen_debug_insert_assn(assn_t a) {
+  let s = get_vcgen_debug_assn_set();
+  Hashtable::insert(s, a, a);
+  return;
+}
+// vcgen for statements. amin is the assertion and mapping that
+// describes the beginning state. return the assertion and mapping
+// that describes the output state.
+static assn_map_t vcgen_debug_stmt(env_t env, stmt_t st, assn_map_t amin) {
+  let am = vcgen_stmt(env, st, amin);
+  vcgen_debug_insert_assn(am.assn);
+  return am;
+}
+// analyze an expression given a initial machine state and
+// generate a term that represents the r-value of the expression
+// and an assetion and mapping that describes the output state.
+static $(term_t, assn_map_t) vcgen_debug_rexp(env_t env, exp_t e, assn_map_t amin) {
+  let $(t, am) = vcgen_rexp(env, e, amin);
+  vcgen_debug_insert_assn(am.assn);
+  return $(t, am);
+}
+// analyze a list of expressions in order and return
+// a list of terms and the final assertion
+static $(list_t<term_t>, assn_map_t)
+    vcgen_debug_rexps(env_t env, list_t<exp_t> es, assn_map_t amin) {
+  let $(ts, am) = vcgen_rexps(env, es, amin);
+  vcgen_debug_insert_assn(am.assn);
+  return $(ts, am);
+}
+// similar to vcgen_rexp except that the term represents the
+// expression's l-value
+static $(term_t, assn_map_t) vcgen_debug_lexp(env_t env, exp_t e, assn_map_t amin) {
+  let $(t, am) = vcgen_lexp(env, e, amin);
+  vcgen_debug_insert_assn(am.assn);
+  return $(t, am);
+}
+// analyze a boolean expression. returns assertion-mappings that
+// describe either the machine state when the expression evaluates
+// to true or the machine state when the exp evaluates to false
+static $(assn_map_t, assn_map_t) vcgen_debug_test(env_t env, exp_t e, assn_map_t amin) {
+  let $(am1, am2) = vcgen_test(env, e, amin);
+  vcgen_debug_insert_assn(am1.assn);
+  vcgen_debug_insert_assn(am2.assn);
+  return $(am1, am2);
+}
+
+// analyze a pattern of a term v, the term's lvalue is used during
+// reference pattern, and the result gives an assertion for
+// matching case and one for non-matching case
+static $(assn_map_t, assn_map_t)
+    vcgen_debug_pat(env_t env, Absyn::pat_t p, term_opt_t lvalue, term_t v, assn_map_t amin) {
+  let $(am1, am2) = vcgen_pat(env, p, lvalue, v, amin);
+  vcgen_debug_insert_assn(am1.assn);
+  vcgen_debug_insert_assn(am2.assn);
+  return $(am1, am2);
+}
+
+static assn_map_t vcgen_debug_switch(env_t env, term_t t, list_t<switch_clause_t> scs,
+                                     assn_map_t amin) {
+  let am = vcgen_switch(env, t, scs, amin);
+  vcgen_debug_insert_assn(am.assn);
+  return am;
+}
+
+static assn_map_t vcgen_debug_local_decl(env_t env, decl_t d, assn_map_t amin) {
+  let am = vcgen_local_decl(env, d, amin);
+  vcgen_debug_insert_assn(am.assn);
+  return am;
+}
+#endif
+
+// these implies are used to compute loop invariant
+// in while, for, do loops as well as comprehensions
+static bool implies(assn_t a1, assn_t a2) { return simple_prove(a1, a2) || better_prove(a1, a2); }
+
+// helper function, retrieve the vardecl from a binding.
+static struct Absyn::Vardecl *bind2vardecl(Absyn::binding_t b) {
+  switch (b) {
+    case &Absyn::Global_b(vd):
+      return vd;
+    case &Absyn::Funname_b(fd):
+      return fd->fn_vardecl;
+    case &Absyn::Unresolved_b(...):
+      Warn::impos("vcgen bind2vardecl");
+    case &Absyn::Param_b(vd):
+      return vd;
+    case &Absyn::Local_b(vd):
+      return vd;
+    case &Absyn::Pat_b(vd):
+      return vd;
+  }
+}
+
+// checking if an expression has type unsigned int
+static bool is_unsigned_int_exp(exp_t e) {
+  type_opt_t t = e->topt;
+  if (t == NULL)
+    return false;
+  switch (t) {
+      // wangyl:: FIX, dependence on sizeof(int) == sizeof(long) !!!!!
+    case &Absyn::AppType(&Absyn::IntCon(Absyn::Unsigned, sz), _):
+      if ((sz == Absyn::Long_sz) || (sz == Absyn::Int_sz))
+        return true;
+      else
+        return false;
+    default:
+      return false;
+  }
+}
+
+// given a lvalue (address), get the content of that address
+// if the address is the address of an nonescaping variable,
+// the value is in nonescvarmap
+// otherwise, we select the address from the memory
+static $(term_t, assn_map_t) deref_lterm(env_t env, term_t lt, assn_map_t am) {
+  switch (lt) {
+    case &Addr(vd, _, _):
+      if (!vd->escapes) {
+        return lookup_var_map(vd, am);
+      }
+      fallthru;
+    default:
+      let $(mem, am1) = lookup_var_map(memory, am);
+      return $(select(mem, lt, NULL), am1);
+  }
+}
+
+// assignment lt = t
+// based on what lt is, we will either update the content of memory,
+// or update the nonescvar-map
+static assn_map_t do_assign(env_t env, assn_map_t am, term_t lt, term_t t) {
+  let $(root, fields) = split_addr(lt);
+  switch (root) {
+    case &Addr(vd, _, _) && !vd->escapes:
+      let $(oldv, am1) = lookup_var_map(vd, am);
+      return update_var_map(vd, apply_aggr_update(oldv, fields, t), am1);
+    default:
+      let $(mem, am1) = lookup_var_map(memory, am);
+      return update_var_map(memory, update(mem, lt, t), am1);
+  }
+}
+
+// update the assertion associated with
+// the current exception handler
+static void update_try_assnmap(env_t env, assn_map_t am, term_t exn_value) {
+  if (env->try_assnmap == NULL)
+    return;
+  am                = do_assign(env, am, myaddr(env, exception_vardecl()), exn_value);
+  am                = may_widen(env, or_assnmap_assnmap(*env->try_assnmap, am));
+  *env->try_assnmap = am;
+}
+
+static assn_map_t vcgen_local_decl(env_t env, decl_t d, assn_map_t amin) {
+  switch (d->r) {
+    case &Absyn::Var_d(vd):
+      // when declaring a variable, it's "initialized" with a random value
+      // before we actually run the initializer...
+      amin = do_assign(env, amin, myaddr(env, vd), fresh_var(vd, vd->type));
+      if (vd->initializer != NULL) {
+        let $(t, am) = vcgen_debug_rexp(env, (exp_t)vd->initializer, amin);
+        am           = do_assign(env, am, myaddr(env, vd), t);
+        return am;
+      }
+      return amin;
+    case &Absyn::Let_d(p, _, e, dtree):
+      let $(v, am)    = vcgen_debug_rexp(env, e, amin);
+      let $(amt, amf) = vcgen_debug_pat(env, p, NULL, v, am);
+      // currently we are just creating a fresh logic var for
+      // the value of the exception, in the future we should
+      // construct a proper exception datatype value
+      if (amf.assn != &false_assn)
+        update_try_assnmap(env, amf, fresh_var(NULL, Absyn::exn_type()));
+      return amt;
+    case &Absyn::Letv_d(vds):
+      // no need to go through the vds because they have
+      // no initializers
+      return amin;
+    case &Absyn::Region_d(_, vd, eopt):
+      if (eopt != NULL) {
+        let $(t, am) = vcgen_debug_rexp(env, (exp_t)eopt, amin);
+        am           = do_assign(env, am, myaddr(env, vd), t);
+        return am;
+      }
+      return amin;
+    default:
+      return amin;
+  }
+}
+
+// extract the arguments, requires, and ensures clause for a function from
+// its type.
+static $(list_t<$(var_opt_t, tqual_t, type_t) @> args, list_t<vardecl_opt_t> argvds,
+         existassnfn_opt_t chk, existassnfn_opt_t req, existassnfn_opt_t ens,
+         existassnfn_opt_t thrws, vardecl_opt_t ret_value)
+    get_requires_and_ensures_info(Absyn::fn_info_t @fi) {
+  return $(fi->args, fi->arg_vardecls, fi->checks_assn, fi->requires_assn, fi->ensures_assn,
+           fi->throws_assn, fi->return_value);
+}
+
+static $(list_t<$(var_opt_t, tqual_t, type_t) @> args, list_t<vardecl_opt_t> argvds,
+         existassnfn_opt_t chk, existassnfn_opt_t req, existassnfn_opt_t ens,
+         existassnfn_opt_t thrws, vardecl_opt_t ret_value)
+    get_requires_and_ensures(type_opt_t topt) {
+  if (topt != NULL) {
+    type_t t = Tcutil::pointer_elt_type((type_t)topt);
+    switch (t) {
+      case &Absyn::FnType(*fi):
+        return get_requires_and_ensures_info(fi);
+      default:
+        break;
+    }
+  }
+  return $(NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+}
+
+static unsigned datatype_constructor_index(Absyn::datatypedecl_t dd, Absyn::datatypefield_t df) {
+  unsigned i = 0;
+  let fs     = dd->fields->v;
+  for (; fs != NULL; fs = fs->tl, ++i) {
+    if (fs->hd == df)
+      return i;
+    if (Absyn::qvar_cmp(df->name, fs->hd->name) == 0)
+      return i;
+  }
+  Warn::impos("vcgen: datatype_constructor_index");
+}
+
+static $(bool is_tagged, Absyn::aggr_kind_t, list_t<Absyn::aggrfield_t>) get_aggr_info(type_t t) {
+loop:
+  switch (Absyn::compress(t)) {
+    case &Absyn::SubsetType(vd, ...):
+      t = vd->type;
+      goto loop;
+    case &Absyn::AppType(&Absyn::AggrCon(info), _):
+      let ad = Absyn::get_known_aggrdecl(info);
+      return $(ad->impl->tagged, ad->kind, ad->impl->fields);
+    case &Absyn::AnonAggrType(ak, is_tuple, fs):
+      return $(false, ak, fs);
+    default:
+      Warn::impos("vcgen: bad type in get_aggr_info");
+  }
+}
+
+static int cmp_index($(int,`a) @x, $(int,`a) @y) { return x->f0 - y->f0; }
+
+exp_checks_t @exp2ctxt_checks(assn_info_t assn_info, Absyn::exp_t e) {
+  let result = Hashtable::lookup_opt(*assn_info, e);
+  if (result == NULL) {
+    static exp_checks_t *b = NULL;
+    if (b == NULL) {
+      b = new ExpChecks{
+          .ctxt = true_assnmap(), .bounds_check = &false_assn, .null_check = &false_assn};
+    }
+    // wangyl: we don't know any info about vcgen here, so the ctxt
+    // should be true and the assertion we need to prove should be false
+    return (exp_checks_t @)b;
+  } else {
+    return *result;
+  }
+}
+
+static void insert_exp_checks(assn_info_t assn_info, Absyn::exp_t e, exp_checks_t @`H exp_check) {
+  Hashtable::insert(*assn_info, e, exp_check);
+  return;
+}
+
+static exp_t zero_exp() {
+  exp_t ans = Absyn::uint_exp(0, 0);
+  ans->topt = Absyn::uint_type;
+  return ans;
+}
+
+static $(assn_t, assn_t) okderef(term_t root, term_t i) {
+  switch (root) {
+    case &Alloc(_, _, size, _, _):
+      return $(ult(i, size), &true_assn);
+    case &Offseti(r, i0, _):
+      let $(bndck, nullck) = okderef(r, plus(i, i0, NULL));
+      return $(or (ult(i, numelts_term(root)), bndck), or (neq(root, zero()), nullck));
+    case &Addr(vd, _, _):
+      switch (Absyn::compress(vd->type)) {
+        case &Absyn::ArrayType(ai):
+          if (ai.num_elts != NULL) {
+            let $(size, _) = vcgen_debug_rexp(bogus_env(), (exp_t)ai.num_elts, true_assnmap());
+            return $(ult(i, size), &true_assn);
+          }
+          break;
+        default:
+          break;
+      }
+      return $(ult(i, numelts_term(root)), &true_assn);
+    default:
+      let tp = get_term_type(root);
+      if (tp != NULL) {
+        switch (Absyn::compress((type_t)tp)) {
+          case &Absyn::PointerType(p1):
+            let b1 =
+                Tcutil::get_bounds_exp_constrain(Absyn::bounds_one(), p1.ptr_atts.bounds, true);
+            let b2     = Tcutil::is_nullable_pointer_type(tp, false);
+            let nullck = b2 ? neq(root, zero()) : &true_assn;
+            if (b1 != NULL)
+              // for thin pointers, the type may be declared with a size
+              // that's less than the actual number of elements -- putting
+              // this or in here lets us get the common case where the
+              // index is less than the known type-based bound, as well as
+              // the uncommon case where the index is provably less than the
+              // number of elements.
+              return $(or (ult(i, cnst((exp_t)b1)), ult(i, numelts_term(root))), nullck);
+            break;
+          default:
+            break;
+        }
+      }
+      break;
+  }
+  return $(ult(i, numelts_term(root)), neq(root, zero()));
+}
+
+// factor out code for *e, e->f and e[i]
+static $(term_t, term_t, assn_map_t)
+    vcgen_deref(env_t env, exp_t root, exp_t index, assn_map_t amin) {
+  let $(t1, am1) = vcgen_debug_rexp(env, root, amin);
+  let $(t2, am2) = vcgen_debug_rexp(env, index, am1);
+  if (!env->pure_exp) {
+    // checks that are generated based
+    // on the value of the root and index
+    let $(bnds_check, null_check) = okderef(t1, t2);
+    // the following checks are real checks
+    // that will be inserted by the compiler
+    // if above checks couldn't be verified.
+    // they are stronger asserssions which
+    // should imply earlier checks
+    let eopt = Tcutil::get_type_bound((type_t)root->topt);
+    term_t term_numelts;
+    assn_t bnds_check_sufficient;
+    if (eopt == NULL) {
+      // fat pointer, doesn't know bounds
+      term_numelts          = numelts_term(t1);
+      bnds_check_sufficient = ult(t2, term_numelts);
+    } else {
+      term_numelts          = vcgen_debug_rexp(env, (exp_t)eopt, true_assnmap())[0];
+      bnds_check_sufficient = ult(t2, term_numelts);
+    }
+    update_try_assnmap(env, and_assnmap_assn(am2, or (not(bnds_check_sufficient), not(null_check))),
+                       fresh_var(NULL, Absyn::exn_type()));
+    // associate these checks with the expression for insert_checks
+    let exp_checks =
+        new ExpChecks{.ctxt = am2, .bounds_check = bnds_check, .null_check = null_check};
+    insert_exp_checks(env->assn_info, root, exp_checks);
+    // afterwards, we know both the bounds check and null check succeeded.
+    am2 = and_assnmap_assn(am2, and(bnds_check, null_check));
+  }
+  return $(t1, t2, am2);
+}
+
+static $(term_t res, assn_map_t amout)
+    vcgen_comprehension(env_t env, vardecl_t vd, exp_t e1, exp_t e2, type_t res_type,
+                        assn_map_t amin) {
+  // similar to a while-loop except we evaluate e1 only once.
+  let $(t1, amin) = vcgen_debug_rexp(env, e1, amin);
+  // start off with index 0
+  term_t v = zero();
+  amin     = do_assign(env, amin, myaddr(env, vd), v);
+  while (true) {
+    amin = canonical_assnmap(amin);
+    // fprintf(stderr,"current invariant is %s\n",assnmap2string(amin));
+    let $(v2, am2)   = lookup_var_map(vd, amin);
+    v                = v2;
+    amin             = am2;
+    let amt          = and_assnmap_assn(amin, ult(v, t1));
+    let amf          = and_assnmap_assn(amin, ulte(t1, v));
+    let $(_, ambody) = vcgen_rexp(env, e2, amt);
+    // increment vd
+    let $(v2, am2) = lookup_var_map(vd, ambody);
+    ambody         = do_assign(env, am2, myaddr(env, vd), plus(v2, one(), Absyn::uint_type));
+    ambody         = canonical_assnmap(ambody);
+    // fprintf(stderr,"after body %s\n",assnmap2string(ambody));
+    let $(a1, a2, map) = unify_var_maps_subst(amin, ambody);
+    // fprintf(stderr,"after unify %s || %s\n",assnmap2string(AssnMap(a1,map)),
+    //        assnmap2string(AssnMap(a2,map)));
+    if (implies(a2, a1)) {
+      // fprintf(stderr,"fixed point reached, returning
+      // %s\n",assnmap2string(amf));
+      amin = amf;
+      break;
+    }
+    amin = widen_assnmap(AssnMap(or (a1, a2), map));
+    // fprintf(stderr,"no fixed point, looping with %s\n",assnmap2string(amin));
+  }
+  let res = fresh_var(NULL, res_type);
+  // can add it in that numelts(res) == t1
+  amin = and_assnmap_assn(amin, eq(numelts_term(res), t1));
+  return $(res, amin);
+}
+
+static $(term_t, assn_map_t) vcgen_binop(env_t env, type_opt_t tp_opt, Absyn::primop_t p, term_t t1,
+                                         term_t t2, assn_map_t am) {
+  type_t tp = (type_t)tp_opt;
+  if (Tcutil::is_pointer_type(tp)) {
+    switch (p) {
+      case Absyn::Plus:
+        // if tp is a thin, zeroterminated pointer, p is Plus, then we might
+        // have an exception here...
+        if (!env->pure_exp && Tcutil::is_zeroterm_pointer_type(tp) &&
+            !Tcutil::is_fat_pointer_type(tp))
+          update_try_assnmap(env, am, fresh_var(NULL, Absyn::exn_type()));
+        return $(offseti(t1, t2, tp), am);
+      case Absyn::Minus:
+        return $(offseti(t1, unop(Absyn::Minus, t2, Absyn::sint_type), tp), am);
+      default:
+        Warn::impos("vcgen: result has pointer type but uses bad primop");
+    }
+  }
+  // not a pointer type
+  let t = binop(p, t1, t2, tp);
+  // if the expression has type unsigned, then we may
+  // conclude t == t1%t2 u< t2;
+  if (!env->pure_exp && p == Absyn::UMod && Unify::unify(Absyn::uint_type, tp))
+    am = and_assnmap_assn(am, ult(t, t2));
+  return $(t, am);
+}
+
+static bool visit_pure_stmt(bool @env, stmt_t s) {
+  if (!env)
+    return false;
+  switch (s->r) {
+    case &Absyn::Return_s(...):
+    case &Absyn::While_s(...):
+    case &Absyn::Break_s:
+    case &Absyn::Continue_s:
+    case &Absyn::Goto_s(...):
+    case &Absyn::For_s(...):
+    case &Absyn::Do_s(...):
+    case &Absyn::TryCatch_s(...):
+      *env = false;
+      return false;
+    default:
+      return true;
+  }
+}
+
+static bool visit_pure_exp(bool @env, exp_t e) {
+  if (!env)
+    return false;
+  switch (e->r) {
+    case &Absyn::Primop_e(p, _):
+      if (p == Absyn::Div || p == Absyn::Mod)
+        break;
+      return true;
+    case &Absyn::Cast_e(_, _, _, c):
+      switch (c) {
+        case Absyn::No_coercion:
+          return true;
+        default:
+          break;
+      }
+      break;
+    case &Absyn::AggrMember_e(_, _, is_tagged, _) && is_tagged:
+      break;
+    case &Absyn::Assert_e(_, static_only, _) && !static_only:
+      break;
+    case &Absyn::AssignOp_e(...):
+    case &Absyn::Increment_e(...):
+    case &Absyn::FnCall_e(...):
+    case &Absyn::Throw_e(...):
+    case &Absyn::Deref_e(_):
+    case &Absyn::AggrArrow_e(...):
+    case &Absyn::Subscript_e(...):
+    case &Absyn::Swap_e(...):
+    case &Absyn::Asm_e(...):
+    case &Absyn::Extension_e(...):
+      break;
+    default:
+      return true;
+  }
+  *env = false;
+  return false;
+}
+
+static bool is_pure_exp(exp_t e) {
+  bool env = true;
+  Absyn::visit_exp(visit_pure_exp, visit_pure_stmt, &env, e);
+  return env;
+}
+
+// vcgen_loop deals with For_s, While_s, and Do_s
+// e1infor is e1 in For_s, we will evaluate it first before entering the loop
+// s1indo is s1 in Do_s, we will evaluate it before entering the loop
+// cond is e2 in For_s, e in While_s and Do_s as a loop condition
+// body is the loop body
+// dummy is the statement where the control will jump to at the
+// end of the loop
+// exp_opt_t e3infor is provided because the "continue" statement
+// will jump to e3 in for loop, which is different for while and do
+static assn_map_t vcgen_loop(env_t env, exp_opt_t e1infor, stmt_opt_t s1indo, exp_t cond,
+                             stmt_t dummy, stmt_t body, exp_opt_t e3infor, assn_map_t amin) {
+  // resetting the continue_assnmap because we are entering a new loop
+  assn_map_opt_t old_continue_assnmap = env->continue_assnmap;
+  env->continue_assnmap               = new false_assnmap();
+  // evaluating the initial statement in for/do loops
+  if (e1infor != NULL) {
+    let $(_, am) = vcgen_rexp(env, (exp_t)e1infor, amin);
+    amin         = am;
+  }
+  if (s1indo != NULL) {
+    amin = vcgen_stmt(env, (stmt_t)s1indo, amin);
+  }
+  // calculating loop_inv from the cond
+  // if the cond is of the form @assert(b1) && b2
+  // then we consider the loop invariant as b1
+  // and b2 is the condition to control the loop's termination
+  exp_opt_t loop_inv_exp = NULL;
+  assn_map_t loop_inv_assnmap;
+  switch (cond->r) {
+    case &Absyn::And_e(eleft, eright):
+      switch (eleft->r) {
+        case &Absyn::Assert_e(eassn, static_only, _) && static_only:
+          loop_inv_exp = eassn;
+          cond         = eright;
+          break;
+        default:
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+  // we have to first check that loop invariant is
+  // satisfied by initial state
+
+  // first we calculate the loop invariant
+  // when we use vcgen_test to do that, we have to make sure
+  // we don't widen so that we get the precise loop invariant
+  if (loop_inv_exp != NULL) {
+    let old_widen_paths = env->widen_paths;
+    env->widen_paths    = false;
+    loop_inv_assnmap    = vcgen_test(env, (exp_t)loop_inv_exp, AssnMap{&true_assn, amin.map})[0];
+    env->widen_paths    = old_widen_paths;
+  } else
+    loop_inv_assnmap = AssnMap(&true_assn, amin.map);
+
+  // failed to satisfy the invariant, reset the continue_assnmap
+  if (!implies(amin.assn, loop_inv_assnmap.assn)) {
+    Warn::err(cond->loc, "cannot prove loop invariant %s from %s\n",
+              assn2string(loop_inv_assnmap.assn), assnmap2string(amin));
+    env->continue_assnmap = old_continue_assnmap;
+    return true_assnmap();
+  }
+
+  // Before entering the loop, force all program variables that
+  // change in the body of the loop to be bound to fresh variables.
+  // This eliminates any dependency between these values and those
+  // that happen to be loop-invariant.
+  vardecl_set_t changed = calc_changed_vars_exp(cond);
+  changed               = Set::union_two(changed, calc_changed_vars_stmt(body));
+  if (e3infor != NULL)
+    changed = Set::union_two(changed, calc_changed_vars_exp((exp_t)e3infor));
+#ifdef VCGEN_DEBUG_LOOP
+  fprintf(stderr, "before loop amin = %s\n", assnmap2string(amin));
+#endif
+  amin = force_canonical(changed, amin);
+#ifdef VCGEN_DEBUG_LOOP
+  fprintf(stderr, "force_canonical amin = %s\n", assnmap2string(amin));
+#endif
+
+  // now comes the tricky part, in order to ensure matching mapping
+  // for non-escaping vars at the end of each iteration, we do two
+  // things, first we make sure the initial mapping is of the form
+  // x_i |-> v_i where v_i are distinct logical vars
+  // then at the end of the iteration, we substitute all the v_i's
+  // in the assertion map, so that we can merge mapping to x_i |-> v_i
+  // these two steps are accomplished with canonical_assnmap and
+  // unify_var_maps_subst
+  while (true) {
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "amin = %s\n", assnmap2string(amin));
+#endif
+    amin = canonical_assnmap(amin);
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "canonical amin = %s\n", assnmap2string(amin));
+#endif
+    // merge(and widen) incoming flow with existing info on the loop
+    let amold = lookup_stmt_assnmap(env, dummy);
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "amold = %s\n", assnmap2string(amold));
+#endif
+    amin = or_assnmap_assnmap(amold, amin);
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "or with amold = %s\n", assnmap2string(amin));
+#endif
+    amin = widen_assnmap(amin);
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "widen or with amold = %s\n", assnmap2string(amin));
+#endif
+    replace_stmt_assnmap(env, dummy, amin);
+    // combine the incoming flow with loop invariant
+    if (loop_inv_exp != NULL) {
+      amin = vcgen_test(env, (exp_t)loop_inv_exp, amin)[0];
+    }
+    // combine the incoming flow with the cond
+    let $(amt, amf) = vcgen_test(env, cond, amin);
+    amin            = vcgen_stmt(env, body, amt);
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "after body amin = %s\n", assnmap2string(amin));
+#endif
+    // merging in flow from continue statement
+    amin = or_assnmap_assnmap(amin, *env->continue_assnmap);
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "after merging with continue amin = %s\n", assnmap2string(amin));
+#endif
+    // if it's a for statement, evaluate e3 which is the
+    // destination of the continue statement
+    if (e3infor != NULL) {
+      let $(_, am) = vcgen_rexp(env, e3infor, amin);
+      amin         = am;
+    }
+    // if there is a loop invariant, making sure that
+    // after evaluating the body, the loop invariant is
+    // still satisfied
+    if (loop_inv_exp != NULL) {
+      let old_widen_paths = env->widen_paths;
+      env->widen_paths    = false;
+      loop_inv_assnmap    = vcgen_test(env, (exp_t)loop_inv_exp, AssnMap{&true_assn, amin.map})[0];
+      env->widen_paths    = old_widen_paths;
+    } else
+      loop_inv_assnmap = AssnMap(&true_assn, amin.map);
+    if (!implies(amin.assn, loop_inv_assnmap.assn)) {
+      Warn::err(cond->loc, "cannot prove loop invariant %s from %s\n",
+                assn2string(loop_inv_assnmap.assn), assnmap2string(amin));
+      env->continue_assnmap = old_continue_assnmap;
+      return true_assnmap();
+    }
+    // now merging the old assnmap (which must be canonical) with new one
+    let $(a1, a2, map) = unify_var_maps_subst(lookup_stmt_assnmap(env, dummy), amin);
+    amin               = AssnMap(a2, map);
+#ifdef VCGEN_DEBUG_LOOP
+    fprintf(stderr, "after unify_var_maps_subst amin = %s\n", assnmap2string(amin));
+#endif
+    // if we can prove the old one, we are done with the iteration
+    if (implies(a2, a1)) {
+      env->continue_assnmap = old_continue_assnmap;
+      return amf;
+    }
+  }
+}
+
+static $(term_t, assn_map_t) vcgen_rexp_inner(env_t env, exp_t e, assn_map_t amin) {
+  /*
+  if (Tcutil::is_const_exp(e)){
+     // special case for pragmas
+     switch (e->r) {
+     case &Absyn::Pragma_e(s):
+       if (strcmp(s,"print_assn") == 0) {
+         let seg_str = Position::string_of_segment(e->loc);
+         fprintf(stderr,"%s: %s\n",seg_str,assnmap2string(amin));
+       }
+       if (strcmp(s,"print_dag") == 0) {
+         let seg_str = Position::string_of_segment(e->loc);
+         fprintf(stderr,"%s: %s\n",seg_str,assnmap2dag(amin));
+       }
+       if (strcmp(s,"all_paths") == 0) {
+         env->widen_paths = false;
+       }
+       if (strcmp(s,"one_path") == 0) {
+         env->widen_paths = true;
+       }
+       return $(zero(),amin);
+     case &Absyn::Aggregate_e(...):
+     case &Absyn::AnonStruct_e(...):
+     case &Absyn::Datatype_e(...):
+     case &Absyn::Comprehension_e(...):
+     case &Absyn::Array_e(...):
+     case &Absyn::Cast_e(...):
+     case &Absyn::Address_e(...):
+     case &Absyn::Primop_e(Absyn::Numelts,...):
+     case &Absyn::Var_e(...):
+       // these are treated as "constant" when the initializer
+       // is constant, but I don't really want to allow this for now.
+       // In fact, I'm wondering if we wouldn't be better off avoiding
+       // this call all together...
+       goto ANALYZE;
+     default:  break;
+     }
+     let $(cn, known)= Evexp::eval_const_uint_exp(e);
+     if (known) return $(uint(cn), amin);
+     else return $(cnst(e),amin);
+  }
+ ANALYZE:
+  */
+  switch (e->r) {
+    case &Absyn::Const_e(c):
+      let $(cn, known) = Evexp::eval_const_uint_exp(e);
+      if (known)
+        return $(uint(cn), amin);
+      else
+        return $(cnst(e), amin);
+    case &Absyn::Pragma_e(s):
+      if (strcmp(s, "print_assn") == 0) {
+        let seg_str = Position::string_of_segment(e->loc);
+        fprintf(stderr, "%s: %s\n", seg_str, assnmap2string(amin));
+      }
+      if (strcmp(s, "print_dag") == 0) {
+        let seg_str = Position::string_of_segment(e->loc);
+        fprintf(stderr, "%s: %s\n", seg_str, assnmap2dag(amin));
+      }
+      if (strcmp(s, "all_paths") == 0) {
+        env->widen_paths = false;
+      }
+      if (strcmp(s, "one_path") == 0) {
+        env->widen_paths = true;
+      }
+      return $(zero(), amin);
+    case &Absyn::Var_e(b):
+      // a variable's r-value would be a select from
+      // current memory if the var can escape,
+      // otherwise the r-value is recorded in nonescvar_map
+      let vdopt = bind2vardecl(b);
+      if (vdopt == NULL)
+        return $(fresh_var(NULL, NULL), amin);
+      let vd = (vardecl_t)vdopt;
+      if (vd->escapes) {
+        let $(mem, am1) = lookup_var_map(memory, amin);
+        return $(select(mem, myaddr(env, vd), vd->type), am1);
+      } else {
+        switch (Absyn::compress(vd->type)) {
+            // the right value of an array it's actually the first element's
+            // address
+          case &Absyn::ArrayType(_):
+            return $(myaddr(env, vd), amin);
+          default:
+            break;
+        }
+        let $(t, am) = lookup_var_map(vd, amin);
+        return $(t, am);
+        return lookup_var_map(vd, amin);
+      }
+    case &Absyn::Primop_e(p, &List{e1, NULL}):
+      // an expression with a unary operator
+      let $(t, am) = vcgen_debug_rexp(env, e1, amin);
+      return $(unop(p, t, e->topt), am);
+    case &Absyn::Primop_e(p, &List{e1, &List { e2, _ }}):
+      // an expression with a binary operator
+      let $(t1, am1) = vcgen_debug_rexp(env, e1, amin);
+      let $(t2, am2) = vcgen_debug_rexp(env, e2, am1);
+      return vcgen_binop(env, e->topt, p, t1, t2, am2);
+    case &Absyn::Primop_e(_, _):
+      Warn::impos("vcgen: bad primop");
+    case &Absyn::AssignOp_e(e1, popt, e2):
+      // FIX:  for zeroterm pointers (thin or fat!), if e2 is not zero, this can
+      // fail...
+      let $(t2, am1) = vcgen_debug_rexp(env, e2, amin);
+      let $(lt, am2) = vcgen_debug_lexp(env, e1, am1);
+      assn_map_t amout;
+      if (popt != NULL) {
+        let $(t1, am3) = deref_lterm(env, lt, am2);
+        let $(t2, am4) = vcgen_binop(env, e->topt, popt->v, t1, t2, am3);
+        amout          = do_assign(env, am4, lt, t2);
+        return $(t2, amout);
+      } else {
+        amout = do_assign(env, am2, lt, t2);
+        return $(t2, amout);
+      }
+    case &Absyn::Increment_e(e, i):
+      let $(lt, am1) = vcgen_debug_lexp(env, e, amin);
+      let $(t1, am2) = deref_lterm(env, lt, am1);
+      term_t res, rvalue;
+      assn_map_t amout;
+      switch (i) {
+        case Absyn::PostInc:
+          let $(t, am) = vcgen_binop(env, e->topt, Absyn::Plus, t1, one(), am2);
+          res          = t1;
+          rvalue       = t;
+          amout        = am;
+          break;
+        case Absyn::PreInc:
+          let $(t, am) = vcgen_binop(env, e->topt, Absyn::Plus, t1, one(), am2);
+          rvalue       = t;
+          res          = rvalue;
+          amout        = am;
+          break;
+        case Absyn::PostDec:
+          let $(t, am) = vcgen_binop(env, e->topt, Absyn::Minus, t1, one(), am2);
+          res          = t1;
+          rvalue       = t;
+          amout        = am;
+          break;
+        case Absyn::PreDec:
+          let $(t, am) = vcgen_binop(env, e->topt, Absyn::Minus, t1, one(), am2);
+          rvalue       = t;
+          res          = rvalue;
+          amout        = am;
+          break;
+        default:
+          Warn::impos("vcgen rexp increment_e");
+      }
+      amout = do_assign(env, amout, lt, rvalue);
+      return $(res, amout);
+    case &Absyn::Conditional_e(e1, e2, e3):
+      let $(amt, amf) = vcgen_debug_test(env, e1, amin);
+      let $(t1, amt)  = vcgen_debug_rexp(env, e2, amt);
+      let $(t2, amf)  = vcgen_debug_rexp(env, e3, amf);
+      let v           = fresh_var(NULL, e->topt);
+      amt             = and_assnmap_assn(amt, eq(v, t1));
+      amf             = and_assnmap_assn(amf, eq(v, t2));
+      return $(v, may_widen(env, or_assnmap_assnmap(amt, amf)));
+    case &Absyn::And_e(e1, e2):
+      let $(amt, amf) = vcgen_debug_test(env, e1, amin);
+      let $(t, amt)   = vcgen_debug_rexp(env, e2, amt);
+      let v           = fresh_var(NULL, e->topt);
+      amt             = and_assnmap_assn(amt, eq(v, t));
+      amf             = and_assnmap_assn(amf, eq(v, zero()));
+      return $(v, may_widen(env, or_assnmap_assnmap(amt, amf)));
+    case &Absyn::Or_e(e1, e2):
+      let $(amt, amf) = vcgen_debug_test(env, e1, amin);
+      let $(t, amf)   = vcgen_debug_rexp(env, e2, amf);
+      let v           = fresh_var(NULL, e->topt);
+      amt             = and_assnmap_assn(amt, neq(v, zero()));
+      amf             = and_assnmap_assn(amf, eq(v, t));
+      return $(v, may_widen(env, or_assnmap_assnmap(amt, amf)));
+    case &Absyn::SeqExp_e(e1, e2):
+      let $(_, am1) = vcgen_debug_rexp(env, e1, amin);
+      return vcgen_debug_rexp(env, e2, am1);
+    case &Absyn::FnCall_e(e1, es, ...):
+      let $(f, am1)          = vcgen_debug_rexp(env, e1, amin);
+      let $(ts, am2)         = vcgen_debug_rexps(env, es, am1);
+      let $(pre_memory, am2) = lookup_var_map(memory, am2);
+      let $(args, argvds, checkopt, reqopt, ensopt, thrwsopt, ret_value) =
+          get_requires_and_ensures(e1->topt);
+#ifdef NO_FUN_SUMMARY
+      existassnfn_opt_t fensinfo = NULL;
+#else
+      // we are going to collect assns at caller's site for
+      // static non-escaping functions
+      insert_fn_precond_info(env->fn_precond_info, e1, am2.assn, pre_memory, ts);
+      let fensinfo        = lookup_fn_summary_info(e1);
+#endif
+
+      // if there is a return value, create a
+      // fresh logicvar to represent it.
+      term_t actual_ret = fresh_var(NULL, e->topt);
+      // checking requires assertion
+      let pre_memory_and_ts = new List(pre_memory, ts);
+      if (reqopt != NULL) {
+        // subst the formal args with the actual values
+        let req_assn = existassnfn2assn(reqopt, pre_memory_and_ts);
+        if (!implies(am2.assn, req_assn)) {
+          Warn::err(e->loc,
+                    "current assertion:\n%s\ndoes not satisfy the "
+                    "pre-condition of the function:\n%s\n",
+                    assnmap2string(am2), assn2string(req_assn));
+        }
+      }
+      // after the function call, all non-escaping var's value
+      // should not change, so we should keep the mapping except for
+      // memory
+      let new_memory = fresh_var(memory, NULL);
+      let am3        = update_var_map(memory, new_memory, am2);
+      // merge this with the throws assertion from the function and
+      // update the exception handler.
+      let v = fresh_var(NULL, Absyn::exn_type());
+      if (thrwsopt != NULL) {
+        let throws_assn = existassnfn2assn(thrwsopt, new List(new_memory, pre_memory_and_ts));
+        update_try_assnmap(env, and_assnmap_assn(am3, throws_assn), v);
+      } else {
+        update_try_assnmap(env, am3, v);
+      }
+      // and merge this with the ensures assertion from the function
+      if (ensopt != NULL) {
+        let ens_assn =
+            existassnfn2assn(ensopt, new List(actual_ret, new List(new_memory, pre_memory_and_ts)));
+        am3 = and_assnmap_assn(am3, ens_assn);
+      } else if (fensinfo != NULL) {
+        if (length(fensinfo->af->actuals) != length(ts) + 3) {
+          // 	fprintf(stderr,"fn = %s\n",Absynpp::exp2string(e1));
+          // 	fprintf(stderr,"fensinfo = %s\n",existassnfn2string(fensinfo));
+          // 	fprintf(stderr,"length of terms = %d\n",2+length(ts));
+        } else {
+          let ens_assn = existassnfn2assn(
+              fensinfo, new List(actual_ret, new List(new_memory, pre_memory_and_ts)));
+          am3 = and_assnmap_assn(am3, ens_assn);
+        }
+      }
+      // if the function is marked with attribute noreturn, then the
+      // post-condition is "false".
+      if (Atts::is_noreturn_fn_type((type_t)e1->topt))
+        am3.assn = &false_assn;
+      return $(actual_ret, am3);
+    case &Absyn::Throw_e(e, _):
+      let $(t, am1) = vcgen_debug_rexp(env, e, amin);
+      update_try_assnmap(env, am1, t);
+      return $(fresh_var(NULL, NULL), false_assnmap());
+    case &Absyn::NoInstantiate_e(e):
+      return vcgen_debug_rexp(env, e, amin);
+    case &Absyn::Instantiate_e(e, _):
+      return vcgen_debug_rexp(env, e, amin);
+    case &Absyn::Cast_e(tp, e1, _, *coercion):
+      let c = *coercion;
+      // FIX: when casting from zeroterm to nozeroterm, we need to
+      // decrement the numelts somehow...
+      // FIX: really need to put C coercions in terms...
+      if (Tcutil::is_const_exp(e1)) {
+        let $(cn, known) = Evexp::eval_const_uint_exp(e);
+        if (known)
+          return $(uint(cn), amin);
+      }
+      let $(t, am) = vcgen_debug_rexp(env, e1, amin);
+      // if the types are the same, then we can drop the cast
+      if (Unify::unify(tp, ((type_t)e1->topt)))
+        return $(t, am);
+      // we only need to retain the cast on the term if it
+      // changes the size of the value.  In particular, we
+      // can drop a cast from an int to an unsigned int and
+      // vice versa.  We might be able to get away with
+      // dropping other casts (e.g., char->int) but we'll be
+      // conservative now.
+      switch ($(Absyn::compress(tp), Absyn::compress((type_t)e1->topt))) {
+          // this is a cast that the type-checker was already able to
+          // establish as okay.
+        case $(&Absyn::SubsetType(_, _, af), _) && c == Absyn::No_coercion:
+          return $(t, am);
+          // this is a cast that forgets subset information
+        case $(_, &Absyn::SubsetType(_, _, af)) && c == Absyn::No_coercion:
+          return $(t, am);
+          // these are casts that we must be able to prove
+        case $(&Absyn::SubsetType(vd, _, af), _):
+          // we apply the assertion function to the term t and then check
+          // that am.assn implies the resulting assertion.
+          let check = existassnfn2assn((existassnfn_t)af, new List(t, NULL));
+          if (implies(am.assn, check)) {
+            Warn::err(e->loc, "cannot prove that @subset predicate\n\t%s\nholds from\n\t%s",
+                      assn2string(check), assnmap2string(amin));
+          }
+          am.assn = and(am.assn, check);
+          return $(t, am);
+          // these two cases allow us to drop a cast of a tag_t to int/long
+          // or unsigned int/unsigned long.
+        case $(&Absyn::AppType(&Absyn::IntCon(_, Absyn::Int_sz), _),
+               &Absyn::AppType(&Absyn::TagCon, tagtps)):
+          return $(cnst(Absyn::valueof_exp(tagtps->hd, e1->loc)), am);
+        case $(&Absyn::AppType(&Absyn::IntCon(_, Absyn::Long_sz), _),
+               &Absyn::AppType(&Absyn::TagCon, tagtps)):
+          return $(cnst(Absyn::valueof_exp(tagtps->hd, e1->loc)), am);
+          //      return $(t,am);
+          // this case lets us drop a cast when they are two integers and the
+          // size is the same.
+        case $(&Absyn::AppType(&Absyn::IntCon(u1, s1), _),
+               &Absyn::AppType(&Absyn::IntCon(u2, s2), _)):
+          // wangyl: a hack to tell compiler that long and int have the same
+          // size FIX: this is machine dependent!
+          s1 = (s1 == Absyn::Long_sz ? Absyn::Int_sz : s1);
+          s2 = (s2 == Absyn::Long_sz ? Absyn::Int_sz : s2);
+          if (s1 == s2)
+            return $(t, am);
+          break;
+        case $(&Absyn::AppType(&Absyn::IntCon(_, Absyn::Int_sz), _), &Absyn::PointerType(pi)):
+          fallthru(pi);
+        case $(&Absyn::AppType(&Absyn::IntCon(_, Absyn::Long_sz), _), &Absyn::PointerType(pi)):
+          if (Tcutil::get_bounds_exp_constrain(Absyn::bounds_one(), pi.ptr_atts.bounds, true) !=
+              NULL) {
+            // casting a thin pointer to an (unsigned) int/long is okay -- we
+            // want to drop the cast here because it loses information about
+            // whether or not the term is null.
+            return $(t, am);
+          }
+          break;
+        case $(&Absyn::PointerType(p2), &Absyn::PointerType(p1)):
+          let n1 = Tcutil::force_type2bool(false, p1.ptr_atts.nullable);
+          let n2 = Tcutil::force_type2bool(false, p2.ptr_atts.nullable);
+          let b1 = Tcutil::get_bounds_exp_constrain(Absyn::bounds_one(), p1.ptr_atts.bounds, true);
+          let b2 = Tcutil::get_bounds_exp_constrain(Absyn::bounds_one(), p2.ptr_atts.bounds, true);
+          switch ($(b1, b2)) {
+            case $(&_, &_) && !env->pure_exp:
+              // Both thin pointers -- type-checker should ensure that
+              // we're casting to a smaller length so we don't have to worry
+              // about that check.  Now check to see if we have to do a
+              // NULL-check.
+              if (n1 && !n2) {
+                let null_check = neq(zero(), t);
+                let exp_checks =
+                    new ExpChecks{.ctxt = am, .bounds_check = &true_assn, .null_check = null_check};
+                insert_exp_checks(env->assn_info, e1, exp_checks);
+                update_try_assnmap(env, and_assnmap_assn(am, eq(t, zero())),
+                                   fresh_var(NULL, Absyn::exn_type()));
+                return $(t, and_assnmap_assn(am, null_check));
+              } else
+                return $(t, am);
+            case $(&_, NULL):  // cast to fat -- no failure possible
+              return $(t, am);
+            case $(NULL, &_) && !env->pure_exp:
+              // cast from fat -- need bounds check and possible null check
+              // depending upon n2.
+              let null_check = (env->pure_exp || n2) ? (assn_t)&true_assn : neq(zero(), t);
+              let $(b, _)    = vcgen_debug_rexp(env, (exp_t)b2, am);
+              // When we have t?ZEROTERM and are casting to
+              // t*{e2} or t@{e2} *without* the ZEROTERM, then we
+              // can't allow e2 to be the actual size of the array --
+              // it needs to be one less to ensure that you can't
+              // overwrite the trailing 0.  We achieve this by
+              // incrementing e2 by one.  That is if x has type t?Z,
+              // and we're casting it to t@{2}, then we'd better check
+              // that the size is at least 2+1=3.
+              let zt1 = Tcutil::force_type2bool(false, p1.ptr_atts.zero_term);
+              let zt2 = Tcutil::force_type2bool(false, p2.ptr_atts.zero_term);
+              if (zt1 && !zt2)
+                b = plus(b, one(), get_term_type(b));
+
+              let bcheck = ulte(b, numelts_term(t));
+              let exp_checks =
+                  new ExpChecks{.ctxt = am, .bounds_check = bcheck, .null_check = null_check};
+              insert_exp_checks(env->assn_info, e1, exp_checks);
+              let checks = and(null_check, bcheck);
+              update_try_assnmap(env, and_assnmap_assn(am, not(checks)),
+                                 fresh_var(NULL, Absyn::exn_type()));
+              return $(t, and_assnmap_assn(am, checks));
+            case $(_, _):  // fat to fat -- no failure possible
+              return $(t, am);
+          }
+        default:
+          break;
+      }
+      if (env->pure_exp || c == Absyn::No_coercion) {
+        return $(cast(tp, t), am);
+      } else {
+        // FIX:  we really need to interpret the casts appropriately.
+        update_try_assnmap(env, amin, fresh_var(NULL, Absyn::exn_type()));  // coercion could fail
+        return $(t, am);
+      }
+    case &Absyn::New_e(eopt, e1, qopt):
+      if (eopt != NULL)
+        amin = vcgen_debug_rexp(env, (exp_t)eopt, amin)[1];
+      if (qopt != NULL)
+        amin = vcgen_debug_rexp(env, (exp_t)qopt, amin)[1];
+      // allocation of arrays must be handled specially
+      switch (e1->r) {
+          // FIX?  new "string"?   -- no, that works out okay.  But we need
+          // to fix char x[4] = "foo";  This should be treated the same as
+          // char x[4] = {'f','o','o',0}
+        case &Absyn::Array_e(dles):
+          let $(_, amin) = vcgen_debug_rexp(env, e1, amin);
+          let size       = uint(List::length(dles));
+          let res        = myalloc(env, e, uint(List::length(dles)), e->topt);
+          amin = and_assnmap_assn(amin, and(neq(res, zero()), eq(numelts_term(res), size)));
+          // FIX: would like to add also that select(mem,res,i) = ith term
+          // in the array.  But this could really, really blow up the assertion.
+          return $(res, amin);
+        case &Absyn::Comprehension_e(vd, e1, e2, _):
+          let $(res, amin) = vcgen_comprehension(env, vd, e1, e2, (type_t)e->topt, amin);
+          amin             = and_assnmap_assn(amin, neq(res, zero()));
+          return $(res, amin);
+        default:
+          let $(t, amin)   = vcgen_debug_rexp(env, e1, amin);
+          let res          = myalloc(env, e, one(), e->topt);
+          let $(mem, amin) = lookup_var_map(memory, amin);
+          amin = and_assnmap_assn(amin, and(eq(select(mem, res, e1->topt), t), neq(res, zero())));
+          return $(res, amin);
+      }
+    case &Absyn::Enum_e(...):
+    case &Absyn::AnonEnum_e(...):
+    case &Absyn::Sizeoftype_e(_):
+    case &Absyn::Sizeofexp_e(_):
+    case &Absyn::Valueof_e(_):
+    case &Absyn::Offsetof_e(_, _):
+      let $(cn, known) = Evexp::eval_const_uint_exp(e);
+      if (known)
+        return $(uint(cn), amin);
+      return $(cnst(e), amin);
+    case &Absyn::AggrMember_e(e1, f, is_tagged, is_read):
+      let $(t, amin) = vcgen_debug_rexp(env, e1, amin);
+      let i          = CfFlowInfo::get_field_index((type_t)e1->topt, f);
+      // can throw an exception
+      if (!env->pure_exp && is_tagged && is_read) {
+        // FIX: have insert_checks look for tag here...
+        let ck = eq(tagof_tm(t), uint(i));
+        update_try_assnmap(env, and_assnmap_assn(amin, not(ck)),
+                           fresh_var(NULL, Absyn::exn_type()));
+        amin = and_assnmap_assn(amin, ck);
+      }
+      return $(proj(t, i, e->topt), amin);
+    case &Absyn::Tagcheck_e(e1, f):
+      // same as asking if tagof(e1) == i where f is the ith field
+      let i        = CfFlowInfo::get_field_index((type_t)e1->topt, f);
+      let $(t, am) = vcgen_debug_rexp(env, e1, amin);
+      return vcgen_binop(env, Absyn::sint_type, Absyn::Eq, tagof_tm(t), uint(i), am);
+    case &Absyn::Address_e(e1):
+      return vcgen_debug_lexp(env, e1, amin);
+    case &Absyn::Deref_e(e1):
+      let $(t1, _, amin) = vcgen_deref(env, e1, zero_exp(), amin);
+      let $(mem, amin)   = lookup_var_map(memory, amin);
+      return $(select(mem, t1, e->topt), amin);
+    case &Absyn::AggrArrow_e(e1, f, is_tagged, is_read):
+      let $(t1, _, amin) = vcgen_deref(env, e1, zero_exp(), amin);
+      let i            = CfFlowInfo::get_field_index(Tcutil::pointer_elt_type((type_t)e1->topt), f);
+      let $(mem, amin) = lookup_var_map(memory, amin);
+      if (!env->pure_exp && is_tagged && is_read) {
+        let ck = eq(tagof_tm(select(mem, t1, NULL)), uint(i));
+        update_try_assnmap(env, and_assnmap_assn(amin, not(ck)),
+                           fresh_var(NULL, Absyn::exn_type()));
+        amin = and_assnmap_assn(amin, ck);
+      }
+      let elt_type = Tcutil::pointer_elt_type((type_t)e1->topt);
+      return $(proj(select(mem, t1, elt_type), i, e->topt), amin);
+    case &Absyn::Subscript_e(e1, e2):
+      let $(t1, t2, amin) = vcgen_deref(env, e1, e2, amin);
+      let $(mem, amin)    = lookup_var_map(memory, amin);
+      return $(select(mem, plus(t1, t2, NULL), e->topt), amin);
+    case &Absyn::Datatype_e(es, dd, df):
+      let $(ts, amin) = vcgen_debug_rexps(env, es, amin);
+      let i           = datatype_constructor_index(dd, df);
+      return $(datatype_aggr(i, ts, e->topt), amin);
+
+      // FIX: at least for structs, we can use the Aggr(...) term.
+    case &Absyn::CompoundLit_e(_, dles):
+      fallthru(dles);
+    case &Absyn::Array_e(dles):
+      fallthru(dles);
+    case &Absyn::UnresolvedMem_e(_, dles):
+      for (; dles != NULL; dles = dles->tl) {
+        let &$(_, e) = dles->hd;
+        amin         = (vcgen_debug_rexp(env, e, amin))[1];
+      }
+      return $(fresh_var(NULL, NULL), amin);
+    case &Absyn::Aggregate_e(_, _, dles, _):
+      fallthru(dles);
+    case &Absyn::AnonStruct_e(_, _, dles):
+      let atype                     = (type_t)e->topt;
+      let $(is_tagged, ak, _)       = get_aggr_info(atype);
+      list_t<$(int, term_t) @> dlvs = NULL;
+      unsigned tag                  = 0;
+      for (; dles != NULL; dles = dles->tl) {
+        let &$(dl, e) = dles->hd;
+        let $(v, a)   = vcgen_debug_rexp(env, e, amin);
+        amin          = a;
+        switch (dl) {
+          case &List{&Absyn::FieldName(f), NULL}:
+            let i = CfFlowInfo::get_field_index(atype, f);
+            tag   = i;
+            dlvs  = new List{new $(i, v), dlvs};
+            break;
+          default:
+            Warn::impos("no field name in designator!");
+        }
+      }
+      dlvs    = rimp_merge_sort(cmp_index, dlvs);
+      let vs  = map(Core::snd, dlvs);
+      let res = (ak == Absyn::UnionA) ? union_aggr(tag, vs, e->topt) : struct_aggr(vs, e->topt);
+      return $(res, amin);
+    case &Absyn::Comprehension_e(vd, e1, e2, _):
+      return vcgen_comprehension(env, vd, e1, e2, (type_t)e->topt, amin);
+    case &Absyn::ComprehensionNoinit_e(e, _, _):
+      return $(fresh_var(NULL, NULL), vcgen_debug_rexp(env, e, amin)[1]);
+    case &Absyn::Malloc_e(mi):
+      if (mi.rgn != NULL)
+        amin = vcgen_debug_rexp(env, (exp_t)mi.rgn, amin)[1];
+      let $(t, am1) = vcgen_debug_rexp(env, mi.num_elts, amin);
+      let res       = myalloc(env, e, t, e->topt);
+      let am2       = and_assnmap_assn(am1, and(neq(res, zero()), eq(numelts_term(res), t)));
+      return $(res, am2);
+    case &Absyn::Swap_e(e1, e2):
+      // FIX?  exceptions?  e.g., x.f :=: y.g?
+      let $(lt1, am1) = vcgen_debug_lexp(env, e1, amin);
+      let $(lt2, am2) = vcgen_debug_lexp(env, e2, am1);
+      let $(t1, am3)  = deref_lterm(env, lt1, am2);
+      let $(t2, am4)  = deref_lterm(env, lt2, am3);
+      let am5         = do_assign(env, am4, lt1, t2);
+      let am6         = do_assign(env, am5, lt2, t1);
+      return $(fresh_var(NULL, NULL), am6);
+    case &Absyn::StmtExp_e(s):
+      let old_exp_stmt = env->exp_stmt;
+      env->exp_stmt    = new fresh_var(NULL, NULL);
+      let amout        = vcgen_debug_stmt(env, s, amin);
+      let t            = *(env->exp_stmt);
+      env->exp_stmt    = old_exp_stmt;
+      return $(t, amout);
+    case &Absyn::Asm_e(...):
+      return $(fresh_var(NULL, NULL), amin);
+    case &Absyn::Extension_e(e):
+      return vcgen_debug_rexp(env, e, amin);
+    case &Absyn::Assert_e(e1, static_only, _) && static_only:
+      let old_widen_paths = env->widen_paths;
+      let old_pure_exp    = env->pure_exp;
+      env->widen_paths    = false;
+      env->pure_exp       = true;
+      let $(amt, _)       = vcgen_debug_test(env, e1, AssnMap{&true_assn, amin.map});
+      env->widen_paths    = old_widen_paths;
+      env->pure_exp       = old_pure_exp;
+      if (!implies(amin.assn, amt.assn))
+        Warn::err(e->loc, "cannot prove @assert(%s)\nfrom\n %s", assn2string(amt.assn),
+                  assnmap2string(amin));
+      return $(one(), and_assnmap_assn(amin, amt.assn));
+    case &Absyn::Assert_e(e1, _, *do_check):
+      // a dynamic assertion is treated similar to
+      //   if (!e1) throw(_)
+      let $(amt, amf) = vcgen_debug_test(env, e1, amin);
+      // if amf implies false *and* if e1 is pure then we can omit the check.
+      if (implies(amf.assn, &false_assn)) {
+        if (is_pure_exp(e1))
+          *do_check = false;
+        else
+          *do_check = true;
+      } else {
+        *do_check = true;
+        if (Flags::warn_assert)
+          Warn::warn2(e->loc, "assert(", e1, ") might fail at run-time");
+        let v = fresh_var(NULL, Absyn::exn_type());
+        update_try_assnmap(env, amf, v);
+      }
+      return $(one(), amt);
+    case &Absyn::Assert_false_e(e1):
+      let old_widen_paths = env->widen_paths;
+      let old_pure_exp    = env->pure_exp;
+      env->widen_paths    = false;
+      env->pure_exp       = true;
+      let $(amt, _)       = vcgen_debug_test(env, e1, AssnMap{&true_assn, amin.map});
+      env->widen_paths    = old_widen_paths;
+      env->pure_exp       = old_pure_exp;
+      if (implies(amin.assn, amt.assn))
+        Warn::err(e->loc, "proved @assert_false(%s)\nfrom\n %s", assnmap2string(amt),
+                  assnmap2string(amin));
+      return $(one(), amin);
+      ;
+  }
+}
+
+// add in any information from subset types to the assertion
+static $(term_t, assn_map_t) vcgen_rexp(env_t env, exp_t e, assn_map_t amin) {
+  let $(t, am) = vcgen_rexp_inner(env, e, amin);
+  switch (Absyn::compress((type_t)e->topt)) {
+    case &Absyn::SubsetType(_, _, af):
+      let terms = List{t, NULL};
+      let assn  = existassnfn2assn((existassnfn_t)af, &terms);
+      am.assn   = and(am.assn, assn);
+      break;
+    default:
+      break;
+  }
+  return $(t, am);
+}
+
+static $(list_t<term_t>, assn_map_t) vcgen_rexps(env_t env, list_t<exp_t> es, assn_map_t amin) {
+  let result = NULL;
+  for (; es != NULL; es = es->tl) {
+    let $(t, am) = vcgen_debug_rexp(env, es->hd, amin);
+    result       = new List(t, result);
+    amin         = am;
+  }
+  return $(List::imp_rev(result), amin);
+}
+
+// generating a term that represents the address
+// during the evaluation, assn_map_t might change.
+static $(term_t, assn_map_t) vcgen_lexp(env_t env, exp_t e, assn_map_t amin) {
+  switch (e->r) {
+    case &Absyn::Var_e(&Absyn::Global_b(vd)):
+      fallthru(vd);
+    case &Absyn::Var_e(&Absyn::Local_b(vd)):
+      // a regular (global/local) variable, check it's not array type
+      switch (Absyn::compress(vd->type)) {
+        case &Absyn::ArrayType(ai):
+          // when it's an array type, we treat it as if it were x[0]
+          let p = Tcutil::promote_array(vd->type, Absyn::heap_rgn_type, Absyn::al_qual_type, false);
+          return $(offseti(myaddr(env, vd), zero(), p), amin);
+        default:
+          return $(myaddr(env, vd), amin);
+      }
+    case &Absyn::Var_e(&Absyn::Param_b(vd)):
+      fallthru(vd);
+    case &Absyn::Var_e(&Absyn::Pat_b(vd)):
+      // function parameters and pattern variables should not be of array type.
+      // an array type will be promoted to a pointer type
+      return $(myaddr(env, vd), amin);
+    case &Absyn::Deref_e(e1):
+      // lexp of the form *e, first evaluate r-value of e,
+      // lvalue of *e is rvalue(e) + 0;
+      // let $(t,am1) = vcgen_debug_rexp(env,e1,amin);
+      let $(t1, t2, am1) = vcgen_deref(env, e1, zero_exp(), amin);
+      return $(t1, am1);
+    case &Absyn::Subscript_e(e1, e2):
+      // let $(t1,am1) = vcgen_debug_rexp(env,e1,amin);
+      // let $(t2,am2) = vcgen_debug_rexp(env,e2,am1);
+      let $(t1, t2, am1) = vcgen_deref(env, e1, e2, amin);
+      return $(offseti(t1, t2, NULL), am1);
+    case &Absyn::AggrArrow_e(e1, f, ...):
+      // let $(t1,am1) = vcgen_debug_rexp(env,e1,amin);
+      let $(t1, t2, am1) = vcgen_deref(env, e1, zero_exp(), amin);
+      let i = CfFlowInfo::get_field_index(Tcutil::pointer_elt_type((type_t)e1->topt), f);
+      // FIX -- this type doesn't seem right... and I cheated on the region.
+      let tp = Absyn::at_type((type_t)e->topt, Absyn::heap_rgn_type, Absyn::al_qual_type,
+                              Absyn::empty_tqual(0), Absyn::false_type, Absyn::false_type);
+      return $(offsetf(t1, i, tp), am1);
+    case &Absyn::AggrMember_e(e1, f, ...):
+      let $(t1, am1) = vcgen_debug_lexp(env, e1, amin);
+      let i          = CfFlowInfo::get_field_index((type_t)e1->topt, f);
+      // FIX -- this type doesn't seem right... and I cheated on the region.
+      let tp = Absyn::at_type((type_t)e->topt, Absyn::heap_rgn_type, Absyn::al_qual_type,
+                              Absyn::empty_tqual(0), Absyn::false_type, Absyn::false_type);
+      return $(offsetf(t1, i, tp), am1);
+    case &Absyn::Instantiate_e(e1, ...):
+      fallthru(e1);
+    case &Absyn::NoInstantiate_e(e1):
+      return vcgen_debug_lexp(env, e1, amin);
+    default:
+      // FIX -- this type doesn't seem right... and I cheated on the region.
+      let tp = Absyn::at_type((type_t)e->topt, Absyn::heap_rgn_type, Absyn::al_qual_type,
+                              Absyn::empty_tqual(0), Absyn::false_type, Absyn::false_type);
+      return $(fresh_var(NULL, tp), amin);
+  }
+}
+
+// determine whether a comparing these two expressions is an
+// unsigned or a signed comparison.
+static bool unsigned_comparison(exp_t e1, exp_t e2) {
+  let t1 = Absyn::compress((type_t)e1->topt);
+  let t2 = Absyn::compress((type_t)e2->topt);
+  switch ($(t1, t2)) {
+    case $(&Absyn::AppType(&Absyn::IntCon(Absyn::Unsigned, _), _), _):
+      return true;
+    case $(_, &Absyn::AppType(&Absyn::IntCon(Absyn::Unsigned, _), _)):
+      return true;
+    case $(&Absyn::PointerType(_), &Absyn::PointerType(_)):
+      return true;
+    default:
+      return false;
+  }
+}
+
+#define sgte(t1, t2) (slte(t2, t1))
+#define ugte(t1, t2) (ulte(t2, t1))
+#define sgt(t1, t2) (slt(t2, t1))
+#define ugt(t1, t2) (ult(t2, t1))
+
+// generating assnmap for when e evaluates to true and when e evalutes to false
+static $(assn_map_t, assn_map_t) vcgen_test(env_t env, exp_t e, assn_map_t ain) {
+  switch (e->r) {
+    case &Absyn::Conditional_e(e1, e2, e3):
+      let $(a1t, a1f) = vcgen_debug_test(env, e1, ain);
+      let $(a2t, a2f) = vcgen_debug_test(env, e2, a1t);
+      let $(a3t, a3f) = vcgen_debug_test(env, e3, a1f);
+      return $(may_widen(env, or_assnmap_assnmap(a2t, a3t)),
+               may_widen(env, or_assnmap_assnmap(a2f, a3f)));
+    case &Absyn::And_e(e1, e2):
+      let $(a1t, a1f) = vcgen_debug_test(env, e1, ain);
+      let $(a2t, a2f) = vcgen_debug_test(env, e2, a1t);
+      return $(a2t, may_widen(env, or_assnmap_assnmap(a1f, a2f)));
+    case &Absyn::Or_e(e1, e2):
+      let $(a1t, a1f) = vcgen_debug_test(env, e1, ain);
+      let $(a2t, a2f) = vcgen_debug_test(env, e2, a1f);
+      return $(may_widen(env, or_assnmap_assnmap(a1t, a2t)), a2f);
+    case &Absyn::SeqExp_e(e1, e2):
+      let $(_, ain) = vcgen_debug_rexp(env, e1, ain);
+      return vcgen_debug_test(env, e2, ain);
+    case &Absyn::Primop_e(Absyn::Not, &List(e1, _)):
+      let $(at, af) = vcgen_debug_test(env, e1, ain);
+      return $(af, at);
+    case &Absyn::Tagcheck_e(e1, f):
+      // same as asking if tagof(e1) == i where f is the ith field
+      let i         = uint(CfFlowInfo::get_field_index((type_t)e1->topt, f));
+      let $(t, ain) = vcgen_debug_rexp(env, e1, ain);
+      let tt        = tagof_tm(t);
+      let at        = and_assnmap_assn(ain, eq(tt, i));
+      let af        = and_assnmap_assn(ain, neq(tt, i));
+      return $(at, af);
+    case &Absyn::Primop_e(p, &List(e1, &List(e2, NULL))):
+      let $(t1, a1) = vcgen_debug_rexp(env, e1, ain);
+      let $(t2, a2) = vcgen_debug_rexp(env, e2, a1);
+      let at        = a2;
+      let af        = a2;
+      switch
+        p {
+          case Absyn::Eq:
+            at = and_assnmap_assn(at, eq(t1, t2));
+            af = and_assnmap_assn(af, neq(t1, t2));
+            break;
+          case Absyn::Neq:
+            at = and_assnmap_assn(at, neq(t1, t2));
+            af = and_assnmap_assn(af, eq(t1, t2));
+            break;
+          case Absyn::ULt:
+            at = and_assnmap_assn(at, ult(t1, t2));
+            af = and_assnmap_assn(af, ugte(t1, t2));
+            break;
+          case Absyn::Lt:
+            at = and_assnmap_assn(at, slt(t1, t2));
+            af = and_assnmap_assn(af, sgte(t1, t2));
+            break;
+          case Absyn::ULte:
+            at = and_assnmap_assn(at, ulte(t1, t2));
+            af = and_assnmap_assn(af, ugt(t1, t2));
+            break;
+          case Absyn::Lte:
+            at = and_assnmap_assn(at, slte(t1, t2));
+            af = and_assnmap_assn(af, sgt(t1, t2));
+            break;
+          case Absyn::UGt:
+            at = and_assnmap_assn(at, ugt(t1, t2));
+            af = and_assnmap_assn(af, ulte(t1, t2));
+            break;
+          case Absyn::Gt:
+            at = and_assnmap_assn(at, sgt(t1, t2));
+            af = and_assnmap_assn(af, slte(t1, t2));
+            break;
+          case Absyn::UGte:
+            at = and_assnmap_assn(at, ugte(t1, t2));
+            af = and_assnmap_assn(af, ult(t1, t2));
+            break;
+          case Absyn::Gte:
+            at = and_assnmap_assn(at, sgte(t1, t2));
+            af = and_assnmap_assn(af, slt(t1, t2));
+            break;
+          default:
+            let $(t, am) = vcgen_binop(env, e->topt, p, t1, t2, at);
+            at           = and_assnmap_assn(at, ugte(t, one()));
+            af           = and_assnmap_assn(af, eq(t, zero()));
+            break;
+        }
+      return $(at, af);
+    case &Absyn::Cast_e(tp, e1, _, _):
+      switch ($(Absyn::compress(tp), Absyn::compress((type_t)e1->topt))) {
+          // this case lets us drop a cast when they are two integers and the
+          // size is the same.
+        case $(&Absyn::AppType(&Absyn::IntCon(u1, s1), _),
+               &Absyn::AppType(&Absyn::IntCon(u2, s2), _)):
+          // wangyl: a hack to tell compiler that long and int have the same
+          // size FIX: this is machine dependent!
+          s1 = (s1 == Absyn::Long_sz ? Absyn::Int_sz : s1);
+          s2 = (s2 == Absyn::Long_sz ? Absyn::Int_sz : s2);
+          if (s1 == s2)
+            return vcgen_debug_test(env, e1, ain);
+          break;
+        default:
+          break;
+      }
+      fallthru();
+    default:
+      let $(t, aout) = vcgen_debug_rexp(env, e, ain);
+      switch (t) {
+        case &Uint(0, _):  // conditional is always false
+          return $(and_assnmap_assn(aout, &false_assn), aout);
+        case &Uint(_, _):  // conditional is always true
+          return $(aout, and_assnmap_assn(aout, &false_assn));
+        default:
+          return $(and_assnmap_assn(aout, ugte(t, one())), and_assnmap_assn(aout, eq(t, zero())));
+      }
+  }
+}
+
+static void update_return(env_t env, term_opt_t topt, assn_map_t a, type_opt_t tp) {
+  // optimization -- can skip false assertions
+  if (a.assn == &false_assn)
+    return;
+  term_t t;
+  if (topt != NULL)
+    t = (term_t)topt;
+  else
+    t = fresh_var(NULL, tp);
+  // there is no ensures clause, nothing needs to be done with the return
+  if (env->res_assnmap == NULL)
+    return;
+  if (env->result != NULL) {
+    a = do_assign(env, a, myaddr(env, (vardecl_t)env->result), t);
+  }
+  a                 = may_widen(env, or_assnmap_assnmap(*env->res_assnmap, a));
+  *env->res_assnmap = a;
+}
+
+static exp_opt_t find_assert_e(stmt_t s) {
+  while (true) {
+    switch (s->r) {
+      case &Absyn::Exp_s(&Absyn::Exp{.r = &Absyn::Assert_e(e, static_only, _), ...}) && static_only:
+        return e;
+      case &Absyn::Seq_s(sa, _):
+        s = sa;
+        continue;
+      default:
+        return NULL;
+    }
+  }
+}
+
+// To simplify things, I'm treating the control-flow as if it were
+// structured.  Upon reaching a labelled statement, I set the pre-
+// condition to "True" which is conservative, unless there's an
+// explicit invariant associated with the label.   This lets me do
+// local iteration for loops and so forth to generate invariants,
+// since the only back-edges in the simplified graph are always
+// part of the control constructs, or have an explicit invariant
+// associated with them.
+static assn_map_t vcgen_stmt(env_t env, stmt_t s, assn_map_t amin) {
+LOOP:
+  let oldam = lookup_stmt_assnmap(env, s);
+  amin      = or_assnmap_assnmap(oldam, amin);
+  switch (s->r) {
+    case &Absyn::Skip_s:
+      return amin;
+    case &Absyn::Exp_s(e):
+      let $(t, amout) = vcgen_debug_rexp(env, e, amin);
+      if (env->exp_stmt != NULL)
+        *(env->exp_stmt) = t;
+      return amout;
+    case &Absyn::Seq_s(s1, s2):
+      amin = vcgen_debug_stmt(env, s1, amin);
+      s    = s2;
+      goto LOOP;
+    case &Absyn::Return_s(e as & _):
+      let $(t, amout) = vcgen_debug_rexp(env, (exp_t)e, amin);
+      update_return(env, t, amout, e->topt);
+      return false_assnmap();
+    case &Absyn::Return_s(NULL):
+      update_return(env, NULL, amin, NULL);
+      return false_assnmap();
+    case &Absyn::IfThenElse_s(e1, s1, s2):
+      let $(amt, amf) = vcgen_debug_test(env, e1, amin);
+      amt             = vcgen_debug_stmt(env, s1, amt);
+      amf             = vcgen_debug_stmt(env, s2, amf);
+      return may_widen(env, or_assnmap_assnmap(amt, amf));
+    case &Absyn::Continue_s:
+      *env->continue_assnmap = or_assnmap_assnmap(*env->continue_assnmap, amin);
+      return false_assnmap();
+    case &Absyn::Break_s:
+      let dest = Hashtable::lookup(env->succ_table, s);
+      if (dest == NULL)
+        update_return(env, NULL, amin, NULL);
+      else
+        update_stmt_assnmap(env, (stmt_t)dest, amin);
+      return false_assnmap();
+    case &Absyn::While_s($(e, dummy), s1):
+      return vcgen_loop(env, NULL, NULL, e, dummy, s1, NULL, amin);
+    case &Absyn::For_s(e1, $(e2, dummy2), $(e3, dummy3), s1):
+      return vcgen_loop(env, e1, NULL, e2, dummy2, s1, e3, amin);
+    case &Absyn::Do_s(s1, $(e, dummy)):
+      return vcgen_loop(env, NULL, s1, e, dummy, s1, NULL, amin);
+    case &Absyn::Switch_s(e, scs, dtree):
+      let $(t, am) = vcgen_debug_rexp(env, e, amin);
+      return vcgen_debug_switch(env, t, scs, am);
+    case &Absyn::Fallthru_s(_, NULL):
+      Warn::impos("vcgen fallthru");
+    case &Absyn::Fallthru_s(es, &dest):
+      // Also a forward jump so we can do an or.
+      let $(ts, am) = vcgen_debug_rexps(env, es, amin);
+      if (ts != NULL) {
+        // pat_vars has a bunch of nulls before meaning full pat vars;
+        let x = Tcutil::filter_nulls(List::split(dest->pat_vars->v)[0]);
+        // initialize the pattern variables with their corresponding terms
+        for (; x != NULL; x = x->tl, ts = ts->tl) {
+          let vd = x->hd;
+          if (vd != NULL)
+            am = do_assign(env, am, myaddr(env, vd), ts->hd);
+        }
+      }
+      update_stmt_assnmap(env, dest->body, am);
+      return false_assnmap();
+    case &Absyn::Decl_s(d, s1):
+      amin = vcgen_debug_local_decl(env, d, amin);
+      s    = s1;
+      goto LOOP;
+    case &Absyn::Label_s(_, s1):
+      // check to see if s1 is an assertion -- if so, use it as the
+      // assumption.  When we do a goto, we'll also look to see if
+      // the target label has an assertion and check the implication.
+      exp_opt_t label_assn_opt = find_assert_e(s1);
+      if (label_assn_opt == NULL) {
+        // by making the assertion True here, we're effectively losing
+        // all information when we do a goto.  This is conservative,
+        // and means that I don't have to worry about non-structured
+        // control-flow.
+        amin = true_assnmap();
+      } else {
+        // need to compute the assertion with the current map
+        let $(amt, _) = vcgen_debug_test(env, (exp_t)label_assn_opt, AssnMap{&true_assn, amin.map});
+        if (!implies(amin.assn, amt.assn))
+          Warn::err(s->loc, "can not prove @assert(%s) \n from %s", assnmap2string(amin),
+                    assnmap2string(amt));
+        // now we've done verifying that the assertion is satisfied by
+        // incoming flow, we want to generate a fresh new map for
+        // the following analysis
+        let $(amt, _) = vcgen_debug_test(env, (exp_t)label_assn_opt, true_assnmap());
+        amin          = amt;
+      }
+      s = s1;
+      goto LOOP;
+    case &Absyn::Goto_s(_):
+      // if the target label has an @assert associated with it,
+      // then check that we imply the assertion.
+      let destopt = Hashtable::lookup(env->succ_table, s);
+      if (destopt != NULL) {
+        switch (destopt->r) {
+          case &Absyn::Label_s(_, s1):
+            exp_opt_t label_assn_opt = find_assert_e(s1);
+            if (label_assn_opt == NULL)
+              break;
+            exp_t label_assn = (exp_t)label_assn_opt;
+            let $(amt, _)    = vcgen_debug_test(env, label_assn, AssnMap{&true_assn, amin.map});
+            if (!implies(amin.assn, amt.assn))
+              Warn::err(s->loc, "cannot prove @assert(%s)\nfrom %s", assn2string(amt.assn),
+                        assnmap2string(amin));
+            break;
+          default:
+            Warn::impos("vcgen goto");
+        }
+      }
+      return false_assnmap();  // see above
+    case &Absyn::TryCatch_s(s, scs, dtree):
+#ifdef NO_TRY_ASSNMAP
+      let old_try_assnmap = env->try_assnmap;
+      // install new try/catch-handler assertion
+      env->try_assnmap = NULL;
+      // run vcgen on the body -- this will update the env->shared->try_assn
+      // with assertions of any state that might throw an exn.
+      let am1 = vcgen_debug_stmt(env, s, amin);
+      // restore the old handler's assertion.
+      let new_try_assnmap = true_assnmap();
+      env->try_assnmap    = old_try_assnmap;
+      // analyze the catch handlers and merge with the body to get
+      // the final output.
+      let $(exc, am2) = lookup_var_map(exception_vardecl(), am1);
+      let am3         = vcgen_debug_switch(env, exc, scs, new_try_assnmap);
+      return may_widen(env, or_assnmap_assnmap(am1, am2));
+#else
+      let old_try_assnmap = env->try_assnmap;
+      // install new try/catch-handler assertion
+      env->try_assnmap = new (false_assnmap());
+      // run vcgen on the body -- this will update the env->shared->try_assn
+      // with assertions of any state that might throw an exn.
+      let am1 = vcgen_debug_stmt(env, s, amin);
+      // restore the old handler's assertion.
+      let new_try_assnmap = *env->try_assnmap;
+      env->try_assnmap    = old_try_assnmap;
+      // analyze the catch handlers and merge with the body to get
+      // the final output.
+      let $(exc, am2) = lookup_var_map(exception_vardecl(), am1);
+      let am3         = vcgen_debug_switch(env, exc, scs, new_try_assnmap);
+      return may_widen(env, or_assnmap_assnmap(am1, am2));
+#endif
+  }
+}
+
+static $(assn_map_t, assn_map_t)
+    vcgen_pat(env_t env, Absyn::pat_t p, term_opt_t lvalue, term_t v, assn_map_t amin) {
+  switch (p->r) {
+    case &Absyn::Wild_p:  // _
+      return $(amin, false_assnmap());
+    case &Absyn::Var_p(vd, p2):  // x as p2
+      let $(amt, amf) = vcgen_debug_pat(env, p2, lvalue, v, amin);
+      return $(do_assign(env, amt, myaddr(env, vd), v), amf);
+    case &Absyn::AliasVar_p(tv, vd):
+      return $(do_assign(env, amin, myaddr(env, vd), v), false_assnmap());
+    case &Absyn::Reference_p(vd, p2):
+      let $(amt, amf) = vcgen_debug_pat(env, p2, lvalue, v, amin);
+      if (lvalue == NULL)
+        Warn::impos("vcgen reference pattern matching");
+      return $(do_assign(env, amt, myaddr(env, vd), (term_t)lvalue), amf);
+    case &Absyn::TagInt_p(_, vd):
+      return $(do_assign(env, amin, myaddr(env, vd), v), false_assnmap());
+    case &Absyn::Null_p:
+      let t = zero();
+      return $(and_assnmap_assn(amin, eq(v, t)), and_assnmap_assn(amin, neq(v, t)));
+    case &Absyn::Int_p(s, i):
+      let t = uint(i);
+      return $(and_assnmap_assn(amin, eq(v, t)), and_assnmap_assn(amin, neq(v, t)));
+    case &Absyn::Char_p(c):
+      let t = uint(c);
+      return $(and_assnmap_assn(amin, eq(v, t)), and_assnmap_assn(amin, neq(v, t)));
+    case &Absyn::Float_p(f, i):
+      let e   = Absyn::float_exp(f, i, 0);
+      e->topt = Absyn::gen_float_type(i);
+      let t   = cnst(e);
+      return $(and_assnmap_assn(amin, eq(v, t)), and_assnmap_assn(amin, neq(v, t)));
+    case &Absyn::Enum_p(ed, ef):
+      let e   = Absyn::new_exp(new Absyn::Enum_e(ed, ef), 0);
+      e->topt = p->topt;
+      let t   = cnst(e);
+      return $(and_assnmap_assn(amin, eq(v, t)), and_assnmap_assn(amin, neq(v, t)));
+    case &Absyn::AnonEnum_p(type, ef):
+      let e   = Absyn::new_exp(new Absyn::AnonEnum_e(type, ef), 0);
+      e->topt = p->topt;
+      let t   = cnst(e);
+      return $(and_assnmap_assn(amin, eq(v, t)), and_assnmap_assn(amin, neq(v, t)));
+    case &Absyn::Pointer_p(p2):
+      // the value to be matched with p2 is the content of location v
+      let $(mem, amin) = lookup_var_map(memory, amin);
+      let v2           = select(mem, v, p->topt);
+      let $(amt, amf)  = vcgen_debug_pat(env, p2, v, v2, amin);
+      // the false branch could be that v is not a pointer
+      return $(and_assnmap_assn(amt, neq(zero(), v)), or_assnmap_assn(amf, eq(zero(), v)));
+    case &Absyn::Aggr_p(topt, _, _, dlps, _):
+      type_t type                 = (type_t)topt;
+      let $(is_tagged, _, fields) = get_aggr_info(type);
+      assn_map_t amt              = amin;
+      assn_map_t amf              = false_assnmap();
+      for (; dlps != NULL; dlps = dlps->tl) {
+        let tup = dlps->hd;
+        let p2  = tup->f1;
+        if (p2->r == &Absyn::Wild_p_val)
+          continue;
+        let f = Absyn::designatorlist_to_fieldname(tup->f0);
+        let i = CfFlowInfo::get_field_index(type, f);
+        if (is_tagged) {
+          // for tagged unions, we pretend the tag is an extra member
+          // at the end of the aggregate.
+          let tag_check = eq(tagof_tm(v), uint(i));
+          amt           = and_assnmap_assn(amt, tag_check);
+          amf           = or_assnmap_assn(amf, not(tag_check));
+        }
+        let member = proj(v, i, p2->topt);
+        let path   = NULL;
+        if (lvalue != NULL)
+          path = offsetf(lvalue, i, NULL);
+        let $(amt2, amf2) = vcgen_debug_pat(env, p2, path, member, amt);
+        amf               = may_widen(env, or_assnmap_assnmap(amf, amf2));
+        amt               = amt2;
+      }
+      return $(amt, amf);
+    case &Absyn::Datatype_p(dd, df, ps, _):
+      // for datatypes, we pretend we have an aggregate with the first
+      // field being an integer corresponding to the constructor.
+      int i            = datatype_constructor_index(dd, df);
+      assn_t tag_check = eq(tagof_tm(v), uint(i));
+      assn_map_t amt   = and_assnmap_assn(amin, tag_check);
+      assn_map_t amf   = false_assnmap();
+      for (unsigned j = 0; ps != NULL; ps = ps->tl, ++j) {
+        let p2     = ps->hd;
+        let member = proj(v, j, p2->topt);
+        let path   = NULL;
+        if (lvalue != NULL) {
+          path = offsetf(lvalue, j, NULL);
+        }
+        let $(amt2, amf2) = vcgen_debug_pat(env, p2, path, member, amt);
+        amf               = may_widen(env, or_assnmap_assnmap(amf, amf2));
+        amt               = amt2;
+      }
+      amf = or_assnmap_assn(amf, not(tag_check));
+      return $(amt, amf);
+    case &Absyn::UnknownId_p(_):
+    case &Absyn::UnknownCall_p(...):
+    case &Absyn::Exp_p(_):
+      Warn::impos("vcgen pat found bad pattern");
+  }
+}
+
+static assn_map_t vcgen_switch(env_t env, term_t v, list_t<switch_clause_t> scs, assn_map_t amin) {
+  // note that all of the clauses should explicitly jump (via break)
+  // or something else outside of the clause so the result should always
+  // be false...
+  assn_map_t res = false_assnmap();
+  for (; scs != NULL; scs = scs->tl) {
+    let sc          = scs->hd;
+    let $(amt, amf) = vcgen_debug_pat(env, sc->pattern, NULL, v, amin);
+    if (sc->where_clause != NULL) {
+      let $(amt2, amf2) = vcgen_debug_test(env, (exp_t)sc->where_clause, amt);
+      amt               = amt2;
+      amf               = may_widen(env, or_assnmap_assnmap(amf, amf2));
+    }
+    res = may_widen(env, or_assnmap_assnmap(res, vcgen_debug_stmt(env, sc->body, amt)));
+    if (!env->widen_paths)
+      amin = amf;
+  }
+  return res;
+}
+
+assn_map_t clause2assn(exp_t e) {
+  let env = bogus_env();
+  //  let am = update_var_map(memory,fresh_var(NULL,NULL),true_assnmap());
+  let am       = true_assnmap();
+  let $(_, am) = lookup_var_map(memory, am);  // force memory to have a binding
+  let res      = vcgen_debug_test(env, e, am).f0;
+  return res;
+}
+
+#ifdef VCGEN_PROFILE
+// helper function to calculate size of an expression's AST
+static bool visit_size_f1(int @counter, exp_t e) {
+  (*counter)++;
+  return true;
+}
+
+// helper function to calculate size of a statement's AST
+static bool visit_size_f2(int @counter, stmt_t e) {
+  (*counter)++;
+  return true;
+}
+
+// use visit_stmt to calculate size of function body's AST
+static int fn_body_size(stmt_t body) {
+  int size = 0;
+  Absyn::visit_stmt(visit_size_f1, visit_size_f2, &size, body);
+  return size;
+}
+
+typedef struct SetPair {
+  Hashtable::table_t<assn_t, assn_t> assn_set;
+  Hashtable::table_t<term_t, term_t> term_set;
+} @setpair_t;
+
+// (recursively) collecting assertions used in VCs
+static void closure_assn_set(assn_t a, assn_t dummy, setpair_t sp) {
+  if (Hashtable::lookup_opt(sp->assn_set, a) != NULL)
+    return;
+  Hashtable::insert(sp->assn_set, a, a);
+  switch (a) {
+    case &True:
+    case &False:
+      break;
+    case &And(a1, a2):
+      fallthru(a1, a2);
+    case &Or(a1, a2):
+      closure_assn_set(a1, a1, sp);
+      closure_assn_set(a2, a2, sp);
+      break;
+    case &Prim(t1, p, t2):
+      Hashtable::insert(sp->term_set, t1, t1);
+      Hashtable::insert(sp->term_set, t2, t2);
+      break;
+  }
+  return;
+}
+
+// (recursively) collecting terms used in VCs
+static void closure_term_set(term_t t, term_t dummy, Hashtable::table_t<term_t, term_t> term_set) {
+  if (Hashtable::lookup_opt(term_set, t) != NULL)
+    return;
+  Hashtable::insert(term_set, t, t);
+  switch (t) {
+    case &Uint(...):
+    case &Const(...):
+    case &LogicVar(...):
+      break;
+    case &Unop(_, t1, _):
+      fallthru(t1);
+    case &Cast(_, t1):
+      fallthru(t1);
+    case &Proj(t1, _, _):
+      fallthru(t1);
+    case &Addr(_, t1, _):
+      fallthru(t1);
+    case &Offsetf(t1, _, _):
+      fallthru(t1);
+    case &Tagof(t1):
+      closure_term_set(t1, t1, term_set);
+      break;
+    case &Binop(_, t1, t2, _):
+      fallthru(t1, t2);
+    case &Select(t1, t2, _):
+      fallthru(t1, t2);
+    case &AggrUpdate(t1, _, t2):
+      fallthru(t1, t2);
+    case &Alloc(_, _, t1, t2, _):
+      fallthru(t1, t2);
+    case &Offseti(t1, t2, _):
+      closure_term_set(t1, t1, term_set);
+      closure_term_set(t2, t2, term_set);
+      break;
+    case &Update(t1, t2, t3):
+      closure_term_set(t1, t1, term_set);
+      closure_term_set(t2, t2, term_set);
+      closure_term_set(t3, t3, term_set);
+      break;
+    case &Aggr(_, _, ts, _):
+      for (; ts != NULL; ts = ts->tl) {
+        closure_term_set(ts->hd, ts->hd, term_set);
+      }
+      break;
+  }
+  return;
+}
+
+// helper function to count size of a hashtable
+static void f_sizeof_hashtable(`a key, `b value, int @counter) { (*counter)++; }
+
+// calculating size of a hashtable
+static int sizeof_hashtable(Hashtable::table_t<`a,`b> t) {
+  int size = 0;
+  Hashtable::iter_c(f_sizeof_hashtable, t, &size);
+  return size;
+}
+
+// calculating number of terms and assertions used in VCs
+static int sizeof_closure_vcgen_debug_assn_set() {
+  Hashtable::table_t<assn_t, assn_t> assn_set =
+      Hashtable::create(211, assn_easy_cmp, assn_easy_hash);
+  Hashtable::table_t<term_t, term_t> term_set1 =
+      Hashtable::create(211, term_easy_cmp, term_easy_hash);
+  Hashtable::table_t<term_t, term_t> term_set2 =
+      Hashtable::create(211, term_easy_cmp, term_easy_hash);
+  let setpair = new SetPair{assn_set, term_set1};
+  Hashtable::iter_c(closure_assn_set, get_vcgen_debug_assn_set(), setpair);
+  Hashtable::iter_c(closure_term_set, term_set1, term_set2);
+  return sizeof_hashtable(assn_set) + sizeof_hashtable(term_set2);
+}
+
+#endif
+void vcgen_fundecl(Position::seg_t loc, JumpAnalysis::jump_anal_res_t tables, Absyn::fndecl_t fd,
+                   assn_info_t assn_info, fn_precond_info_t fn_precond_info, bool use_precond) {
+#ifdef VCGEN_PROFILE
+  struct timeval begintime, endtime;
+  gettimeofday(&begintime, NULL);
+#endif
+  let $(args, arvds, checkopt, reqopt, ensopt, thrwsopt, ret_value) =
+      get_requires_and_ensures_info(&fd->i);
+  assn_map_t am = true_assnmap();
+  // We need to record the initial logical values for the arguments
+  // so that we can use them in the @ensures and @throws clauses.
+  // So force the varmap to have bindings for all of the arguments
+  // and record them.
+  list_t<term_t> actuals = NULL;
+  for (let as = arvds; as != NULL; as = as->tl) {
+    let vd             = (vardecl_t)as->hd;
+    let $(actual, am2) = lookup_var_map(vd, am);
+    am                 = am2;
+    actuals            = new List{actual, actuals};
+  }
+  actuals = List::imp_rev(actuals);
+  // force the varmap to have a binding for memory and record it.
+  let $(initmem, am2) = lookup_var_map(memory, am);
+  let am2             = update_var_map(pre_memory, initmem, am2);
+  am                  = am2;
+
+  let args = new List{initmem, actuals};
+  // put in the checks clause as an assumption.
+  if (checkopt != NULL) {
+    am = AssnMap{existassnfn2assn(checkopt, args), am.map};
+  }
+  // put in the requires clause as an assumption.
+  if (reqopt != NULL) {
+    am = AssnMap{existassnfn2assn(reqopt, args), am.map};
+  }
+#ifndef NO_FUN_PRECOND
+  else if (!fd->escapes && use_precond) {
+    let preconds_opt = Hashtable::lookup_opt(fn_precond_info, fd->name);
+    assn_t a         = &false_assn;
+    if (preconds_opt != NULL) {
+      for (let preconds = *preconds_opt; preconds != NULL; preconds = preconds->tl) {
+        // some hack to get rid of the trouble from functions with varargs
+        if (length(preconds->hd->af->actuals) != length(args)) {
+          a = &true_assn;
+          break;
+        } else {
+          a = or (a, existassnfn2assn(preconds->hd, args));
+        }
+      }
+    }
+    let fvs = assn_fr_logicvar(a);
+    if (Set::cardinality(fvs) > Flags::max_vc_summary) {
+      a = widen(a);
+    }
+    am = AssnMap{a, am.map};
+  }
+#endif
+  // if we have a throws clause, then pretend like we're installing
+  // a "fake" exception handler so we can check to see if the function
+  // throws.
+  assn_map_t *thrws_assn = NULL;
+  if (thrwsopt != NULL) {
+    thrws_assn = new false_assnmap();
+  }
+
+  assn_map_t *result_assn = new false_assnmap();
+  if (ret_value == NULL) {
+    let v     = new $((Absyn::nmspace_t)Absyn::Loc_n(), new "return_value");
+    ret_value = Absyn::new_vardecl(0, v, fd->i.ret_type, NULL, NULL);
+  }
+  let env = initial_env(tables, fd, assn_info, fn_precond_info, result_assn, thrws_assn, ret_value);
+
+  // generate vcs for the function body
+  let amout = vcgen_debug_stmt(env, fd->body, am);
+  // if we fall off the end of the function, we may need to update
+  // the return...
+  update_return(env, NULL, amout, NULL);
+
+  // check the ensures clause
+  assn_map_t res  = *env->res_assnmap;
+  term_t res_term = fresh_var(NULL, NULL);
+  if (ret_value != NULL) {
+    let $(r, a) = lookup_var_map((vardecl_t)ret_value, res);
+    res_term    = r;
+    res         = a;
+  }
+  let $(new_memory, res)     = lookup_var_map(memory, res);
+  let $(pre_mem, res)        = lookup_var_map(pre_memory, res);
+  let pre_memory_and_actuals = new List(pre_mem, actuals);
+  if (ensopt != NULL) {
+    let ens =
+        existassnfn2assn(ensopt, new List{res_term, new List{new_memory, pre_memory_and_actuals}});
+    if (!implies(res.assn, ens))
+      Warn::err(loc, "cannot prove the @ensures clause\n\t%s\nfrom\n\t%s", assn2string(ens),
+                assnmap2string(*env->res_assnmap));
+  } else {
+    // insert the calculated post condition in the hash table
+    // so it can be used for subsequent functions.
+    insert_fn_info(fd, pre_memory_and_actuals, res_term, new_memory, res.assn);
+  }
+
+#ifdef VCGEN_PROFILE
+  gettimeofday(&endtime, NULL);
+  unsigned totaltime =
+      (endtime.tv_sec - begintime.tv_sec) * 1000000 + (endtime.tv_usec - begintime.tv_usec);
+  // for each function, print out:
+  // fn name : sz of AST : sz of assns used in VCs : sz of assns used in
+  // generating VCs : total time
+  fprintf(stderr, "%s\t%d\t%d\t%d\t%u\n",
+          Absynpp::qvar2string(fd->name),         // fn name
+          fn_body_size(fd->body),                 // size of AST
+          sizeof_closure_vcgen_debug_assn_set(),  // size of useful assns
+          AssnDef::sizeof_hash_cons_table(),      // size of hashtable for assn_t
+                                                  // and term_t
+          totaltime);                             // total time used in vcgen for this function
+  vcgen_debug_assn_set = NULL;
+#endif
+  // check the throws clause
+  if (thrwsopt != NULL) {
+    assn_map_t res = *env->try_assnmap;
+    //    let $(res_term,res) = lookup_var_map(exception_vardecl(),res);
+    let $(new_memory, res) = lookup_var_map(memory, res);
+    let thr = existassnfn2assn(thrwsopt, new List{new_memory, pre_memory_and_actuals});
+    if (!implies(res.assn, thr))
+      Warn::err(loc, "cannot prove the @throws clause\n\t%s\nfrom\n\t%s", assn2string(thr),
+                assnmap2string(*env->try_assnmap));
+  }
+}

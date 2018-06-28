@@ -1,0 +1,10 @@
+#load("//cyclone:build_defs.bzl", "cyc_test")
+#
+#cyc_test(
+#    name = "mmap_test",
+#    size = "small",
+#    srcs = ["mmap_test.cyc"],
+#    args = ["$(location test_file.txt)"],
+#    data = ["test_file.txt"],
+#    deps = ["//cyclone/library/std"],
+#)

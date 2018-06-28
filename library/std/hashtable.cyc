@@ -1,0 +1,268 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2000-2001 Greg Morrisett, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+// a simple chaining, polymorphic hash table with restore
+// of course this is not functional
+
+#include "cycboot.h"
+#include "hashtable.h"
+#include "list.h"
+
+namespace Hashtable;
+using List;
+
+struct Cell<`a,`b,`r> {
+  `a key;
+  `b value;
+  struct Cell<`a,`b,`r> *`r next;
+};
+
+typedef struct Cell<`a,`b,`r> *`r cell_t<`a,`b,`r>;
+
+typedef struct Bucket<`a,`b,`r> {
+  unsigned int length;
+  cell_t<`a,`b,`r> cells;
+} bucket_t<`a,`b,`r>;
+
+/*abstract*/
+struct Table<`a,`b,`r> {
+  region_t<`r> r;
+  int(@cmp)(`a,`a);
+  int(@hash)(`a);
+  int max_len;  // maximum length of bucket list before resize
+  bucket_t<`a,`b,`r> ?`r tab;
+};
+
+table_t<`a,`b,`r> rcreate(region_t<`r> r, int sz, int(@`H cmp)(`a,`a), int(@`H hash)(`a)) {
+  return rnew(r) Table{r, cmp, hash, 3, rcalloc(r, sz, sizeof(bucket_t))};
+}
+
+table_t<`a,`b> create(int sz, int(@`H cmp)(`a,`a), int(@`H hash)(`a)) {
+  return rcreate(Core::heap_region, sz, cmp, hash);
+}
+
+void insert(table_t<`a,`b> t, `a key, `b val) {
+  bucket_t ? tab  = t->tab;
+  unsigned bucket = (t->hash)(key) % numelts(tab);
+  let b           = (bucket_t @) & tab[bucket];
+  b->cells        = rnew(t->r) Cell{key, val, b->cells};
+  let i           = b->length + 1;
+  b->length       = i;
+  if (i > t->max_len) {
+    // fprintf(stderr,"resizing table %x with length %d\n",(unsigned)t,i);
+    resize(t);
+  }
+}
+
+`b lookup(table_t<`a,`b> t, `a key) {  // throws Not_found
+  let tab  = t->tab;
+  let cmp  = t->cmp;
+  cell_t p = tab[(t->hash)(key) % numelts(tab)].cells;
+  for (; p != NULL; p = p->next) {
+    if (cmp(p->key, key) == 0)
+      return p->value;
+  }
+  throw &Core::Not_found_val;
+}
+
+`b *`r lookup_opt(table_t<`a,`b,`r> t, `a key) {
+  let tab = t->tab;
+  let cmp = t->cmp;
+  let p   = tab[(t->hash)(key) % numelts(tab)].cells;
+  for (; p != NULL; p = p->next) {
+    if (cmp(p->key, key) == 0)
+      return &p->value;
+  }
+  return NULL;
+}
+
+// same as above but uses pointer equality
+`b *`r lookup_ptr_opt(table_t<`a,`b,`r> t, `a key) {
+  let tab = t->tab;
+  let p   = tab[(t->hash)(key) % numelts(tab)].cells;
+  for (; p != NULL; p = p->next) {
+    if ((int)p->key == (int)key)
+      return &p->value;
+  }
+  return NULL;
+}
+
+// this is a hack to allow you to use a pointer in one region
+// as a key to lookup for table entries where the keys are in
+// another region.  this is really necessary to avoid allocation
+// when building hash-cons tables.
+`b *`r lookup_other_opt(table_t<`a,`b,`r> t, `c key, int cmp(`c,`a), int hash(`c)) {
+  let tab = t->tab;
+  let p   = tab[hash(key) % numelts(tab)].cells;
+  for (; p != NULL; p = p->next) {
+    if (cmp(key, p->key) == 0)
+      return &p->value;
+  }
+  return NULL;
+}
+
+bool try_lookup(table_t<`a,`b> t, `a key, `b @data) {
+  let tab = t->tab;
+  let cmp = t->cmp;
+  let p   = tab[(t->hash)(key) % numelts(tab)].cells;
+  for (; p != NULL; p = p->next) {
+    if (cmp(p->key, key) == 0) {
+      *data = p->value;
+      return true;
+    }
+  }
+  return false;
+}
+
+void remove(table_t<`a,`b> t, `a key) {
+  // remove the most recent binding; silently return if none.
+  // does a destructive list update since this data structure is not functional
+  let tab         = t->tab;
+  let cmp         = t->cmp;
+  unsigned bucket = (t->hash)(key) % numelts(tab);
+  let b           = (bucket_t @) & tab[bucket];
+  let l           = b->cells;
+  if (l == NULL)
+    return;
+  if (cmp(key, l->key) == 0) {
+    b->cells = l->next;
+    b->length--;
+    return;
+  }
+  for (let next = l->next; l->next != NULL; l = l->next, next = next->next)
+    // invariant: l != NULL != l->next == next, l should not be removed
+    if (cmp(key, next->key) == 0) {
+      l->next = next->next;
+      b->length--;
+      return;
+    }
+}
+
+int hash_string(string_t s) {
+  // could be made faster by explicit loop unrolling
+  int ans   = 0;
+  int sz    = numelts(s);
+  int shift = 0;
+  for (unsigned i = 0; i < sz; ++i) {
+    ans = ans ^ (s[i] << shift);
+    shift += 8;
+    if (shift == 32)
+      shift = 0;
+  }
+  return ans;
+}
+
+int hash_stringptr(stringptr_t s) { return hash_string(*s); }
+
+// Reverse a list of cells in-place
+static cell_t<`a,`b,`r> rev_cells(cell_t<`a,`b,`r> cells) {
+  if (cells == NULL)
+    return NULL;
+  cell_t first  = cells;
+  cell_t second = cells->next;
+  cells->next   = NULL;
+  while (second != NULL) {
+    cell_t temp  = second->next;
+    second->next = first;
+    first        = second;
+    second       = temp;
+  }
+  return first;
+}
+
+// For resizing -- elements are in reverse order so they get
+// inserted into the table in proper order.
+static void insert_bucket(region_t<`r> r,
+                          bucket_t<`a,`b,`r>?`r tab, int (@hash)(`a),
+                          cell_t<`a,`b,`r> elems) {
+  for (; elems != NULL; elems = elems->next) {
+    `a key            = elems->key;
+    `b val            = elems->value;
+    unsigned int nidx = (hash)(key) % numelts(tab);
+    tab[nidx].cells   = rnew(r) Cell{key, val, tab[nidx].cells};
+    tab[nidx].length++;
+  }
+}
+
+void resize(table_t<`a,`b,`r> t) {
+  bucket_t<`a,`b,`r> ? odata = t->tab;
+  unsigned int osize         = numelts(odata);
+  unsigned int nsize         = 2 * osize + 7;
+  bucket_t<`a,`b,`r> ? ndata = rcalloc(t->r, nsize, sizeof(bucket_t));
+  for (unsigned int i = 0; i < osize; i++)
+    insert_bucket(t->r, ndata, t->hash, rev_cells(odata[i].cells));
+  t->tab = ndata;
+  // double the length allowed on the bucket lists before resizing again.
+  unsigned cur_max_len = 0;
+  for (unsigned int j = 0; j < nsize; j++) {
+    let k = ndata[j].length;
+    if (k > cur_max_len)
+      cur_max_len = k;
+  }
+  t->max_len = (3 * cur_max_len) / 2;
+}
+
+// Iterating over a hashtable
+void iter(void f(`a,`b), table_t<`a,`b> t) {
+  bucket_t ? odata   = t->tab;
+  unsigned int osize = numelts(odata);
+  for (unsigned int i = 0; i < osize; i++)
+    for (let iter = odata[i].cells; iter != NULL; iter = iter->next)
+      f(iter->key, iter->value);
+}
+
+void iter_c(void f(`a,`b,`c), table_t<`a,`b> t, `c env) {
+  bucket_t ? odata   = t->tab;
+  unsigned int osize = numelts(odata);
+  for (unsigned int i = 0; i < osize; i++)
+    for (let iter = odata[i].cells; iter != NULL; iter = iter->next)
+      f(iter->key, iter->value, env);
+}
+
+unsigned int num_buckets(table_t<`a,`b> t) { return numelts(t->tab); }
+
+// debugging
+void print_table_map(table_t<`a,`b> t, void prn_key(`a), void prn_val(`b)) {
+  bucket_t ? odata   = t->tab;
+  unsigned int osize = numelts(odata);
+  for (unsigned int i = 0; i < osize; i++) {
+    printf("%d: ", i);
+    for (let iter = odata[i].cells; iter != NULL; iter = iter->next) {
+      printf("(");
+      prn_key(iter->key);
+      printf(",");
+      prn_val(iter->value);
+      printf(") ");
+    }
+    printf("\n");
+  }
+}
+
+void print_hist(table_t<`a,`b> t) {
+  bucket_t ? odata      = t->tab;
+  unsigned int osize    = numelts(odata);
+  unsigned int ? counts = new { for i < osize : odata[i].length };
+  unsigned int sum = 0;
+  for (unsigned i = 0; i < osize; ++i)
+    sum += counts[i];
+  if (sum == 0)
+    sum = 1;
+  for (unsigned i = 0; i < osize; ++i) {
+    fprintf(stderr, "%d: %d (%g pct)\n", i, counts[i], (counts[i] / sum) * 100);
+  }
+}

@@ -1,0 +1,2114 @@
+/* Buildlib -- converts C header files to Cyclone.
+   Copyright (C) 2001, 2002 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+{
+/* Notes
+
+   Many libraries incorrectly define macros for functions without also
+   providing a function prototype.  The C standard says that function
+   macros can be disabled by putting parens around the function name;
+   e.g., (getc)(f) overrides the macro and calls the function
+   directly.  Similarly you are supposed to be able to #undef macros
+   and use the function.  We need to detect this situation and build a
+   C stub automatically.
+
+   It would be nice if buildlib did sanity checking, to make sure that
+   the extern "C" function prototypes we code by hand match up with
+   the actual C declarations.
+
+   Cygwin sys/select.h defines a struct and then a typedef with the
+   same name.  Our current scheme for halting repeated definitions
+   does not separate typedefs and structs, so the typedef ends up
+   undefined.  The current hack is to hand-define it in that special
+   case.
+
+   Cyclone does not currently handle long double complex, which is
+   needed in <complex.h>.
+
+   On some systems types aren't defined where they should be.  I
+   added cpp for this case, but it would be better to do things
+   automatically.
+
+   Some systems don't define types at all -- e.g., socklen_t.  In
+   such cases we might be able to derive the type from a function
+   that uses it; we currently just take a guess.
+
+   Some systems define typedefs with macros -- e.g., socklen_t in
+   cygwin.
+
+   [JGM: fixed]
+   OS X defines a struct with no members [/usr/include/net/if_var.h]
+   and we don't parse it:
+        struct tqdummy {
+        };
+ */
+
+#include <string.h>
+
+#include "cyclone/library/compiler/absynpp.h"
+#include "cyclone/library/compiler/binding.h"
+#include "cyclone/library/compiler/cifc.h"
+#include "cyclone/library/compiler/parse.h"
+#include "cyclone/library/compiler/tc.h"
+#include "cyclone/library/compiler/warn.h"
+#include "cyclone/library/std/arg.h"
+#include "cyclone/library/std/buffer.h"
+#include "cyclone/library/std/filename.h"
+#include "cyclone/library/std/hashtable.h"
+#include "cyclone/library/std/lexing.h"
+#include "cyclone/library/std/set.h"
+
+namespace Lex {
+  extern void lex_init(bool use_cyclone_keywords);
+}
+
+using Lexing;
+using List;
+using Core;
+using Absyn;
+
+enum name_kind {
+  NK_Tag,
+  NK_Ident,
+};
+
+static string_t nk2str(enum name_kind kind) {
+  switch (kind) {
+    case NK_Tag:
+      return "tag";
+    case NK_Ident:
+      return "";
+    default:
+      return "<invalid>";
+  }
+}
+
+static string_t cyclone_cc = "gcc";
+
+static bool do_setjmp = false;
+static bool verbose = false;
+
+FILE *log_file = NULL;
+FILE *cstubs_file = NULL;
+FILE *cycstubs_file = NULL;
+
+int log(const char ?fmt, ... inject parg_t ap)
+  __attribute__((format(printf,1,2)))
+{
+  if (log_file == NULL) {
+    fprintf(stderr, "Internal error: log file is NULL\n");
+    exit(1);
+  }
+  let x = vfprintf((FILE @)log_file, fmt, ap);
+  fflush((FILE @)log_file);
+  return x;
+}
+
+static string_t *current_source = NULL;
+static list_t<stringptr_t> current_args = NULL;
+static Set::set_t<stringptr_t> *current_targets = NULL;
+static void add_target(stringptr_t<`H,`H> sptr) {
+  current_targets = new Set::insert(*current_targets, sptr);
+}
+static Set::set_t<stringptr_t> *headers_to_do = NULL;
+
+/* Forward declarations of lexing functions */
+typedef $(stringptr_t, Set::set_t<stringptr_t>) *line_t;
+extern line_t line(Lexbuf);
+extern int macroname(Lexbuf);
+extern int args(Lexbuf);
+extern int token(Lexbuf);
+extern int string(Lexbuf);
+
+FILE *slurp_out = NULL;
+extern int slurp(Lexbuf);
+extern int slurp_string(Lexbuf);
+extern int asmtok(Lexbuf);
+extern int asm_string(Lexbuf);
+extern int asm_comment(Lexbuf);
+
+typedef $(string_t, stringptr_t) * suck_line_t;
+extern suck_line_t suck_line(Lexbuf);
+extern int suck_macroname(Lexbuf);
+extern int suck_restofline(Lexbuf);
+string_t current_line = NULL;
+
+/* When $(A,B) is an ifdefined_t, B will be printed if A is NULL
+   or A is a defined symbol */
+typedef $(string_t<`H>, string_t<`H>) @ifdefined_t;
+/* When $(A,B) is a defined_t, then a non-NULL B is the programmer's
+   preferred definition of the type A.  Will be checked for
+   compatibility with the actual A. */
+typedef $(stringptr_t<`H,`H>, stringptr_t<`H>) @userdef_t;
+
+typedef $(string_t, list_t<stringptr_t>, list_t<userdef_t>, list_t<stringptr_t>,
+          list_t<ifdefined_t>, list_t<ifdefined_t>, list_t<ifdefined_t>, list_t<stringptr_t>) *
+    spec_t;
+extern spec_t spec(Lexbuf);
+extern int commands(Lexbuf);
+extern int snarfsymbols(Lexbuf);
+extern int block(Lexbuf);
+extern int block_string(Lexbuf);
+extern int block_comment(Lexbuf);
+string_t current_headerfile = NULL;
+list_t<stringptr_t> snarfed_symbols = NULL;
+list_t<stringptr_t> current_symbols = NULL;
+list_t<userdef_t> current_user_defs = NULL;
+list_t<ifdefined_t> current_cstubs = NULL;
+list_t<ifdefined_t> current_cycstubs = NULL;
+list_t<ifdefined_t> current_hstubs = NULL;
+list_t<stringptr_t> current_omit_symbols = NULL;
+list_t<stringptr_t> current_cpp = NULL;
+struct Buffer::t *specbuf = NULL;
+string_t current_symbol = NULL;
+bool rename_current_symbol = false;
+int braces_to_match = 0;
+int parens_to_match = 0;
+
+int numdef = 0;
+
+static list_t<stringptr_t> cppargs = NULL;
+
+string_t user_prefix = "BUILDLIB_sym_";
+static stringptr_t<`H> add_user_prefix(stringptr_t<`H> symbol) {
+  string_t<`H> s = (string_t)strconcat(user_prefix, *symbol);
+  return new s;
+}
+static string_t<`H> remove_user_prefix(string_t<`H> symbol) {
+  unsigned int prefix_len = strlen(user_prefix);
+  if (strncmp(symbol, user_prefix, prefix_len) != 0) {
+    fprintf(stderr, "Internal error: bad user type name %s\n", symbol);
+    return symbol;
+  }
+  return (string_t)substring(symbol, prefix_len, strlen(symbol) - prefix_len);
+}
+
+static void rename_decl(decl_t d) {
+  switch (d->r) {
+    case &Aggr_d(ad):
+      (*ad->name)[1] = new remove_user_prefix(*(*ad->name)[1]);
+      break;
+    case &Enum_d(ed):
+      (*ed->name)[1] = new remove_user_prefix(*(*ed->name)[1]);
+      break;
+    case &Typedef_d(td):
+      (*td->name)[1] = new remove_user_prefix(*(*td->name)[1]);
+      break;
+    default:
+      fprintf(stderr, "Error in .cys file: bad user-defined type definition\n");
+      exit(1);
+  }
+}
+
+}
+
+let newline = ('\n' | '\r' | "\r\n")
+let idchar = ['A'-'Z''a'-'z''0'-'9''_']
+let ws = [' ''\t''\n''\r']
+
+/**********************************************************************/
+/* Rules for finding dependencies of macros                           */
+/**********************************************************************/
+rule line "line_t" = parse
+  "#define "
+{ macroname(lexbuf);
+  for (; current_args != NULL; current_args = current_args->tl) {
+    current_targets = new Set::delete(*current_targets,current_args->hd);
+  }
+  /* The cast is needed so the return type matches */
+  return new $((_ @)current_source,*current_targets);}
+/* End of line */
+| newline
+{ return line(lexbuf); }
+| eof
+{ return NULL; }
+
+and macroname = parse
+  idchar+ '(' ')'
+{ current_source = new (string_t)substring(lexeme(lexbuf), 0,
+                                          lexeme_end(lexbuf)-lexeme_start(lexbuf)-2);
+  current_args = NULL;
+  current_targets = new Set::empty(strptrcmp);
+  token(lexbuf);
+  return 0;
+}
+| idchar+ '('
+{ current_source = new (string_t)substring(lexeme(lexbuf), 0,
+                                          lexeme_end(lexbuf)-lexeme_start(lexbuf)-1);
+  current_args = NULL;
+  current_targets = new Set::empty(strptrcmp);
+  args(lexbuf);
+  return 0;
+}
+| idchar+
+{ current_source = new (string_t)lexeme(lexbuf);
+  current_args = NULL;
+  current_targets = new Set::empty(strptrcmp);
+  token(lexbuf);
+  return 0;
+}
+
+and args = parse
+  idchar+ ',' ' '
+{ let a = new (string_t)substring(lexeme(lexbuf), 0,
+                                  lexeme_end(lexbuf)-lexeme_start(lexbuf)-2);
+  current_args = new List(a,current_args);
+  return args(lexbuf);
+}
+| idchar+ ','
+{ let a = new (string_t)substring(lexeme(lexbuf), 0,
+                                  lexeme_end(lexbuf)-lexeme_start(lexbuf)-1);
+  current_args = new List(a,current_args);
+  return args(lexbuf);
+}
+| idchar+ ')'
+{ let a = new (string_t)substring(lexeme(lexbuf), 0,
+                                  lexeme_end(lexbuf)-lexeme_start(lexbuf)-1);
+  current_args = new List(a,current_args);
+  return token(lexbuf);
+}
+| idchar+ "...)"
+{ let a = new (string_t)substring(lexeme(lexbuf), 0,
+                                  lexeme_end(lexbuf)-lexeme_start(lexbuf)-4);
+  current_args = new List(a,current_args);
+  return token(lexbuf);
+}
+
+and token = parse
+/* Identifiers and keywords */
+  ['A'-'Z''a'-'z''_']['A'-'Z''a'-'z''_''0'-'9']*
+{ add_target(new (string_t)lexeme(lexbuf)); return token(lexbuf); }
+/* End of file or line */
+| (eof | ['\n' '\r'])
+{ return 0; }
+/* Other whitespace */
+| [' ' '\t' '\v' '\f']+
+{ return  token(lexbuf); }
+/* string constants */
+| "\""
+{ string(lexbuf); return token(lexbuf);}
+/* Integer constants */
+| '0'['x''X']['0'-'9''a'-'f''A'-'F']+((['u''U']['l''L']?)|(['l''L']['u''U']?))?
+{ return token(lexbuf); }
+| '0'['0'-'7']*((['u''U']['l''L']?)|(['l''L']['u''U']?))?
+{ return token(lexbuf); }
+| '0'['0'-'9']+((['u''U']['l''L']?)|(['l''L']['u''U']?))?
+{ return token(lexbuf); }
+| ['1'-'9']['0'-'9']*((['u''U']['l''L']?)|(['l''L']['u''U']?))?
+{ return token(lexbuf); }
+/* Floating-point constants */
+| ['0'-'9']+['e''E']['+''-']?['0'-'9']+['f''F''l''L']?
+{ return token(lexbuf); }
+| ((['0'-'9']+'.')|(['0'-'9']+'.'['0'-'9']+)|('.'['0'-'9']+))
+  (['e''E']['+''-']?['0'-'9']+)?['f''F''l''L']?
+{ return token(lexbuf); }
+/* character constants */
+| "'\\a'"
+{ return token(lexbuf); }
+| "'\\b'"
+{ return token(lexbuf); }
+| "'\\f'"
+{ return token(lexbuf); }
+| "'\\n'"
+{ return token(lexbuf); }
+| "'\\r'"
+{ return token(lexbuf); }
+| "'\\t'"
+{ return token(lexbuf); }
+| "'\\v'"
+{ return token(lexbuf); }
+| "'\\\\'"
+{ return token(lexbuf); }
+| "'\\''"
+{ return token(lexbuf); }
+| "'\\\"'"
+{ return token(lexbuf); }
+| "'\\?'"
+{ return token(lexbuf); }
+| "'\\" ['0'-'7']['0'-'7']?['0'-'7']? "'"
+{ return token(lexbuf); }
+| "'\\x" ['0'-'9''A'-'Z''a'-'z']+ "'"
+{ return token(lexbuf); }
+| "'" [^ '\\' '\'' '\n'] "'"
+{ return token(lexbuf); }
+/* Operators */
+| "=="
+{ return token(lexbuf); }
+| "!="
+{ return token(lexbuf); }
+| "<="
+{ return token(lexbuf); }
+| ">="
+{ return token(lexbuf); }
+| "++"
+{ return token(lexbuf); }
+| "--"
+{ return token(lexbuf); }
+| "+="
+{ return token(lexbuf); }
+| "-="
+{ return token(lexbuf); }
+| "*="
+{ return token(lexbuf); }
+| "/="
+{ return token(lexbuf); }
+| "%="
+{ return token(lexbuf); }
+| "|="
+{ return token(lexbuf); }
+| "^="
+{ return token(lexbuf); }
+| "&="
+{ return token(lexbuf); }
+| "<<="
+{ return token(lexbuf); }
+| ">>="
+{ return token(lexbuf); }
+| "&&"
+{ return token(lexbuf); }
+| "||"
+{ return token(lexbuf); }
+| "<<"
+{ return token(lexbuf); }
+| ">>"
+{ return token(lexbuf); }
+| "<>"
+{ return token(lexbuf); }
+| "->"
+{ return token(lexbuf); }
+| "..."
+{ return token(lexbuf); }
+| "::"
+{ return token(lexbuf); }
+/* Default case */
+| _
+{ return token(lexbuf); }
+
+and string = parse
+    "\"" [' ''\n''\r''\t']* "\""
+  /* concatenate adjacent strings */
+                    { return string(lexbuf); }
+  | "\""            { return 0; }
+  | "\\" newline    { return string(lexbuf); }
+  | "\\a"           { return string(lexbuf); }
+  /* octal character escapes */
+  | "\\" ['0'-'7']['0'-'7']?['0'-'7']?
+                    { return string(lexbuf); }
+  /* hex character escapes FIX? any length okay? */
+  | "\\x" ['0'-'9''A'-'F''a'-'f']+
+                    { return string(lexbuf);}
+  | [^ '"''\\''\n']   /* NOT double quote, backslash, or newline */
+                    { return string(lexbuf); }
+  | newline         { return 0; }
+  | eof             { return 0; }
+  | _               { return string(lexbuf); }
+
+/**********************************************************************/
+/* Rules to ``fix up'' C code so that it will go through the Cyclone  */
+/* parser.  E.g., eliminate/modify unsupported attributes, other      */
+/* unsavory hacks.                                                    */
+/**********************************************************************/
+and slurp = parse /* returns 1 if more to do, 0 if all done */
+  eof
+{ return 0; }
+| "\""
+{ fputc('"',(FILE @)slurp_out);
+  while (slurp_string(lexbuf)) /* skip */;
+  return 1;
+}
+| "*" ws* "malloc" ws* "("
+/* malloc is a Cyclone keyword so our parser can't handle a malloc
+   declaration. */
+{ fputs("*__IGNORE_FOR_CYCLONE_MALLOC(",(FILE @)slurp_out);
+  log("Warning: declaration of malloc sidestepped\n");
+  return 1; }
+| ws+ "malloc" ws* "("
+/* malloc is a Cyclone keyword so our parser can't handle a malloc
+   declaration. */
+{ fputs(" __IGNORE_FOR_CYCLONE_MALLOC(",(FILE @)slurp_out);
+  log("Warning: declaration of malloc sidestepped\n");
+  return 1; }
+| "*" ws* "calloc" ws* "("
+/* calloc is a Cyclone keyword so our parser can't handle a calloc
+   declaration. */
+{ fputs("*__IGNORE_FOR_CYCLONE_CALLOC(",(FILE @)slurp_out);
+  log("Warning: declaration of calloc sidestepped\n");
+  return 1; }
+| ws+ "calloc" ws* "("
+/* calloc is a Cyclone keyword so our parser can't handle a calloc
+   declaration. */
+{ fputs(" __IGNORE_FOR_CYCLONE_CALLOC(",(FILE @)slurp_out);
+  log("Warning: declaration of calloc sidestepped\n");
+  return 1; }
+| "*region" /* Used in OS X in mach/vm_map.h, conflicts with our keyword */
+{ fputs("__region",(FILE @)slurp_out);
+  log("Warning: use of region sidestepped\n");
+  return 1; }
+| "__extension__" /* Used in cygwin in sys/reent.h */
+{ log("Warning: use of __extension__ deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__nonnull__ (" [^')']* ")))"
+/* We should just support this directly in Cyclone*/
+{ log("Warning: use of nonnull attribute deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__mode__ (__HI__)))" /* Used in linux in _G_config.h */
+/* These mode hacks WILL cause bugs; best solution is to
+   support mode directly in Cyclone */
+{ log("Warning: use of mode HI deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__mode__ (__SI__)))" /* Used in linux in _G_config.h */
+{ log("Warning: use of mode SI deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__mode__ (__QI__)))" /* Used in linux in sys/types.h */
+{ log("Warning: use of mode QI deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__mode__ (__DI__)))" /* Used in linux in sys/types.h */
+{ log("Warning: use of mode DI deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__mode__(__DI__)))" /* Used in freebsd in a number of places */
+{ log("Warning: use of mode DI deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__mode__ (__word__)))" /* Used in linux in sys/types.h */
+{ log("Warning: use of mode word deleted\n");
+  return 1; }
+| "__attribute__" ws* "((deprecated))"
+{ log("Warning: use of __attribute__((deprecated)) deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__deprecated__))"
+{ log("Warning: use of __attribute__((__deprecated__)) deleted\n");
+  return 1; }
+| "__attribute__" ws* "((__transparent_union__))"
+{ log("Warning: use of __attribute__((__transparent_union__)) deleted\n");
+  return 1; }
+| "__asm__" ws* "(" [^')']+ ")"
+{ log("Warning: use of __asm__ on declaration deleted\n");
+  return 1; }
+| "__inline__" /* Used in cygwin in stdio.h */
+{ fputs("inline",(FILE @)slurp_out); return 1; }
+| "__inline" /* Used in OS X */
+{ fputs("inline",(FILE @)slurp_out); return 1; }
+| "__const__"
+{ fputs("const",(FILE @)slurp_out); return 1; }
+| "__const" /* Used in cygwin in unistd.h; an undocumented gcc extension?? */
+{ fputs("const",(FILE @)slurp_out); return 1; }
+| "__signed__" /* Used in Fedora 9 gcc-4.3 glibc-2.8-3; an undocumented gcc extension?? */
+{ fputs("signed",(FILE @)slurp_out); return 1; }
+| "__signed" /* Used in Mac OS in netdb.h, stdint.h; an undocumented gcc extension?? */
+{ fputs("signed",(FILE @)slurp_out); return 1; }
+| "signed__" /* Used in Fedora 9 gcc-4.3 glibc-2.8-3; an undocumented gcc extension?? */
+{ fputs("signed",(FILE @)slurp_out); return 1; }
+| "__builtin_va_list"
+/* Used in linux in /usr/lib/gcc-lib/i386-redhat-linux/2.96/include/stdarg.h;
+   an undocumented gcc extension?  This is a HACK -- shouldn't matter since
+   we don't use va_list */
+{ fputs("int",(FILE @)slurp_out); return 1; }
+| "__restrict" /* Used in linux in libio.h; an undocumented gcc extension?? */
+{ return 1; }
+| [^ '"']
+{ fputc(lexeme_char(lexbuf,0),(FILE @)slurp_out); return 1; }
+
+and slurp_string = parse /* returns 1 if more to do, 0 if all done */
+  eof
+{ return 0; }
+| "\""
+{ fputc('"',(FILE @)slurp_out); return 0; }
+| newline
+{ log("Warning: unclosed string\n");
+  fprintf((FILE @)slurp_out,"%s",lexeme(lexbuf)); return 1; }
+| "\\" newline
+{ fprintf((FILE @)slurp_out,"%s",lexeme(lexbuf)); return 1; }
+| "\\a"
+{ fprintf((FILE @)slurp_out,"%s",lexeme(lexbuf)); return 1; }
+| "\\" ['0'-'7']['0'-'7']?['0'-'7']?
+{ fprintf((FILE @)slurp_out,"%s",lexeme(lexbuf)); return 1; }
+| "\\x" ['0'-'9''A'-'F''a'-'f']+
+{ fprintf((FILE @)slurp_out,"%s",lexeme(lexbuf)); return 1; }
+| [^ '"''\\''\n']
+{ fprintf((FILE @)slurp_out,"%s",lexeme(lexbuf)); return 1; }
+| _
+{ fprintf((FILE @)slurp_out,"%s",lexeme(lexbuf)); return 1; }
+
+and asmtok =
+/* Expects to be entered just after a left paren, searches for the
+   matching right paren, deletes everything in between.
+   Parens in comments, strings, and character constants aren't counted.
+   parens_to_match should be set to 1 before calling asm. */
+ /* returns 1 if more to do, 0 if all done */
+parse
+  eof
+{ return 0; }
+| ')'
+{ if (parens_to_match == 1) return 0;
+  parens_to_match--;
+  return 1; }
+| '('
+{ parens_to_match++;
+  return 1; }
+| '"'
+{ while (asm_string(lexbuf)) /* skip */;
+  return 1; }
+| "/*"
+{ while (asm_comment(lexbuf)) /* skip */;
+  return 1; }
+| "//" [^'\n''\r']*
+{ return 1; }
+| [^')']
+{ return 1; }
+
+and asm_string = parse /* returns 1 if more to do, 0 if all done */
+  eof
+{ log("Warning: unclosed string\n"); return 0; }
+| "\""
+{ return 0; }
+| newline
+{ log("Warning: unclosed string\n"); return 1; }
+| "\\" newline
+{ return 1; }
+| "\\a"
+{ return 1; }
+| "\\" ['0'-'7']['0'-'7']?['0'-'7']?
+{ return 1; }
+| "\\x" ['0'-'9''A'-'F''a'-'f']+
+{ return 1; }
+| [^ '"''\\''\n']
+{ return 1; }
+| _
+{ return 1; }
+
+and asm_comment = parse /* returns 1 if more to do, 0 if all done */
+  eof
+{ log("Warning: unclosed comment\n"); return 0; }
+| "*/"      /* Assumes that comments can't be nested */
+{ return 0; }
+| _
+{ return 1; }
+
+/**********************************************************************/
+/* Rules to suck in a #define line and return it, along with the name */
+/* of the macro                                                       */
+/**********************************************************************/
+and suck_line "suck_line_t" = parse
+  "#define "
+{ current_line = "#define ";
+  suck_macroname(lexbuf);
+  return new $(current_line,(stringptr_t)current_source); }
+| ['\n' '\r']
+{ return suck_line(lexbuf); }
+| eof
+{ return NULL; }
+
+and suck_macroname = parse
+  idchar+
+{ current_source = new (string_t)lexeme(lexbuf);
+  current_line = strconcat(current_line,*current_source);
+  return suck_restofline(lexbuf);
+}
+
+and suck_restofline = parse
+  [^'\n''\r']*
+{ current_line = strconcat(current_line,lexeme(lexbuf)); return 0; }
+
+/**********************************************************************/
+/* Rules to read in header spec files                                 */
+/**********************************************************************/
+and spec "spec_t" = parse
+  "//" [^'\n''\r']*
+{ return spec(lexbuf); }
+| ['A'-'Z''a'-'z''0'-'9''_''.''/']+ ':'
+{ current_headerfile =
+  (string_t)substring(lexeme(lexbuf), 0,
+                      lexeme_end(lexbuf)-lexeme_start(lexbuf)-1);
+  current_symbols = NULL;
+  current_user_defs = NULL;
+  current_omit_symbols = NULL;
+  current_cstubs = NULL;
+  current_cycstubs = NULL;
+  current_hstubs = NULL;
+  current_cpp = NULL;
+  while (commands(lexbuf)) /* skip */;
+  current_hstubs = imp_rev(current_hstubs);
+  current_cstubs = imp_rev(current_cstubs);
+  current_cycstubs = imp_rev(current_cycstubs);
+  current_cpp = imp_rev(current_cpp);
+  return new $(current_headerfile,
+               current_symbols,
+	       current_user_defs,
+               current_omit_symbols,
+               current_hstubs,
+               current_cstubs,
+               current_cycstubs,
+               current_cpp);
+}
+| ws+
+{ return spec(lexbuf); }
+| eof
+{ return NULL; }
+| _
+{ fprintf(stderr,
+          "Error in .cys file: expected header file name, found '%c' instead\n",
+          lexeme_char(lexbuf,0));
+  return NULL; }
+
+and commands = parse /* returns 1 if more to do, 0 if all done */
+  eof
+{ return 0; }
+| ';'
+{ return 0; }
+| "include" ws* '{'
+{ snarfed_symbols = NULL;
+  while (snarfsymbols(lexbuf)) /* skip */;
+  current_symbols = append(snarfed_symbols,current_symbols);
+  return 1; }
+| "omitvariables" ws* '{'
+{ snarfed_symbols = NULL;
+  let tmp_user_defs = current_user_defs;
+  while (snarfsymbols(lexbuf)) /* skip */;
+  if (tmp_user_defs != current_user_defs) {
+    fprintf(stderr,
+	    "Error in .cys file: got optional definition in omitsymbols\n");
+    return 0;
+  }
+  current_omit_symbols = append(snarfed_symbols,current_omit_symbols);
+  return 1; }
+| "hstub" ws* '{'
+{ braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+  ifdefined_t x = new $((string_t)NULL,
+                        (string_t)Buffer::contents((Buffer::T)specbuf));
+  current_hstubs = new List(x,current_hstubs);
+  return 1; }
+| "hstub" ws+ idchar+ ws* '{'
+{ let s = lexeme(lexbuf);
+  s += strlen("hstub");
+  while (isspace(*s)) s++;
+  char ?t = s;
+  while (!isspace(*t)) t++;
+  let symbol = substring(s,0,t-s);
+  braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+  ifdefined_t x = new $((string_t)symbol,
+                        (string_t)Buffer::contents((Buffer::T)specbuf));
+  current_hstubs = new List(x,current_hstubs);
+  return 1; }
+| "cstub" ws* '{'
+{ braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+  ifdefined_t x = new $((string_t)NULL,
+                        (string_t)Buffer::contents((Buffer::T)specbuf));
+  current_cstubs = new List(x,current_cstubs);
+  return 1; }
+| "cstub" ws+ idchar+ ws* '{'
+{ let s = lexeme(lexbuf);
+  s += strlen("cstub");
+  while (isspace(*s)) s++;
+  char ?t = s;
+  while (!isspace(*t)) t++;
+  let symbol = substring(s,0,t-s);
+  braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+  ifdefined_t x = new $((string_t)symbol,
+                        (string_t)Buffer::contents((Buffer::T)specbuf));
+  current_cstubs = new List(x,current_cstubs);
+  return 1; }
+| "cycstub" ws* '{'
+{ braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+  ifdefined_t x = new $((string_t)NULL,
+                        (string_t)Buffer::contents((Buffer::T)specbuf));
+  current_cycstubs = new List(x,current_cycstubs);
+  return 1; }
+| "cycstub" ws+ idchar+ ws* '{'
+{ let s = lexeme(lexbuf);
+  s += strlen("cycstub");
+  while (isspace(*s)) s++;
+  char ?t = s;
+  while (!isspace(*t)) t++;
+  let symbol = substring(s,0,t-s);
+  braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+  ifdefined_t x = new $((string_t)symbol,
+                        (string_t)Buffer::contents((Buffer::T)specbuf));
+  current_cycstubs = new List(x,current_cycstubs);
+  return 1; }
+| "cpp" ws* '{'
+{ braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+  stringptr_t x = new (string_t)Buffer::contents((Buffer::T)specbuf);
+  current_cpp = new List(x,current_cpp);
+  return 1; }
+| "//" [^'\n''\r']*
+{ return 1; }
+| ws+
+{ return 1; }
+| _
+{ fprintf(stderr,
+          "Error in .cys file: expected command, found '%c' instead\n",
+          lexeme_char(lexbuf,0));
+  return 0; }
+
+and snarfsymbols =
+/* Expects to be entered just after a left brace, searches for the
+   a sequence of symbols and the matching right brace, stores the
+   symbols in snarfed_symbols.  Symbols may optionally be followed by
+   a block containing an expected definition. */
+/* returns 1 if more to do, 0 if all done */
+parse
+| idchar+
+{ snarfed_symbols = new List(new (string_t)lexeme(lexbuf),snarfed_symbols);
+  return 1; }
+| idchar+ ws* '{'
+{ let s = lexeme(lexbuf);
+  char ?t = s;
+  while (!isspace(*t)) t++;
+  current_symbol = substring(s,0,t-s);
+  rename_current_symbol = true;
+  braces_to_match = 1;
+  specbuf = Buffer::create(255);
+  while (block(lexbuf)) /* skip */;
+
+  rename_current_symbol = false;
+  userdef_t user_def = new $(new current_symbol,
+			     new (string_t)Buffer::contents((Buffer::T)specbuf));
+  snarfed_symbols = new List(new (string_t)current_symbol,snarfed_symbols);
+  current_user_defs = new List(user_def,current_user_defs);
+  return 1; }
+| "//" [^'\n']* '\n'
+| ws+
+| ';'
+{ return 1; }
+| '}'
+{ return 0; }
+| eof
+{ fprintf(stderr,
+          "Error in .cys file: unexpected end-of-file\n");
+  return 0; }
+| _
+{ fprintf(stderr,
+          "Error in .cys file: expected symbol, found '%c' instead\n",
+          lexeme_char(lexbuf,0));
+  return 0; }
+
+and block =
+/* Expects to be entered just after a left brace, searches for the
+   matching right brace, appends everything in between to specbuf.
+   Braces in comments, strings, and character constants aren't counted.
+   braces_to_match should be set to 1 before calling block. */
+/* returns 1 if more to do, 0 if all done */
+parse
+  eof
+{ log("Warning: unclosed brace\n"); return 0; }
+| '}'
+{ if (braces_to_match == 1) return 0;
+  braces_to_match--;
+  Buffer::add_char((Buffer::T)specbuf,'}');
+  return 1; }
+| '{'
+{ braces_to_match++;
+  Buffer::add_char((Buffer::T)specbuf,'{');
+  return 1; }
+| '"'
+{ Buffer::add_char((Buffer::T)specbuf,'"');
+  while (block_string(lexbuf)) /* skip */;
+  return 1; }
+| "/*"
+{ Buffer::add_string((Buffer::T)specbuf,"/*");
+  while (block_comment(lexbuf)) /* skip */;
+  return 1; }
+| "//" [^'\n''\r']*
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+| idchar+
+{ let symbol = (string_t)lexeme(lexbuf);
+  if (rename_current_symbol && !strcmp(symbol,current_symbol))
+    Buffer::add_string((Buffer::T)specbuf, *add_user_prefix(new symbol));
+  else
+    Buffer::add_string((Buffer::T)specbuf,symbol);
+  return 1; }
+| [^'}']
+{ Buffer::add_char((Buffer::T)specbuf,lexeme_char(lexbuf,0));
+  return 1; }
+
+and block_string = parse /* returns 1 if more to do, 0 if all done */
+  eof
+{ log("Warning: unclosed string\n"); return 0; }
+| "\""
+{ Buffer::add_char((Buffer::T)specbuf,'"'); return 0; }
+| newline
+{ log("Warning: unclosed string\n");
+  Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+| "\\" newline
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+| "\\a"
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+| "\\" ['0'-'7']['0'-'7']?['0'-'7']?
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+| "\\x" ['0'-'9''A'-'F''a'-'f']+
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+| [^ '"''\\''\n']
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+| _
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+
+and block_comment = parse /* returns 1 if more to do, 0 if all done */
+  eof
+{ log("Warning: unclosed comment\n"); return 0; }
+| "*/"      /* Assumes that comments can't be nested */
+{ Buffer::add_string((Buffer::T)specbuf,"*/"); return 0; }
+| _
+{ Buffer::add_string((Buffer::T)specbuf,lexeme(lexbuf));
+  return 1; }
+
+{
+/* Type for representing dependencies */
+typedef Hashtable::table_t<stringptr_t<`H,`H>, Set::set_t<stringptr_t<`H,`H>,`H>> dep_t;
+
+extern void scan_type(type_t t, dep_t dep);
+void scan_exp(exp_opt_t e, dep_t dep) {
+  switch (e->r) {
+    case &Var_e(b):
+      let v = (*binding2qvar(b))[1];
+      add_target(v);
+      return;
+    case &Primop_e(_, x):
+      for (; x != NULL; x = x->tl) {
+        scan_exp(x->hd, dep);
+      }
+      return;
+    case &Subscript_e(e1, e2):
+      fallthru(e1, e2);
+    case &SeqExp_e(e1, e2):
+      fallthru(e1, e2);
+    case &AssignOp_e(e1, _, e2):
+      scan_exp(e1, dep);
+      scan_exp(e2, dep);
+      return;
+    case &Extension_e(e1):
+      fallthru(e1);
+    case &Deref_e(e1):
+      fallthru(e1);
+    case &Sizeofexp_e(e1):
+      fallthru(e1);
+    case &Address_e(e1):
+      fallthru(e1);
+    case &Increment_e(e1, _):
+      scan_exp(e1, dep);
+      return;
+    case &Conditional_e(e1, e2, e3):
+      scan_exp(e1, dep);
+      scan_exp(e2, dep);
+      scan_exp(e3, dep);
+      return;
+    case &And_e(e1, e2):
+      fallthru(e1, e2);
+    case &Or_e(e1, e2):
+      scan_exp(e1, dep);
+      scan_exp(e2, dep);
+      return;
+    case &FnCall_e(e1, x, _, _):
+      scan_exp(e1, dep);
+      for (; x != NULL; x = x->tl) {
+        scan_exp(x->hd, dep);
+      }
+      return;
+    case &Cast_e(t1, e1, _, _):
+      scan_type(t1, dep);
+      scan_exp(e1, dep);
+      return;
+    case &Malloc_e(MallocInfo{mknd, ropt, aqopt, topt, e, _, _}):
+      if (ropt != NULL)
+        scan_exp((exp_t)ropt, dep);
+      if (aqopt != NULL)
+        scan_exp((exp_t)aqopt, dep);
+      if (topt != NULL)
+        scan_type(*topt, dep);
+      scan_exp(e, dep);
+      return;
+    case &Tagcheck_e(e, _):
+      scan_exp(e, dep);
+      return;
+    case &Valueof_e(t1):
+      fallthru(t1);
+    case &Sizeoftype_e(t1):
+      scan_type(t1, dep);
+      return;
+    case &AggrMember_e(e1, fn, ...):
+      fallthru(e1, fn);
+    case &AggrArrow_e(e1, fn, ...):
+      scan_exp(e1, dep);
+      add_target(fn);
+      return;
+    case &Offsetof_e(t1, f):
+      scan_type(t1, dep);
+      // FIX: add targets for nested fields too?
+      switch (f->hd) {
+        case &StructField(fn):
+          add_target(fn);
+          break;
+      }
+      return;
+    case &Const_e(_):
+      return;
+    case &UnresolvedMem_e(_, x):
+      for (; x != NULL; x = x->tl) {
+        let &$(_, e1) = x->hd;
+        scan_exp(e1, dep);
+      }
+      return;
+    case &Asm_e(...):
+      return;
+    case &Pragma_e(_):
+      fprintf(stderr, "Error: unexpected Pragma_e\n");
+      exit(1);
+      return;
+    case &Swap_e(_, _):
+      fprintf(stderr, "Error: unexpected Swap_e\n");
+      exit(1);
+      return;
+    case &StmtExp_e(_):
+      fprintf(stderr, "Error: unexpected Stmt_e\n");
+      exit(1);
+      return;
+    case &Assert_e(...):
+      fprintf(stderr, "Error: unexpected Assert_e\n");
+      exit(1);
+      return;
+    case &Assert_false_e(...):
+      fprintf(stderr, "Error: unexpected Assert_false_e\n");
+      exit(1);
+      return;
+    case &Throw_e(...):
+      fprintf(stderr, "Error: unexpected Throw_e\n");
+      exit(1);
+      return;
+    case &NoInstantiate_e(_):
+      fprintf(stderr, "Error: unexpected NoInstantiate_e\n");
+      exit(1);
+      return;
+    case &Instantiate_e(_, _):
+      fprintf(stderr, "Error: unexpected Instantiate_e\n");
+      exit(1);
+      return;
+    case &New_e(...):
+      fprintf(stderr, "Error: unexpected New_e\n");
+      exit(1);
+      return;
+    case &CompoundLit_e(_, _):
+      fprintf(stderr, "Error: unexpected CompoundLit_e\n");
+      exit(1);
+      return;
+    case &Array_e(_):
+      fprintf(stderr, "Error: unexpected Array_e\n");
+      exit(1);
+      return;
+    case &Comprehension_e(_, _, _, _):
+      fprintf(stderr, "Error: unexpected Comprehension_e\n");
+      exit(1);
+      return;
+    case &ComprehensionNoinit_e(...):
+      fprintf(stderr, "Error: unexpected ComprehensionNoinit_e\n");
+      exit(1);
+      return;
+    case &Aggregate_e(_, _, _, _):
+      fprintf(stderr, "Error: unexpected Aggregate_e\n");
+      exit(1);
+      return;
+    case &AnonStruct_e(...):
+      fprintf(stderr, "Error: unexpected AnonStruct_e\n");
+      exit(1);
+      return;
+    case &Datatype_e(_, _, _):
+      fprintf(stderr, "Error: unexpected Datatype_e\n");
+      exit(1);
+      return;
+    case &Enum_e(...):
+      fprintf(stderr, "Error: unexpected Enum_e\n");
+      exit(1);
+      return;
+    case &AnonEnum_e(...):
+      fprintf(stderr, "Error: unexpected AnonEnum_e\n");
+      exit(1);
+      return;
+  }
+}
+
+void scan_exp_opt(exp_opt_t eo, dep_t dep) {
+  if (eo)
+    scan_exp(eo, dep);
+  return;
+}
+
+extern void scan_decl(decl_t d, dep_t dep);
+void scan_type(type_t t, dep_t dep) {
+  switch (t) {
+    case &AppType(c, ts):
+      switch (c) {
+        case &VoidCon:
+        case &IntCon(_, _):
+        case &BuiltinCon(...):
+        case &FloatCon(_):
+        case &ComplexCon:
+        case &AnonEnumCon(_):
+          return;
+        case &AggrCon(info):
+          let $(_, &$(_, v)) = aggr_kinded_name(info);
+          fallthru(v);
+        case &EnumCon(&$(_, v), _):
+          add_target(v);
+          return;
+        case &DatatypeCon(_):
+        case &DatatypeFieldCon(_):
+        case &RgnHandleCon:
+        case &HeapCon:
+        case &UniqueHeapCon:
+        case &RefCntHeapCon:
+        case &JoinCon:
+        case &RgnsCon:
+        case &TagCon:
+        case &TrueCon:
+        case &FalseCon:
+        case &ThinCon:
+        case &FatCon:
+        case &AqualsCon:
+        case &AqualConstCon(_):
+        case &AqualHandleCon:
+        case &AqualVarCon:
+          fprintf(stderr, "Error: unexpected %s\n", Absynpp::typ2string(t));
+          exit(1);
+          return;
+      }
+
+    case &PointerType(x):
+      scan_type(x.elt_type, dep);
+      return;
+    case &ArrayType(ArrayInfo{t, _, sz, zt, _}):
+      scan_type(t, dep);
+      scan_exp_opt(sz, dep);
+      return;
+    case &TypeofType(e):
+      scan_exp(e, dep);
+      return;
+    case &FnType(x):
+      scan_type(x.ret_type, dep);
+      for (let a = x.args; a != NULL; a = a->tl) {
+        let &$(_, _, argt) = a->hd;
+        scan_type(argt, dep);
+      }
+      if (x.cyc_varargs != NULL)
+        scan_type(x.cyc_varargs->type, dep);
+      return;
+    case &AnonAggrType(_, _, sfs):
+      for (; sfs != NULL; sfs = sfs->tl) {
+        scan_type(sfs->hd->type, dep);
+        scan_exp_opt(sfs->hd->width, dep);
+      }
+      return;
+    case &TypedefType(&$(_, v), _, _, _):
+      add_target(v);
+      return;
+
+    case &TypeDeclType(&{.r = &Aggr_td(x), ...}, _):
+      scan_decl(new_decl(new Aggr_d(x), 0), dep);
+      let &$(_, n) = x->name;
+      add_target(n);
+      return;
+
+    case &TypeDeclType(&{.r = &Enum_td(x), ...}, _):
+      scan_decl(new_decl(new Enum_d(x), 0), dep);
+      let &$(_, n) = x->name;
+      add_target(n);
+      return;
+
+    case &TypeDeclType(&{.r = &Datatype_td(dd), ...}, _):
+      fprintf(stderr, "Error: unexpected Datatype declaration\n");
+      exit(1);
+      return;
+    case &SubsetType(...):
+      fprintf(stderr, "Error: unexpected @subset type\n");
+      exit(1);
+      return;
+    case &Cvar(...):
+      fprintf(stderr, "Error: unexpected Cvar\n");
+      exit(1);
+      return;
+    case &Evar(_, _, _, _):
+      fprintf(stderr, "Error: unexpected Evar\n");
+      exit(1);
+      return;
+    case &VarType(_):
+      fprintf(stderr, "Error: unexpected VarType\n");
+      exit(1);
+      return;
+    case &ValueofType(_):
+      fprintf(stderr, "Error: unexpected valueof_t\n");
+      exit(1);
+      return;
+  }
+}
+
+void scan_decl(decl_t d, dep_t dep) {
+  let saved_targets = current_targets;
+  let saved_source = current_source;
+  current_targets = new Set::empty(strptrcmp);
+  switch (d->r) {
+    case &Var_d(x):
+      let &$(_, v) = x->name;
+      current_source = v;
+      scan_type(x->type, dep);
+      scan_exp_opt(x->initializer, dep);
+      break;
+    case &Fn_d(x):
+      let &$(_, v) = x->name;
+      current_source = v;
+      scan_type(x->i.ret_type, dep);
+      for (let a = x->i.args; a != NULL; a = a->tl) {
+        let &$(_, _, t1) = a->hd;
+        scan_type(t1, dep);
+      }
+      if (x->i.cyc_varargs != NULL)
+        scan_type(x->i.cyc_varargs->type, dep);
+      if (x->is_inline)
+        log("Warning: ignoring inline function %s\n", *v);
+      break;
+    case &Aggr_d(x):
+      let &$(_, v) = x->name;
+      current_source = v;
+      if (x->impl) {
+        for (let fs = x->impl->fields; fs != NULL; fs = fs->tl) {
+          let f = fs->hd;
+          scan_type(f->type, dep);
+          scan_exp_opt(f->width, dep);
+        }
+        // That takes care of what the decl depends on.  Now must add
+        // that each field depends on the decl.
+        for (let fs = x->impl->fields; fs != NULL; fs = fs->tl) {
+          // FIX!!
+        }
+      }
+      break;
+    case &Enum_d(x):
+      let &$(_, v) = x->name;
+      current_source = v;
+      if (x->fields) {
+        for (let fs = x->fields->v; fs != NULL; fs = fs->tl) {
+          let f = fs->hd;
+          scan_exp_opt(f->tag, dep);
+        }
+        // That takes care of what the decl depends on.  Now must add
+        // that each field depends on the decl.
+        for (let fs = x->fields->v; fs != NULL; fs = fs->tl) {
+          // FIX!!
+        }
+      }
+      break;
+    case &Typedef_d(x):
+      let &$(_, v) = x->name;
+      current_source = v;
+      if (x->defn)
+        scan_type((type_t)x->defn, dep);
+      break;
+    case &Region_d(...):
+      fprintf(stderr, "Error: unexpected region declaration");
+      exit(1);
+    case &Porton_d:
+      fprintf(stderr, "Error: unexpected __cyclone_port_on__");
+      exit(1);
+    case &Portoff_d:
+      fprintf(stderr, "Error: unexpected __cyclone_port_off__");
+      exit(1);
+    case &Tempeston_d:
+      fprintf(stderr, "Error: unexpected __tempest_on__");
+      exit(1);
+    case &Tempestoff_d:
+      fprintf(stderr, "Error: unexpected __tempest_off__");
+      exit(1);
+    case &Let_d(...):
+      fprintf(stderr, "Error: unexpected let declaration\n");
+      exit(1);
+    case &Datatype_d(_):
+      fprintf(stderr, "Error: unexpected datatype declaration\n");
+      exit(1);
+    case &Letv_d(_):
+      fprintf(stderr, "Error: unexpected let declaration\n");
+      exit(1);
+    case &Namespace_d(_, _):
+      fprintf(stderr, "Error: unexpected namespace declaration\n");
+      exit(1);
+    case &Using_d(_, _):
+      fprintf(stderr, "Error: unexpected using declaration\n");
+      exit(1);
+    case &ExternC_d(...):
+      fprintf(stderr, "Error: unexpected extern \"C\" declaration\n");
+      exit(1);
+    case &ExternCinclude_d(...):
+      fprintf(stderr, "Error: unexpected extern \"C include\" declaration\n");
+      exit(1);
+  }
+
+  /* Add the dependencies to the table.  Note that name might
+     already have an entry in the table -- there can be more than
+     one declaration for a name, e.g., struct stat and function
+     stat in sys/stat.h. */
+  let old;
+  let name = (_ @)current_source;
+  try old = Hashtable::lookup(dep, name);
+  catch {
+    case &Not_found:
+      old = Set::empty(strptrcmp);
+      break;
+  }
+  let targets = Set::union_two(*current_targets, old);
+  Hashtable::insert(dep, name, targets);
+
+  current_targets = saved_targets;
+  current_source = saved_source;
+}
+
+dep_t new_deps() { return Hashtable::create(107, strptrcmp, Hashtable::hash_stringptr); }
+
+Set::set_t<stringptr_t<`H,`H>,`H> find(dep_t t, stringptr_t<`H,`H> x) {
+  try return Hashtable::lookup(t, x);
+  catch {
+    case &Not_found:
+      return Set::empty(strptrcmp);
+  }
+}
+
+Set::set_t<stringptr_t> reachable(list_t<stringptr_t<`H,`H>> init, dep_t t) {
+  /* Maintain two sets, curr and delta: curr is the "current set"
+     and delta is the subset of curr that was added in the previous
+     step.  Initially curr = delta = the initial nodes.
+
+     While delta is not empty,
+       find a set, next, that consists of the nodes reachable
+         from delta in a single step;
+       set delta = next - curr, and curr = curr U delta.
+  */
+  Set::set_t<stringptr_t<`H,`H>,`H> emptyset = Set::empty(strptrcmp);
+  Set::set_t<stringptr_t<`H,`H>,`H> curr;
+  for (curr = emptyset; init != NULL; init = init->tl) {
+    curr = Set::insert(curr, init->hd);
+  }
+  let delta = curr;
+
+  let sptr = new "";
+  while (Set::cardinality(delta) > 0) {
+    let next = emptyset;
+    let iter = Set::make_iter(Core::heap_region, delta);
+    while (Iter::next(iter, &sptr))
+      next = Set::union_two(next, find(t, sptr));
+    delta = Set::diff(next, curr);
+    curr = Set::union_two(curr, delta);
+  }
+  return curr;
+}
+
+int force_directory(string_t d) {
+  /* We could do this with stat, but stat is more
+      platform dependent; this is more portable. */
+  let fd = open(d, O_RDONLY);
+  if (fd == -1) {
+    if (mkdir((const char @)d, 0700) == -1) {
+      fprintf(stderr, "Error: could not create directory %s\n", d);
+      return 1;
+    }
+  } else {
+    close(fd);
+  }
+  return 0;
+}
+
+int force_directory_prefixes(string_t file) {
+  /* File is a string like "foo/bar/baz/xx.h", we want to make sure
+     that the directories "foo", "foo/bar", "foo/bar/baz" all exist
+     so we can create file. */
+  let curr = strdup(file);  // Make sure curr is on heap
+  /* Compute all prefixes of file */
+  let x = NULL;
+  while (true) {
+    curr = Filename::dirname(curr);
+    if (strlen(curr) == 0)
+      break;
+    x = new List(new (string_t) curr, x);
+  }
+  /* Make sure all prefixes exist */
+  for (; x != NULL; x = x->tl) {
+    if (force_directory(*x->hd))
+      return 1;
+  }
+  return 0;
+}
+
+/* Exception for handling error cases of process_file */
+datatype exn{NO_SUPPORT(string_t)};
+
+/* Is a character special to /bin/sh (except for single quote)? */
+static bool is_other_special(char c) {
+  switch (c) {
+    case '\\':
+    case '"':
+    case ';':
+    case '&':
+    case '(':
+    case ')':
+    case '|':
+    case '^':
+    case '<':
+    case '>':
+    // JGM: I'm commenting this out because we shouldn't be quoting
+    // arguments like -idirafter.
+    // case ' ':
+    case '\n':
+    case '\t':
+      return true;
+    default:
+      return false;
+  }
+}
+/* Escape any characters special to /bin/sh */
+static string_t sh_escape_string(string_t<`H> s) {
+  let len = strlen(s);
+
+  /* Count the number of single quotes and other special chars in s */
+  let single_quotes = 0;
+  let other_special = 0;
+  for (int i = 0; i < len; i++) {
+    let c = s[i];
+    if (c == '\'')
+      single_quotes++;
+    else if (is_other_special(c))
+      other_special++;
+  }
+
+  /* No special chars to escape */
+  if (single_quotes == 0 && other_special == 0)
+    return s;
+
+  /* No single quotes, we can just single quote s */
+  if (single_quotes == 0)
+    return strconcat_l(list(new "'", new (string_t) s, new "'"));
+
+  /* We'll quote all special chars by prefixing with a backslash */
+  let len2 = len + single_quotes + other_special;
+  mstring_t s2 = new {for
+      i < len2 + 1 : '\0'
+  };  // add trailing NUL
+  let i = 0;
+  let j = 0;
+  for (; i < len; i++) {
+    let c = s[i];
+    if (c == '\'' || is_other_special(c))
+      s2[j++] = '\\';
+    s2[j++] = c;
+  }
+  return s2;
+}
+static stringptr_t sh_escape_stringptr(stringptr_t<`H,`H> sp) { return new sh_escape_string(*sp); }
+
+/* Returns 1 on a fatal error (can't create files, etc.) or 0 otherwise. */
+int process_file(const char @`H filename, list_t<stringptr_t<`H,`H>,`H> start_symbols,
+                 list_t<userdef_t,`H> user_defs, list_t<stringptr_t<`H,`H>,`H> omit_symbols,
+                 list_t<ifdefined_t,`H> hstubs, list_t<ifdefined_t,`H> cstubs,
+                 list_t<ifdefined_t,`H> cycstubs, list_t<stringptr_t<`H,`H>,`H> cpp_insert) {
+  FILE *maybe;
+  FILE @in_file;
+  FILE @out_file;
+  int errorcode = 0;
+
+  if (headers_to_do && !Set::member(*headers_to_do, new (string_t) filename))
+    return 0;
+
+  fprintf(stderr, "********************************* %s...\n", filename);
+
+  log("\n%s:\n", filename);
+
+  /* Calculate necessary file names.  For example:
+     filename = sys/types.h
+     basename = types.h
+     dirname = sys
+     choppedname = types
+     cppinfile = types.iA
+     macrosfile = sys/types.iB
+     declsfile = sys/types.iC
+     filtereddeclsfile = sys/types.iD
+  */
+  let basename = Filename::basename(filename);
+  let dirname = Filename::dirname(filename);
+  let choppedname = Filename::chop_extension(basename);
+  let cppinfile = (const char @)(strconcat(choppedname, ".iA"));
+  /* The macrosfile just contains the #define's in the header (filename) */
+  let macrosfile = (const char @)((numelts(dirname) == 0)
+                                      ? (aprintf("%s.iB", choppedname))
+                                      : (Filename::concat(dirname, aprintf("%s.iB", choppedname))));
+  /* The declsfile contains all of the (preprocessed) declarations in the header */
+  let declsfile = (const char @)((numelts(dirname) == 0)
+                                     ? (aprintf("%s.iC", choppedname))
+                                     : (Filename::concat(dirname, aprintf("%s.iC", choppedname))));
+  /* The filtereddeclsfile is the declsfile minus Cyclone-unfriendly constructs */
+  let filtereddeclsfile = (const char @)(
+      (numelts(dirname) == 0) ? (aprintf("%s.iD", choppedname))
+                              : (Filename::concat(dirname, aprintf("%s.iD", choppedname))));
+
+  try {
+    /* Make sure we'll be able to create files in the right directories */
+    if (force_directory_prefixes(filename)) {
+      return 1;
+    }
+
+    /* Create the file of macros and the file of declarations */
+    maybe = fopen(cppinfile, "w");
+    if (!maybe) {
+      fprintf(stderr, "Error: could not create file %s\n", cppinfile);
+      return 1;
+    }
+    if (verbose)
+      fprintf(stderr, "Creating %s\n", cppinfile);
+    out_file = (FILE @)maybe;
+    for (let l = cpp_insert; l != NULL; l = l->tl) {
+      fputs((const char @)(*(l->hd)), out_file);
+    }
+    fprintf(out_file, "#include <%s>\n", filename);
+    fclose(out_file);
+    let cppargs_string =
+        str_sepstr(new List(new (string_t) "", List::map(sh_escape_stringptr, rev(cppargs))), " ");
+    // TJIM: dangerous...
+    char @cmd = (char @)aprintf("%s %s -E -dM -o %s -x c %s %s", cyclone_cc,
+                                cppargs_string, macrosfile, cppinfile, verbose ? "" : "-w");
+    if (verbose)
+      fprintf(stderr, "%s\n", cmd);
+    if (!system(cmd)) {
+      /* No error in creating the file of macros, so go ahead and create
+          the file of declarations */
+      cmd = (char @)aprintf("%s %s -E -o %s -x c %s %s", cyclone_cc,
+                            cppargs_string, declsfile, cppinfile, verbose ? "" : "-w");
+      if (verbose)
+        fprintf(stderr, "%s\n", cmd);
+      system(cmd);  // if err, no declsfile created, and we'll handle later
+    }
+    // JGM:remove(cppinfile);
+
+    /* Put the macros in the table of dependencies */
+    dep_t t = new_deps();
+    maybe = fopen(macrosfile, "r");
+    if (!maybe)
+      throw new NO_SUPPORT(aprintf("can't open macrosfile %s", macrosfile));
+
+    if (verbose)
+      fprintf(stderr, "Getting macros...");
+    in_file = (FILE @)maybe;
+    let l = Lexing::from_file(in_file);
+    let entry;
+    int i = 0;
+    while ((entry = line(l)) != NULL) {
+      let &$(name, uses) = (_ @)entry;  // force NULL check to get rid of warning
+      Hashtable::insert(t, name, uses);
+      // log("Macro %s uses:\n", *name);
+      // Set::iter(pr,uses);
+    }
+    fclose(in_file);
+    if (verbose)
+      fprintf(stderr, "done.\n");
+
+    /* Get the type declarations out of the file */
+    maybe = fopen(declsfile, "r");
+    if (!maybe)
+      throw new NO_SUPPORT(aprintf("can't open declsfile %s", declsfile));
+
+    if (verbose)
+      fprintf(stderr, "Extracting declarations...");
+    in_file = (FILE @)maybe;
+    l = Lexing::from_file(in_file);
+    slurp_out = fopen(filtereddeclsfile, "w");
+    if (!slurp_out)
+      return 1;
+    while (slurp(l)) /* skip */
+      ;
+    if (verbose)
+      fprintf(stderr, "done.\n");
+    // Now include (renamed) user-defined declarations
+    let x = user_defs;
+    while (x != NULL) {
+      let &$(_, s) = x->hd;
+      fprintf((FILE @)slurp_out, "%s", *s);
+      x = x->tl;
+    }
+    fclose(in_file);
+    fclose((FILE @)slurp_out);
+
+    maybe = fopen(filtereddeclsfile, "r");
+    if (!maybe)
+      return 1;
+    if (verbose)
+      fprintf(stderr, "Parsing declarations...");
+    in_file = (FILE @)maybe;
+    Warn::reset(filtereddeclsfile);
+    Lex::lex_init(false);            // must forget typedefs, may as well flush symbols too
+    Warn::print_warnings = verbose;  // people get worked up if they see errors during the build
+    let decls = NULL;
+    try {
+      decls = Parse::parse_file(in_file);
+      Warn::print_warnings = 1;
+      Lex::lex_init(false);  // garbage collect those big tries
+      fclose(in_file);
+      if (verbose)
+        fprintf(stderr, "done.\n");
+      // JGM:remove(filtereddeclsfile);
+    } catch {
+      case x:
+        Warn::print_warnings = 1;
+        Lex::lex_init(false);  // garbage collect those big tries
+        fclose(in_file);
+        if (verbose)
+          fprintf(stderr, "exception thrown.\n");
+        rethrow(x);
+        break;
+    }
+
+    for (let d = decls; d != NULL; d = d->tl)
+      scan_decl(d->hd, t);
+
+    /* Compute reachable symbols (including user decls) */
+    let user_symbols = map(add_user_prefix, (split(user_defs))[0]);
+    let reachable_set = reachable(append(start_symbols, user_symbols), t);
+
+    /* Print reachable declarations */
+    let reachable_decls = NULL;
+    let user_decls = NULL;
+    Set::set_t<stringptr_t<`H,`H>> defined_symbols = Set::empty(strptrcmp);
+    for (let d = decls; d != NULL; d = d->tl) {
+      let decl = d->hd;
+      let name;
+      switch (decl->r) {
+        case &Var_d(x):
+          let &$(_, v) = x->name;
+          defined_symbols = Set::insert(defined_symbols, v);
+          if (mem(strptrcmp, omit_symbols, v))
+            name = NULL;
+          else
+            name = v;
+          break;
+        case &Fn_d(x):
+          let &$(_, v) = x->name;
+          defined_symbols = Set::insert(defined_symbols, v);
+          if (mem(strptrcmp, omit_symbols, v))
+            name = NULL;
+          else
+            name = v;
+          break;
+        case &Aggr_d(x):
+          let &$(_, v) = x->name;
+          name = v;
+          break;
+        case &Enum_d(x):
+          let &$(_, v) = x->name;
+          name = v;
+
+          // see if fields are reachable or name is reachable
+          if (name != NULL && Set::member(reachable_set, (stringptr_t)name)) {
+            reachable_decls = new List(decl, reachable_decls);
+          } else if (x->fields) {
+            for (let fs = x->fields->v; fs != NULL; fs = fs->tl) {
+              let f = fs->hd;
+              let &$(_, v) = f->name;
+              if (Set::member(reachable_set, v)) {
+                reachable_decls = new List(decl, reachable_decls);
+                break;  // exit for-loop
+              }
+            }
+          }
+          name = NULL;
+          break;
+        case &Typedef_d(x):
+          let &$(_, v) = x->name;
+          name = v;
+          break;
+        case &Porton_d:
+        case &Portoff_d:
+        case &Tempeston_d:
+        case &Tempestoff_d:
+        case &Let_d(...):
+        case &Datatype_d(_):
+        case &Letv_d(_):
+        case &Namespace_d(_, _):
+        case &Using_d(_, _):
+        case &ExternC_d(...):
+        case &ExternCinclude_d(...):
+        case &Region_d(...):
+          name = NULL;
+          break;
+      }
+      // two lists: one for reachable decls, one for user decls
+      if (name != NULL && Set::member(reachable_set, (stringptr_t)name)) {
+        if (strncmp(*name, user_prefix, strlen(user_prefix)) != 0) {
+          reachable_decls = new List(decl, reachable_decls);
+        } else {
+          rename_decl(decl);
+          user_decls = new List(decl, user_decls);
+        }
+      }
+    }
+
+    // reachable_decls = imp_rev(reachable_decls);
+    if (!do_setjmp) {
+      maybe = fopen(filename, "w");
+      if (!maybe)
+        return 1;
+      out_file = (FILE @)maybe;
+    } else
+      out_file = stdout;
+    mstring_t ifdefmacro = aprintf("_%s_", filename);
+    for (let j = 0; j < numelts(ifdefmacro); j++) {
+      if (ifdefmacro[j] == '.' || ifdefmacro[j] == '/')
+        ifdefmacro[j] = '_';
+      else if (ifdefmacro[j] != '_' && ifdefmacro[j] != '/')
+        ifdefmacro[j] = (char)toupper(ifdefmacro[j]);
+    }
+    if (!do_setjmp)
+      fprintf(out_file, "__noinference__{\n");
+    fprintf(out_file,
+            "#ifndef %s\n"
+            "#define %s\n",
+            ifdefmacro, ifdefmacro);
+
+    /* gather all of the declarations to print */
+    let print_decls = NULL;
+    let names = NULL;
+    for (let d = reachable_decls; d != NULL; d = d->tl) {
+      let decl = d->hd;
+      let anon_enum = false;
+      _ *name;
+      switch (decl->r) {
+        case &Var_d(x):
+          let &$(_, v) = x->name;
+          name = v;
+          break;
+        case &Fn_d(x):
+          if (x->is_inline) {
+            name = NULL;
+            break;
+          }  // DJG: ??
+          let &$(_, v) = x->name;
+          name = v;
+          break;
+        case &Aggr_d(x):
+          let &$(_, v) = x->name;
+          name = v;
+          break;
+        case &Enum_d(x):
+          let &$(_, v) = x->name;
+          name = v;
+          break;
+        case &Typedef_d(x):
+          let &$(_, v) = x->name;
+          name = v;
+          break;
+        case &Region_d(...):
+        case &Porton_d:
+        case &Portoff_d:
+        case &Tempeston_d:
+        case &Tempestoff_d:
+        case &Let_d(...):
+        case &Datatype_d(_):
+        case &Letv_d(_):
+        case &Namespace_d(_, _):
+        case &Using_d(_, _):
+        case &ExternC_d(...):
+        case &ExternCinclude_d(...):
+          name = NULL;
+          break;
+      }
+      if (!name && !anon_enum)
+        continue;
+
+      // If this has a user declaration, merge it with the system declaration.
+      // If the two are not representation-compatible, will signal a warning and
+      // stick with the system definition.
+      if (Set::member(reachable_set, add_user_prefix(name))) {
+        let user_decl = lookup_decl(user_decls, name);
+        if (user_decl == NULL) {
+          throw new Core::Impossible("Internal Error: bad user-def name");
+        } else {
+          switch (user_decl->r) {
+            case &Var_d(_):
+            case &Fn_d(_):
+              throw new NO_SUPPORT("user defintions for function or variable decls");
+            default:
+              break;
+          }
+        }
+        // merging now done in Tc phase
+        //	Cifc::merge_sys_user_decl(0, Tcenv::tc_init(), true, user_decl, decl);
+        print_decls = new List(decl, print_decls);
+      } else
+        print_decls = new List(decl, print_decls);
+      names = new List(name, names);
+    }
+
+    /* make sure the declarations are well-formed */
+    try {
+      Binding::resolve_all(print_decls);
+      Tc::tc(Tcenv::tc_init(), true, print_decls);
+    } catch {
+      default:
+        throw new NO_SUPPORT("can't typecheck acquired declarations");
+    }
+
+    /* print them */
+    for (let $(d, n) = $(print_decls, names); d != NULL && n != NULL; d = d->tl, n = n->tl) {
+      let decl = d->hd;
+      let name = n->hd;
+      let anon_enum = false;
+      if (!name)
+        anon_enum = true;
+
+      // set up the pretty printer to emit interfaces
+      Absynpp::set_params(&Absynpp::cyc_params_r);
+      if (name) {
+        enum name_kind kind;
+        switch (decl->r) {
+          case &Aggr_d(...):
+          case &Datatype_d(...):
+          case &Enum_d(...):
+            kind = NK_Tag;
+            break;
+          default:
+            kind = NK_Ident;
+            break;
+        }
+
+        ifdefmacro = aprintf("_%s_%sdef_", *name, nk2str(kind));
+        fprintf(out_file, "#ifndef %s\n", ifdefmacro);
+        fprintf(out_file, "#define %s\n", ifdefmacro);
+        // Because there's no decl2file and I'm lazy
+        Absynpp::decllist2file(list(decl), out_file);
+        fprintf(out_file, "#endif\n");
+      } else {
+        // Anonymous enum
+        Absynpp::decllist2file(list(decl), out_file);
+      }
+    }
+
+    /* Print reachable macros */
+    maybe = fopen(macrosfile, "r");
+    if (!maybe)
+      throw new NO_SUPPORT(aprintf("can't open macrosfile %s", macrosfile));
+    in_file = (FILE @)maybe;
+    l = Lexing::from_file(in_file);
+    let entry2;
+    while ((entry2 = suck_line(l)) != NULL) {
+      let &$(line, name) = (_ @)entry2;  // force NULL check to get rid of warning
+      if (Set::member(reachable_set, name)) {
+        fprintf(out_file, "#ifndef %s\n", *name);
+        fprintf(out_file, "%s\n", line);
+        fprintf(out_file, "#endif\n");
+      }
+    }
+    fclose(in_file);
+
+    if (hstubs != NULL) {
+      for (let x = hstubs; x != NULL; x = x->tl) {
+        let &$(symbol, text) = x->hd;
+        if (text != NULL)
+          if (symbol == NULL)
+            // FIX: FPUTS DUMPS CORE ON LINUX IF FIRST ARG IS NULL!!
+            fputs((const char @)text, out_file);
+          else if (Set::member(defined_symbols, new symbol))
+            fputs((const char @)text, out_file);
+          else {
+            log("%s is not supported on this platform\n", symbol);
+            for (let x = defined_symbols; !Set::is_empty(x);) {
+              let y = Set::choose(x);
+              x = Set::delete (x, y);
+              log("+%s", *y);
+              log("\n");
+            }
+          }
+
+        else
+          log("Null text for %s, will not be supported on this platform\n", symbol);
+      }
+    }
+    fprintf(out_file, "#endif\n");
+    if (!do_setjmp)
+      fprintf(out_file, "}\n");  //__noinference__
+    if (do_setjmp)
+      return 0;  // Don't print C and Cyclone stubs files
+    else
+      fclose(out_file);
+
+    /* Dump out the C stubs */
+    if (cstubs != NULL) {
+      out_file = (FILE @)cstubs_file;
+      for (let x = cstubs; x != NULL; x = x->tl) {
+        let &$(symbol, text) = x->hd;
+        if (text != NULL && (symbol == NULL || Set::member(defined_symbols, new symbol)))
+          fputs((const char @)text, out_file);
+      }
+    }
+
+    /* Dump out the Cyclone stubs */
+    out_file = (FILE @)cycstubs_file;
+    if (cycstubs != NULL) {
+      /* Always include the header, to make sure it has no errors */
+      /* MWH: not always including it, to avoid creating unwanted
+         dependencies to non-standard libraries (i.e. pthreads) */
+      fprintf(out_file, "#include \"%s\"\n\n", filename);
+      out_file = (FILE @)cycstubs_file;
+      for (let x = cycstubs; x != NULL; x = x->tl) {
+        let &$(symbol, text) = x->hd;
+        if (text != NULL && (symbol == NULL || Set::member(defined_symbols, new symbol)))
+          fputs((const char @)text, out_file);
+      }
+      fprintf(out_file, "\n");
+    }
+
+    return 0;
+
+  } catch {
+    case &Core::Impossible(s):
+      log("Got Core::Impossible(%s)\n", s);
+      break;
+    case &Dict::Absent:
+      log("Got Dict::Absent\n");
+      break;
+    case &Core::Failure(s):
+      log("Got Core::Failure(%s)\n", s);
+      break;
+    case &Invalid_argument(s):
+      log("Got Invalid_argument(%s)\n", s);
+      break;
+    case &Not_found:
+      log("Got Not_found\n");
+      break;
+    case &NO_SUPPORT(s):
+      log("No support because %s\n", s);
+      break;
+    case &Lexing::Error(s):
+      log("Got a lexing error %s\n", s);
+      break;
+    case x:
+      log("Got unknown exception\n");
+      rethrow(x);
+  }
+  /* We could get here because of a throw NO_SUPPORT or because of
+     a parse error or other error.  In either case, we create a
+     default header and don't otherwise signal an error. */
+  maybe = fopen(filename, "w");
+  if (!maybe) {
+    fprintf(stderr, "Error: could not create file %s\n", filename);
+    return 1;
+  }
+  out_file = (FILE @)maybe;
+  fprintf(out_file, "#error -- %s is not supported on this platform\n", filename);
+  fclose(out_file);
+  //      fprintf(stderr,"Warning: %s will not be supported on this platform\n",
+  //              filename);
+  log("Not supported on this platform\n");
+
+  /* Delete intermediate files; some may not exist but we ignore that */
+  // JGM:remove(macrosfile);
+  // JGM:remove(declsfile);
+  // JGM:remove(filtereddeclsfile);
+
+  return 0;
+}
+
+/* Return 1 on fatal error, else 0 */
+int process_specfile(const char @file, const char @dir) {
+  if (verbose)
+    fprintf(stderr, "Processing %s\n", file);
+  let maybe = fopen(file, "r");
+  if (!maybe) {
+    fprintf(stderr, "Error: could not open %s\n", file);
+    return 1;
+  }
+  let in_file = (FILE @)maybe;
+
+  /* Cd into dir, where the header files will be built.  Remember
+     the current dir so we can cd back after we're done. */
+  char ?buf = new {for
+      i < 1024 : '\0'
+  };
+  let cwd = getcwd(buf, numelts(buf));
+  if (chdir(dir)) {
+    fprintf(stderr, "Error: can't change directory to %s\n", dir);
+    return 1;
+  }
+
+  let l = Lexing::from_file(in_file);
+  let entry;
+  while ((entry = spec(l)) != NULL) {
+    let &$(headerfile, start_symbols, user_defs, omit_symbols, hstubs, cstubs, cycstubs,
+           cpp_insert) = (_ @)entry;
+    if (process_file((const char @)headerfile, start_symbols, user_defs, omit_symbols, hstubs,
+                     cstubs, cycstubs, cpp_insert))
+      return 1; /* fatal error in process_file */
+  }
+  fclose(in_file);
+
+  if (chdir((char @)cwd)) {
+    fprintf(stderr, "Error: could not change directory to %s\n", cwd);
+    return 1;
+  }
+  return 0;
+}
+
+/* Return 1 on fatal error, else 0 */
+int process_setjmp(const char @dir) {
+  /* Cd into dir, where the header files will be built.  Remember
+     the current dir so we can cd back after we're done. */
+  char ?buf = new {for
+      i < 1024 : '\0'
+  };
+  let cwd = getcwd(buf, numelts(buf));
+  if (chdir(dir)) {
+    fprintf(stderr, "Error: can't change directory to %s\n", dir);
+    return 1;
+  }
+  if (process_file("setjmp.h", list(new "jmp_buf"), NULL, NULL,
+                   list(new $("setjmp", "extern int setjmp(jmp_buf);\n")), NULL, NULL, NULL))
+    return 1; /* fatal error */
+  if (chdir((char @)cwd)) {
+    fprintf(stderr, "Error: could not change directory to %s\n", cwd);
+    return 1;
+  }
+  return 0;
+}
+
+/* Helper functions for command line argument processing */
+static string_t output_dir = "BUILDLIB.OUT";
+static void set_output_dir(string_t<`H> s) { output_dir = s; }
+static void set_compiler(string_t<`H> s) { cyclone_cc = s; }
+static list_t<const char @`H> spec_files = NULL;
+static void add_spec_file(string_t<`H> s) { spec_files = new List((const char @)s, spec_files); }
+static bool no_other(string_t<`H> s) { return false; }
+static void add_cpparg(string_t<`H> s) { cppargs = new List(new s, cppargs); }
+static bool badparse = false;
+static void unsupported_option(string_t<`H> s) {
+  fprintf(stderr, "Unsupported option %s\n", s);
+  badparse = true;
+}
+static void set_header(string_t<`H> s) {
+  if (!headers_to_do)
+    headers_to_do = new Set::empty(strptrcmp);
+  *headers_to_do = Set::insert(*headers_to_do, new s);
+}
+
+using Arg;
+
+/********************** Main *********************/
+extern "C" void GC_blacklist_warn_clear();
+int main(int argc, const char ?`H?`H argv) {
+  GC_blacklist_warn_clear();
+
+  Arg::speclist_t<`H,`H> options =
+      list(new $("-d", false, " <file>", new String_spec(set_output_dir),
+                 "Set the output directory to <file>"),
+           new $("-cc", false, " <compiler>", new String_spec(&set_compiler),
+                 "Use this compiler instead of 'gcc'."),
+           new $("-setjmp", false, "", new Set_spec(&do_setjmp),
+                 "Produce the jmp_buf and setjmp declarations"
+                 " on the standard output, for use by the Cyclone"
+                 " compiler special file cyc_setjmp.h.  Cannot be"
+                 " used with specfiles."),
+           new $("-h", false, " <header>", new String_spec(set_header),
+                 "Produce this header, and other -h headers only"),
+           new $("-v", false, "", new Set_spec(&verbose), "Verbose operation"),
+           new $("-", true, "", /* pass all other - flags to cpp */
+                 new Flag_spec(add_cpparg), ""));
+  // Process options
+  Arg::current = 0;
+  Arg::parse(options, add_spec_file, no_other, "Options:", argv);
+  if (badparse || (!do_setjmp && spec_files == NULL) || (do_setjmp && spec_files != NULL)) {
+    Arg::usage(options,
+               "Usage: buildlib [options] specfile1 specfile2 ...\n"
+               "Options:");
+    return 1;
+  }
+
+  /* Make sure the directory where the output files will be placed exists */
+  if (force_directory_prefixes(output_dir) || force_directory(output_dir)) {
+    fprintf(stderr, "Error: could not create directory %s\n", output_dir);
+    return 1;
+  }
+  if (verbose)
+    fprintf(stderr, "Output directory is %s\n", output_dir);
+
+  /* Create an empty log file -- most importantly, any previous log
+  file will be truncated */
+  log_file = fopen((const char @)(Filename::concat(output_dir, "BUILDLIB.LOG")), "w");
+  if (!log_file) {
+    fprintf(stderr, "Error: could not create log file in directory %s\n", output_dir);
+    return 1;
+  }
+
+  if (!do_setjmp) {
+    /* Create an empty cstubs.cyc file */
+    cstubs_file = fopen((const char @)(Filename::concat(output_dir, "cstubs.c")), "w");
+    if (!cstubs_file) {
+      fprintf(stderr, "Error: could not create cstubs.c in directory %s\n", output_dir);
+      return 1;
+    }
+
+    /* Create a cycstubs.cyc file with the standard prologue */
+    cycstubs_file = fopen((const char @)(Filename::concat(output_dir, "cycstubs.cyc")), "w");
+    if (!cycstubs_file) {
+      fprintf(stderr, "Error: could not create cycstubs.c in directory %s\n", output_dir);
+      return 1;
+    }
+    fprintf((FILE @)cycstubs_file,
+            "#include \"cyclone/library/std/core.h\"\n"
+            "using Core;\n\n");
+  }
+
+  const char @outdir = (const char @)output_dir;
+  if (do_setjmp && process_setjmp(outdir)) {
+    return 1;
+  } else {
+    /* Main loop -- process each spec file */
+    for (; spec_files != NULL; spec_files = spec_files->tl) {
+      if (process_specfile(spec_files->hd, outdir)) {
+        fprintf(stderr, "FATAL ERROR -- QUIT!\n");
+        exit(1);
+      }
+    }
+  }
+
+  fclose((FILE @)log_file);
+  if (!do_setjmp) {
+    fclose((FILE @)cstubs_file);
+    fclose((FILE @)cycstubs_file);
+  }
+
+  return 0;
+}
+}

@@ -1,0 +1,8 @@
+load("//cyclone:build_defs.bzl", "buildlib")
+
+buildlib(
+    name = "libc",
+    src = "libc.cys",
+    hdrs = ["link.h"],
+    visibility = ["//visibility:public"],
+)

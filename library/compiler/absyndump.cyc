@@ -1,0 +1,2365 @@
+/* Ugly printer for the abstract syntax.
+   Copyright (C) 2001 Dan Grossman, Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include "absyndump.h"
+
+#include "absynpp.h"
+#include "attributes.h"
+#include "evexp.h"
+#include "flags.h"
+#include "kinds.h"
+#include "lex.h"
+#include "warn.h"
+
+#include <string.h>
+#include "cyclone/library/std/dict.h"
+
+using Absyn;
+using Core;
+using List;
+
+namespace Absyndump;
+
+// Flag controlling whether typedefs are expanded during printing
+static bool expand_typedefs;
+
+// Flag controlling how to print identifiers (better performance (???) than
+// re-writing them all in Toc).
+static bool qvar_to_Cids;
+
+// Flag controlling whether to add the cyc prefix to the C-identifiers
+static bool add_cyc_prefix;
+
+// Flag controlling whether debugging #lines are produced.
+static bool generate_line_directives;
+
+static string_t nocyc_str       = "__NoCycPrefix";
+static stringptr_t nocyc_strptr = &nocyc_str;
+
+void set_params(struct Absynpp::Params @fs) {
+  expand_typedefs          = fs->expand_typedefs;
+  qvar_to_Cids             = fs->qvar_to_Cids;
+  add_cyc_prefix           = fs->add_cyc_prefix;
+  generate_line_directives = fs->generate_line_directives;
+#if 0
+  decls_first = fs->decls_first;
+  rewrite_temp_tvars = fs->rewrite_temp_tvars;
+  print_all_tvars = fs->print_all_tvars;
+  print_all_kinds = fs->print_all_kinds;
+  print_using_stmts = fs->print_using_stmts;
+  print_externC_stmts = fs->print_externC_stmts;
+  print_full_evars = fs->print_full_evars;
+#endif
+
+  // since absyndump uses absynpp, we must set the parameters of absynpp too !!!
+  Absynpp::set_params(fs);
+}
+
+static void dumptyp(type_t);
+static void dumpntyp(type_t);
+static void dumpexp(exp_t);
+static void dumpexp_prec(int, exp_t);
+static void dumppat(pat_t);
+static void dumpstmt(stmt_t, bool expstmt, Dict::dict_t<qvar_t, qvar_t, `H>);
+static void dumpvardecl(vardecl_t, Position::seg_t, bool do_semi);
+static void dump_aggrdecl(aggrdecl_t);
+static void dump_enumdecl(enumdecl_t);
+static void dump_datatypedecl(datatypedecl_t);
+static void dumpdecl(decl_t);
+static void dumptms(bool is_char_ptr, list_t<type_modifier_t>, void f(`a), `a);
+static void dumptqtd(tqual_t, type_t, void f(`a), `a);
+static void dumpaggrfields(list_t<aggrfield_t>);
+static void dumpenumfields(list_t<enumfield_t>);
+// really want to change this to char[] (need a control character for format
+// prims and the ability to cast to untagged (from Tagged requires Toc hlep,
+// from Fixed requires trivial Toc help)
+typedef string_t<`r> dump_string_t<`r>;
+static void dumploc(Position::seg_t);  // dumps a #line directive
+
+// set by dumpdecllist2file (this module is not re-entrant)
+FILE @ @dump_file     = &stdout;
+static char prev_char = 'x';
+
+static Dict::dict_t<qvar_t, qvar_t, `H> mt_set() {
+  static Dict::dict_t<qvar_t, qvar_t, `H> *mt_set_value = NULL;
+
+  if (mt_set_value == NULL) {
+    let s        = Dict::empty(qvar_cmp);
+    mt_set_value = new s;
+    return s;
+  }
+
+  return *mt_set_value;
+}
+
+static bool need_space_before() {
+  switch (prev_char) {
+    case '{':
+    case '}':
+    case '(':
+    case ')':
+    case '[':
+    case ']':
+    case ';':
+    case ',':
+    case '=':
+    case '?':
+    case '!':
+    case ' ':
+    case '\n':
+    case '*':
+      return false;
+    default:
+      return true;
+  }
+}
+
+static void dump(dump_string_t s) {
+  unsigned int sz = strlen(s);
+
+#if 0
+  pos += sz;
+  if (pos > 80)
+    {
+      pos = sz;
+      fputc ('\n', *dump_file);
+    }
+  else
+#endif
+  if (sz >= 1) {
+    if (need_space_before())
+      fputc(' ', *dump_file);
+    prev_char = s[sz - 1];
+    file_string_write(*dump_file, s, 0, sz);
+  }
+}
+
+static void dump_nospace(dump_string_t s) {
+  int sz = strlen(s);
+
+#if 0
+  pos += sz;
+#endif
+  if (sz >= 1) {
+    file_string_write(*dump_file, s, 0, sz);
+    prev_char = s[sz - 1];
+  }
+}
+
+static void dump_char(int c) {
+  // no space
+#if 0
+  ++pos;
+#endif
+  fputc(c, *dump_file);
+  prev_char = (char)c;
+}
+
+static void dumploc(Position::seg_t loc) {
+  static const char ? last_file = "";
+  static unsigned last_line     = 0;
+  static unsigned last_loc      = 0;
+
+  if (!generate_line_directives)
+    return;
+  if (loc == 0 || loc == last_loc)
+    return;
+  last_loc = loc;
+#if 0
+  let s = Position::get_line_directive (loc);
+#endif
+  let $(f, d) = Lex::xlate_pos(loc);
+  if (f == NULL || ((f == last_file) && (d == last_line)))
+    return;
+  if (f == last_file && d == last_line + 1)
+    fprintf(*dump_file, "\n");
+  else if (f == last_file)
+    fprintf(*dump_file, "\n# %d\n", d);
+  else
+    fprintf(*dump_file, "\n# %d %s\n", d, f);
+#if 0
+  pos = 1;
+#endif
+  last_file = f;
+  last_line = d;
+#if 0
+  dump(s);
+#endif
+}
+
+// these needs to take a boxed type b/c it's used to instantiate `a
+static void dump_str(stringptr_t s) { dump(*s); }
+
+static void dump_str_nospace(stringptr_t s) { dump_nospace(*s); }
+
+static void dump_semi() { dump_char(';'); }
+
+static void dump_sep(void f(`a), list_t<`a> l, dump_string_t sep) {
+  if (l == NULL)
+    return;
+  for (; l->tl != NULL; l = l->tl) {
+    f(l->hd);
+    dump_nospace(sep);
+  }
+  f(l->hd);
+}
+
+static void dump_sep_c(void f(`b, `a), `b env, list_t<`a> l, dump_string_t sep) {
+  if (l == NULL)
+    return;
+  for (; l->tl != NULL; l = l->tl) {
+    f(env, l->hd);
+    dump_nospace(sep);
+  }
+  f(env, l->hd);
+}
+
+static void group(void f(`a), list_t<`a> l, dump_string_t start, dump_string_t end,
+                  dump_string_t sep) {
+  dump_nospace(start);
+  dump_sep(f, l, sep);
+  dump_nospace(end);
+}
+
+static void group_c(void f(`b, `a), `b env, list_t<`a> l, dump_string_t start, dump_string_t end,
+                    dump_string_t sep) {
+  dump_nospace(start);
+  dump_sep_c(f, env, l, sep);
+  dump_nospace(end);
+}
+
+static void egroup(void f(`a), list_t<`a> l, dump_string_t start, dump_string_t end,
+                   dump_string_t sep) {
+  if (l != NULL)
+    group(f, l, start, end, sep);
+}
+
+static void ignore(`a x) {}
+
+static void dumpqvar(qvar_t v) {
+  let nsl             = NULL;
+  stringptr_t *prefix = NULL;
+
+  switch ((*v)[0]) {
+    case {.Loc_n = _}:
+      break;
+    case {.Rel_n = x}:
+      nsl = x;
+      break;
+    case {.C_n = x}:
+      break;  // do _not_ print C namespaces
+    case {.Abs_n = x}:
+      if (qvar_to_Cids || add_cyc_prefix)
+        prefix = &Absynpp::cyc_stringptr;
+      nsl = x;
+      break;
+  }
+
+  if (need_space_before())
+    dump_char(' ');
+
+  string_t sep = qvar_to_Cids ? "_" : "::";
+
+  if (nsl && !strptrcmp(nsl->hd, nocyc_strptr)) {
+    nsl    = nsl->tl;
+    prefix = NULL;
+  }
+
+  if (prefix != NULL) {
+    dump_nospace(**prefix);
+    dump_nospace(sep);
+  }
+
+  if (nsl != NULL) {
+    dump_sep(dump_str_nospace, nsl, sep);
+    dump_nospace(sep);
+  }
+
+  dump_nospace(*((*v)[1]));
+}
+
+static void dumptq(tqual_t tq) {
+  if (tq.q_restrict)
+    dump("restrict");
+  if (tq.q_volatile)
+    dump("volatile");
+  if (tq.print_const)
+    dump("const");
+}
+
+static void dumpscope(scope_t sc) {
+  switch (sc) {
+    case Static:
+      dump("static");
+      break;
+    case Public:
+      break;
+    case Extern:
+      dump("extern");
+      break;
+    case ExternC:
+      dump("extern \"C\"");
+      break;
+    case Abstract:
+      dump("abstract");
+      break;
+    case Register:
+      dump("register");
+      break;
+    default:
+      break;
+  }
+}
+
+static void dumpaggr_kind(aggr_kind_t k) {
+  switch (k) {
+    case StructA:
+      dump("struct");
+      break;
+    default:
+      dump("union");
+      break;
+  }
+}
+
+static void dumpkind(kind_t ka) { dump(Absynpp::kind2string(ka)); }
+
+static void dumptps(list_t<type_t> ts) { egroup(dumptyp, ts, "<", ">", ","); }
+
+static void dumptvar(tvar_t tv) {
+  const char ? n = *tv->name;
+
+  if (n[0] == '#') {
+    dump("`G");
+    switch (Kinds::compress_kb(tv->kind)) {
+      case &Eq_kb(k):
+        fallthru(k);
+      case &Less_kb(_, k):
+        dumpkind(k);
+        break;
+      default:
+        dump_nospace("K");
+        break;
+    }
+    dump_nospace(n + 1);
+  } else
+    dump(n);
+}
+
+static void dumpkindedtvar(tvar_t tv) {
+  dumptvar(tv);
+  switch (Kinds::compress_kb(tv->kind)) {
+    case &Unknown_kb(_):
+    case &Less_kb(...):
+    case &Eq_kb(&Kind(BoxKind, _)):
+      break;
+    case &Eq_kb(k):
+      dump("::");
+      dumpkind(k);
+      break;
+  }
+}
+
+static void dumptvars(list_t<tvar_t> tvs) { egroup(dumptvar, tvs, "<", ">", ","); }
+static void dumpkindedtvars(list_t<tvar_t> tvs) { egroup(dumpkindedtvar, tvs, "<", ">", ","); }
+static void dumparg($(tqual_t, type_t) @pr) { dumptqtd((*pr)[0], (*pr)[1], ignore, 0); }
+static void dumpargs(list_t<$(tqual_t, type_t) @> ts) { group(dumparg, ts, "(", ")", ","); }
+
+static void dump_callconv(attributes_t atts) {
+  for (; atts != NULL; atts = atts->tl)
+    switch (atts->hd) {
+      case &Stdcall_att:
+        dump("_stdcall");
+        break;
+      case &Cdecl_att:
+        dump("_cdecl");
+        break;
+      case &Fastcall_att:
+        dump("_fastcall");
+        break;
+      default:
+        break;
+    }
+}
+
+static void dump_noncallconv(attributes_t atts) {
+  // NOTE: Only for MSVC.  Ignore a calling-convention attribute.
+  bool hasatt = false;
+
+  for (_ atts2 = atts; atts2 != NULL; atts2 = atts2->tl)
+    switch (atts->hd) {
+      case &Stdcall_att:
+      case &Cdecl_att:
+      case &Fastcall_att:
+        break;
+      default:
+        hasatt = true;
+        break;
+    }
+
+  if (!hasatt)
+    return;
+
+  dump("__declspec(");
+  for (; atts != NULL; atts = atts->tl)
+    switch (atts->hd) {
+      case &Stdcall_att:
+      case &Cdecl_att:
+      case &Fastcall_att:
+        break;
+      default:
+        dump(Absynpp::attribute2string(atts->hd));
+        break;
+    }
+  dump_char(')');
+}
+
+static void dumpatts(attributes_t atts) {
+  if (atts == NULL)
+    return;
+  switch (Flags::c_compiler) {
+    case Flags::Gcc_c:
+      dump(" __attribute__((");
+      for (; atts != NULL; atts = atts->tl) {
+        dump(Absynpp::attribute2string(atts->hd));
+        if (atts->tl != NULL)
+          dump(",");
+      }
+      dump(")) ");
+      return;
+    default:
+      dump_noncallconv(atts);
+      return;
+  }
+}
+
+static void dumprgn(type_t t) { dumpntyp(t); }
+
+static $(list_t<type_t>, list_t<type_t>) effects_split(type_t t) {
+  list_t<type_t> rgions  = NULL;
+  list_t<type_t> effects = NULL;
+  switch (compress(t)) {
+      //  case &AppType(&AccessCon,&List(r,_)): rgions = new List(r,rgions);
+      //  break;
+    case &AppType(&JoinCon, ts):
+      for (; ts != NULL; ts = ts->tl) {
+        let $(rs, es) = effects_split(ts->hd);
+        rgions        = List::imp_append(rs, rgions);
+        effects       = List::imp_append(es, effects);
+      }
+      break;
+    default:
+      effects = new List(t, effects);
+      break;
+  }
+  return $(rgions, effects);
+}
+
+static void dumpeff(type_t t) {
+  let $(rgions, effects) = effects_split(t);
+  rgions                 = List::imp_rev(rgions);
+  effects                = List::imp_rev(effects);
+  if (effects != NULL) {
+    group(dumpntyp, effects, "", "", "+");
+    if (rgions != NULL)
+      dump_char('+');
+  }
+  if (rgions != NULL || effects == NULL)
+    group(dumprgn, rgions, "{", "}", ",");
+}
+
+static void dump_aqual_val(alias_qual_val_t aqv) {
+  switch (aqv) {
+    case Aliasable_qual:
+      dump("ALIASABLE");
+      break;
+    case Unique_qual:
+      dump("UNIQUE");
+      break;
+    case Refcnt_qual:
+      dump("REFCNT");
+      break;
+    case Restricted_qual:
+      dump("RESTRICTED");
+      break;
+    default:
+      break;
+  }
+}
+
+static $(tqual_t, type_t) @aggrfield2arg(aggrfield_t f) { return new $(f->tq, f->type); }
+
+// Print a normalized typ to a doc
+static void dumpntyp(type_t t) {
+  switch (t) {
+      // The first three cases never turn up in normalized types.
+    case &ArrayType(_):
+    case &FnType(_):
+    case &PointerType(_):
+      return;
+    case &AppType(&VoidCon, _):
+      dump("void");
+      return;
+    case &VarType(tv):
+      dumptvar(tv);
+      return;  // FIX: may want explicit kinds
+    case &Cvar(k, NULL, i, _, name, ...):
+      dump("`C_");
+      if (k == NULL)
+        dump("K");
+      else
+        dumpkind(k->v);
+      dump("_");
+      if (name)
+        dump(name);
+      else
+        dump(aprintf("%d", i));
+      return;
+    case &Evar(k, NULL, i, _):
+      dump("`E");
+      if (k == NULL)
+        dump("K");
+      else
+        dumpkind(k->v);
+      dump(aprintf("%d", i));
+      return;
+    case &Cvar(k, t, i, ...):
+      dumpntyp((type_t)t);
+      return;  // shouldn't happen!
+    case &Evar(k, t, i, _):
+      dumpntyp((type_t)t);
+      return;  // shouldn't happen!
+    case &AnonAggrType(k, is_tuple, fs):
+      if (is_tuple) {
+        dump_char('$');
+        dumpargs(map(aggrfield2arg, fs));
+      } else {
+        dumpaggr_kind(k);
+        dump_char('{');
+        dumpaggrfields(fs);
+        dump_char('}');
+      }
+      return;
+    case &TypeDeclType(&{.r = &Aggr_td(d), ...}, _):
+      dump_aggrdecl(d);
+      return;
+    case &TypeDeclType(&{.r = &Enum_td(d), ...}, _):
+      dump_enumdecl(d);
+      return;
+    case &TypeDeclType(&{.r = &Datatype_td(d), ...}, _):
+      dump_datatypedecl(d);
+      return;
+    case &TypedefType(n, ts, ...):
+      dumpqvar(n), dumptps(ts);
+      return;
+    case &ValueofType(e):
+      dump("valueof_t(");
+      dumpexp(e);
+      dump(")");
+      return;
+    case &TypeofType(e):
+      dump("typeof(");
+      dumpexp(e);
+      dump(")");
+      return;
+    case &SubsetType(vd, e, _):
+      dump("@subset(");
+      dumpvardecl(vd, 0, false);
+      dump(" | ");
+      dumpexp(e);
+      dump(")");
+      return;
+    case &AppType(c, ts):
+      switch (c) {
+        case &DatatypeCon(tu_info):
+          switch (tu_info) {
+            case {.UnknownDatatype = UnknownDatatypeInfo(n, is_x)}:
+              fallthru(n, is_x);
+            case {.KnownDatatype = &&Datatypedecl(_, n, _, _, is_x)}:
+              if (is_x)
+                dump("@extensible");
+              dump("datatype");
+              dumpqvar(n);
+              dumptps(ts);
+              break;
+          }
+          return;
+        case &DatatypeFieldCon(tuf_info):
+          switch (tuf_info) {
+            case {.UnknownDatatypefield = UnknownDatatypeFieldInfo(tname, fname, is_x)}:
+              fallthru(tname, is_x, fname);
+            case {.KnownDatatypefield =
+                      $(&Datatypedecl(_, tname, _, _, is_x), &Datatypefield(fname, _, _, _))}:
+              if (is_x)
+                dump("@extensible ");
+              dump("datatype ");
+              dumpqvar(tname);
+              dump(".");
+              dumpqvar(fname);
+              dumptps(ts);
+              break;
+          }
+          return;
+        case &ComplexCon:
+          dump("_Complex ");
+          dumpntyp(ts->hd);
+          return;
+        case &IntCon(None, Int_sz):
+        case &IntCon(Signed, Int_sz):
+          dump("int");
+          return;
+        case &IntCon(None, Long_sz):
+        case &IntCon(Signed, Long_sz):
+          dump("long");
+          return;
+        case &IntCon(None, Char_sz):
+          dump("char");
+          return;
+        case &IntCon(Signed, Char_sz):
+          dump("signed char");
+          return;
+        case &IntCon(Unsigned, Char_sz):
+          dump("unsigned char");
+          return;
+        case &IntCon(None, Short_sz):
+        case &IntCon(Signed, Short_sz):
+          dump("short");
+          return;
+        case &IntCon(Unsigned, Short_sz):
+          dump("unsigned short");
+          return;
+        case &IntCon(Unsigned, Int_sz):
+          dump("unsigned");
+          return;
+        case &IntCon(Unsigned, Long_sz):
+          dump("unsigned long");
+          return;
+        case &IntCon(Unsigned, LongLong_sz):
+          dump("unsigned");
+          fallthru;
+        case &IntCon(None, LongLong_sz):
+        case &IntCon(Signed, LongLong_sz):
+          switch (Flags::c_compiler) {
+            case Flags::Gcc_c:
+              dump("long long");
+              return;
+            default:
+              dump("__int64");
+              return;
+          }
+        case &FloatCon(i):
+          switch (i) {
+            case 0:
+              dump("float");
+              return;
+            case 1:
+              dump("double");
+              return;
+            default:
+              dump("long double");
+              return;
+          }
+        case &AggrCon(info):
+          let $(k, n) = aggr_kinded_name(info);
+          dumpaggr_kind(k);
+          dumpqvar(n);
+          dumptps(ts);
+          return;
+        case &EnumCon(n, _):
+          dump("enum");
+          dumpqvar(n);
+          return;
+        case &AnonEnumCon(fs):
+          dump("enum{");
+          dumpenumfields(fs);
+          dump("}");
+          return;
+        case &BuiltinCon(t, _):
+          dump(t);
+          return;
+        case &RgnHandleCon:
+          dump("region_t<");
+          dumprgn(ts->hd);
+          dump(">");
+          return;
+        case &TagCon:
+          dump("tag_t<");
+          dumptyp(ts->hd);
+          dump(">");
+          return;
+        case &UniqueHeapCon:
+          dump("`U");
+          return;
+        case &RefCntHeapCon:
+          dump("`RC");
+          return;
+        case &HeapCon:
+          dump("`H");
+          return;
+#if 0
+      case &AccessCon:
+                           dump ("{");
+                           dumptyp (ts->hd);
+                           dump ("}");
+                           return;
+#endif
+        case &RgnsCon:
+          dump("regions(");
+          dumptyp(ts->hd);
+          dump(")");
+          return;
+        case &JoinCon:
+          group(dumptyp, ts, "", "", "+");
+          return;
+        case &TrueCon:
+          dump("@true");
+          return;
+        case &FalseCon:
+          dump("@false");
+          return;
+        case &ThinCon:
+          dump("@thin");
+          return;
+        case &FatCon:
+          dump("@fat");
+          return;
+        case &AqualConstCon(v):
+          dump_aqual_val(v);
+          return;
+        case &AqualsCon:
+          dump("aquals(");
+          dumptyp(ts->hd);
+          dump(")");
+          return;
+        case &AqualHandleCon:
+          dump("aqual_t<");
+          dumptyp(ts->hd);
+          dump(">");
+          return;
+        case &AqualVarCon:
+          dumptyp(ts->hd);
+          return;
+        default:
+          Warn::impos2("bad type constructor");
+      }
+  }
+}
+
+static void dumpvaropt(var_opt_t vo) {
+  if (vo != NULL)
+    dump_str(vo);
+}
+
+static void dumpfunarg($(var_opt_t, tqual_t, type_t) @t) {
+  dumptqtd((*t)[1], (*t)[2], dumpvaropt, (*t)[0]);
+}
+
+static void dump_rgncmp($(type_t, type_t) @cmp) {
+  dumpeff((*cmp)[0]);
+  dump_char('>');
+  dumprgn((*cmp)[1]);
+}
+
+static void dump_rgnpo(list_t<$(type_t, type_t) @> rgn_po) { dump_sep(dump_rgncmp, rgn_po, ","); }
+
+static void dump_oneeffc(effconstr_t fc) {
+  switch (fc) {
+    case &SubsetConstraint(e1, e2):
+      dumpeff(e1);
+      dump("<=");
+      dumpeff(e2);
+      break;
+    case &DisjointConstraint(e1, e2):
+      dumpeff(e1);
+      dump_char('|');
+      dumpeff(e2);
+      break;
+    case &SingleConstraint(e):
+      dump("single(");
+      dumpeff(e);
+      dump_char(')');
+      break;
+  }
+}
+
+static void dump_effc(list_t<effconstr_t> effc) { dump_sep(dump_oneeffc, effc, ","); }
+
+static void dump_qb_elt($(type_t, type_t) @q) {
+  dumptyp((*q)[1]);
+  dump(">=");
+  dumptyp((*q)[0]);
+}
+
+static void dump_qualbnd(list_t<$(type_t, type_t) @> qual_bnd) {
+  dump_sep(dump_qb_elt, qual_bnd, ",");
+}
+
+static void dumpfunargs(list_t<$(var_opt_t, tqual_t, type_t) @> args, bool c_varargs,
+                        vararg_info_t *cyc_varargs, type_opt_t effopt, list_t<effconstr_t> effc,
+                        list_t<$(type_t, type_t) @> qual_bnd, exp_opt_t chk, exp_opt_t req,
+                        exp_opt_t ens, exp_opt_t thrws) {
+  if (args == NULL && !c_varargs && cyc_varargs == NULL && effopt == NULL && effc == NULL)
+    dump("(void)");  // when compiling for the linux kernel, expect
+                     // -Wstrict-prototypes
+  else {
+    group(dumpfunarg, args, "(", "", ",");
+    if (c_varargs || cyc_varargs != NULL)
+      dump(",...");
+    if (cyc_varargs != NULL) {
+      if (cyc_varargs->inject)
+        dump(" inject ");
+      dumpfunarg(new $(cyc_varargs->name, cyc_varargs->tq, cyc_varargs->type));
+    }
+    if (effopt != NULL) {
+      dump_semi();
+      dumpeff(effopt);
+    }
+    if (effc != NULL) {
+      dump_char(':');
+      dump_effc(effc);
+    }
+    if (qual_bnd != NULL) {
+      let sep = (effc == NULL ? ':' : ',');
+      dump_char(sep);
+      dump_qualbnd(qual_bnd);
+    }
+    dump_char(')');
+  }
+  if (chk != NULL) {
+    dump(" @checks(");
+    dumpexp(chk);
+    dump_char(')');
+  }
+  if (req != NULL) {
+    dump(" @requires(");
+    dumpexp(req);
+    dump_char(')');
+  }
+  if (ens != NULL) {
+    dump(" @ensures(");
+    dumpexp(ens);
+    dump_char(')');
+  }
+  if (thrws != NULL) {
+    dump(" @throws(");
+    dumpexp(thrws);
+    dump_char(')');
+  }
+}
+
+static void dumptyp(type_t t) { dumptqtd(empty_tqual(0), t, ignore, 0); }
+
+static void dumpdesignator(designator_t d) {
+  switch (d) {
+    case &ArrayElement(e):
+      dump(".[");
+      dumpexp(e);
+      dump_char(']');
+      break;
+    case &FieldName(v):
+      dump_char('.');
+      dump_nospace(*v);
+      break;
+  }
+}
+
+static void dumpde($(list_t<designator_t>, exp_t) @de) {
+  egroup(dumpdesignator, (*de)[0], "", "=", "=");
+  dumpexp((*de)[1]);
+}
+
+static void dumpoffset_field(offsetof_field_t f) {
+  switch (f) {
+    case &StructField(n):
+      dump_nospace(*n);
+      return;
+  }
+}
+
+static void dump_asm_iolist(list_t<$(string_t<`H>, exp_t) @> iolist) {
+  while (iolist) {
+    let &$(constr, e1) = iolist->hd;
+    dump_char('"');
+    dump_nospace(Absynpp::string_escape(constr));
+    dump_char('"');
+    dump_char('(');
+    dumpexp(e1);
+    dump_char(')');
+    iolist = iolist->tl;
+    if (iolist)
+      dump_char(',');
+  }
+}
+
+static void dumpexps_prec(int inprec, list_t<exp_t> es) {
+  group_c(dumpexp_prec, inprec, es, "", "", ",");
+}
+
+static void dumpexp_prec(int inprec, exp_t e) {
+  int myprec = Absynpp::exp_prec(e);
+
+#if 0
+  if (inprec >= myprec)
+#else
+  if (inprec >= myprec && (inprec != 140 || myprec != 140))
+#endif
+  dump_nospace("(");
+  switch (e->r) {
+    case &Const_e({.Char_c = $(sg, ch)}):
+      dump_char('\'');
+      dump_nospace(Absynpp::char_escape(ch));
+      dump_char('\'');
+      break;
+    case &Const_e({.Wchar_c = s}):
+      dump(aprintf("L\'%s\'", s));
+      break;
+    case &Const_e({.Short_c = $(sg, s)}):
+      dump(aprintf("%d", s));
+      break;
+    case &Const_e({.Int_c = $(None, i)}):
+      fallthru(i);
+    case &Const_e({.Int_c = $(Signed, i)}):
+      dump(aprintf("%d", i));
+      break;
+    case &Const_e({.Int_c = $(_, i)}):
+      dump(aprintf("%uU", i));
+      break;
+    case &Const_e({.LongLong_c = $(sg, i)}):
+      // FIX -- take sign into account
+      dump(Absynpp::longlong2string(i));
+      break;
+    case &Const_e({.Int128_c = $(sg, i)}):
+      // FIX -- take sign into account
+      dump(Absynpp::longlong2string(i));
+      break;
+    case &Const_e({.Float_c = $(x, _)}):
+      dump(x);
+      break;
+    case &Const_e({.Null_c = _}):
+      dump("NULL");
+      break;
+    case &Const_e({.String_c = s}):
+      dump_char('"');
+      dump_nospace(Absynpp::string_escape(s));
+      dump_char('"');
+      break;
+    case &Const_e({.Wstring_c = s}):
+      dump("L\"");
+      dump_nospace(s);
+      dump_char('"');
+      break;
+
+    case &Var_e(b):
+      dumpqvar(binding2qvar(b));
+      break;
+
+    case &Pragma_e(p):
+      dump("__cyclone_pragma__(");
+      dump_nospace(p);
+      dump_char(')');
+      break;
+
+    case &Primop_e(p, es):
+      let pstr = Absynpp::prim2str(p);
+      switch (List::length(es)) {
+        case 1:
+          if (p == Numelts) {
+            dump("numelts(");
+            dumpexp(es->hd);
+            dump(")");
+          } else if (p == Tagof) {
+            dump("tagof(");
+            dumpexp(es->hd);
+            dump(")");
+          } else {
+            dump(pstr);
+            dumpexp_prec(myprec, es->hd);
+          }
+          break;
+        case 2:
+          dumpexp_prec(myprec, es->hd);
+          switch (p) {
+            case Eq:
+            case Neq:
+              dump_nospace(pstr);
+              break;
+            default:  // avoids problems, eg. "y/*z" and "x--3"
+              dump(pstr);
+              dump_char(' ');
+          }
+          dumpexp_prec(myprec, es->tl->hd);
+          break;
+        default:
+          Warn::impos("Absyndump -- Bad number of arguments to primop");
+      }
+      break;
+
+    case &AssignOp_e(e1, popt, e2):
+      dumpexp_prec(myprec, e1);
+      if (popt != NULL)
+        dump(Absynpp::prim2str(popt->v));
+      dump_nospace("=");
+      dumpexp_prec(myprec, e2);
+      break;
+
+    case &Increment_e(e2, PreInc):
+      dump("++");
+      dumpexp_prec(myprec, e2);
+      break;
+    case &Increment_e(e2, PreDec):
+      dump("--");
+      dumpexp_prec(myprec, e2);
+      break;
+    case &Increment_e(e2, PostInc):
+      dumpexp_prec(myprec, e2);
+      dump("++");
+      break;
+    case &Increment_e(e2, _):
+      dumpexp_prec(myprec, e2);
+      dump("--");
+      break;
+
+    case &Conditional_e(e1, e2, e3):
+      dumploc(e->loc);
+      dumpexp_prec(myprec, e1);
+      dump_char('?');
+      dumpexp_prec(0, e2);
+      dump_char(':');
+      dumpexp_prec(myprec, e3);
+      break;
+
+    case &And_e(e1, e2):
+      dumploc(e->loc);
+      dumpexp_prec(myprec, e1);
+      dump("&&");
+      dumpexp_prec(myprec, e2);
+      break;
+
+    case &Or_e(e1, e2):
+      dumploc(e->loc);
+      dumpexp_prec(myprec, e1);
+      dump("||");
+      dumpexp_prec(myprec, e2);
+      break;
+
+    case &SeqExp_e(e1, e2):
+      // DJG: put in parens because in initializers , doesn't mean SeqExp and
+      // our recursive descent doesn't know if we're in an initializer.
+      dumploc(e->loc);
+      // DJG: as a hack to avoid piles of parens for aggregate initialization
+      // we pass our precedence - 1 recursively -- sound because , is
+      // associative
+      dumpexp_prec(myprec - 1, e1);
+      dump_char(',');
+      dumpexp_prec(myprec - 1, e2);
+      break;
+
+    case &FnCall_e(e1, es, ...):
+      dumploc(e->loc);
+      dumpexp_prec(myprec, e1);
+      dump_nospace("(");
+      // JGM: can't dump locations inside macro arguments, so we turn this
+      // off if the location of the function call (or the function itself) is 0.
+      bool old_generate_line_directives = generate_line_directives;
+      generate_line_directives = old_generate_line_directives && e->loc != 0 && e1->loc != 0;
+      dumpexps_prec(20, es);
+      dump_nospace(")");
+      generate_line_directives = old_generate_line_directives;
+      break;
+
+    case &Throw_e(e1, _):
+      dumploc(e->loc);
+      dump("throw");
+      dumpexp_prec(myprec, e1);
+      break;
+
+    case &NoInstantiate_e(e1):
+      fallthru(e1);
+    case &Instantiate_e(e1, _):
+      dumpexp_prec(inprec, e1);
+      break;
+
+    case &Cast_e(t, e1, _, _):
+      dump_char('(');
+      dumptyp(t);
+      dump_char(')');
+      dumpexp_prec(myprec, e1);
+      break;
+
+    case &Address_e(e1):
+      dump_char('&');
+      dumpexp_prec(myprec, e1);
+      break;
+    case &Deref_e(e1):
+      dump_char('*');
+      dumpexp_prec(myprec, e1);
+      break;
+    case &New_e(ropt, e1, qual):
+      // FIX: use ropt!
+      if (ropt) {
+        dump("rnew(");
+        dumpexp_prec(140, ropt);
+        if (qual) {
+          dump_char(',');
+          dumpexp_prec(140, qual);
+        }
+        dump_char(')');
+      } else {
+        dump("new");
+        if (qual) {
+          dump_char('(');
+          dumpexp_prec(140, qual);
+          dump_char(')');
+        }
+      }
+      dumpexp_prec(myprec, e1);
+      break;
+    case &Sizeoftype_e(t):
+      dump("sizeof(");
+      dumptyp(t);
+      dump_char(')');
+      break;
+    case &Sizeofexp_e(e1):
+      dump("sizeof(");
+      dumpexp(e1);
+      dump_char(')');
+      break;
+    case &Valueof_e(t):
+      dump("valueof(");
+      dumptyp(t);
+      dump_char(')');
+      break;
+
+    case &Extension_e(e1):
+      dump("__extension__(");
+      dumpexp(e1);
+      dump_char(')');
+      break;
+    case &Assert_e(e1, static_only, _):
+      if (static_only)
+        dump("@assert(");
+      else
+        dump("assert(");
+      dumpexp(e1);
+      dump_char(')');
+      break;
+    case &Assert_false_e(e1):
+      dump("@assert_false(");
+      dumpexp(e1);
+      dump_char(')');
+      break;
+
+    case &Asm_e(vol, t, o, i, cl):
+      dump("__asm__");
+      if (vol)
+        dump(" volatile ");
+      dump_nospace("(\"");
+      dump_nospace(Absynpp::string_escape(t));
+      dump_char('"');
+      if (o) {
+        dump_char(':');
+        dump_asm_iolist(o);
+      }
+      if (i) {
+        if (!o)
+          dump_char(':');
+        dump_char(':');
+        dump_asm_iolist(i);
+      }
+      if (cl) {
+        int ncol = (i ? 2 : o ? 1 : 0);
+        for (int cols = 0; cols < 3 - ncol; cols++)
+          dump_nospace(" :");
+        while (cl) {
+          dump_char('"');
+          dump_nospace(Absynpp::string_escape(*cl->hd));
+          dump_char('"');
+          cl = cl->tl;
+          if (cl)
+            dump_char(',');
+        }
+      }
+      dump_char(')');
+      break;
+
+    case &Tagcheck_e(e, f):
+      dump("tagcheck(");
+      dumpexp(e);
+      dump_char('.');
+      dump_nospace(*f);
+      dump_char(')');
+      break;
+
+    case &Offsetof_e(t, l):
+      dump("offsetof(");
+      dumptyp(t);
+      group(dumpoffset_field, l, ",", ")", ".");
+      break;
+
+    case &AggrMember_e(e1, n, ...):
+      dumpexp_prec(myprec, e1);
+      dump_char('.');
+      dump_nospace(*n);
+      break;
+    case &AggrArrow_e(e1, n, ...):
+      dumpexp_prec(myprec, e1);
+      dump_nospace("->");
+      dump_nospace(*n);
+      break;
+
+    case &Subscript_e(e1, e2):
+      dumpexp_prec(myprec, e1);
+      dump_char('[');
+      dumpexp(e2);
+      dump_char(']');
+      break;
+
+    case &CompoundLit_e(vat, des):
+      dump_char('(');
+      dumptyp((*vat)[2]);  // OK to ignore qualifiers??
+      dump_char(')');
+      group(dumpde, des, "{", "}", ",");
+      break;
+
+    case &Array_e(des):
+      group(dumpde, des, "{", "}", ",");
+      break;
+
+    case &Comprehension_e(vd, e1, e2, _):
+      dump("{for");
+      dump_str((*vd->name)[1]);
+      dump_char('<');
+      dumpexp(e1);
+      dump_char(':');
+      dumpexp(e2);
+      dump_char('}');
+      break;
+
+    case &ComprehensionNoinit_e(e, t, _):
+      dump("{for x ");
+      dump_char('<');
+      dumpexp(e);
+      dump_char(':');
+      dumptyp(t);
+      dump_char('}');
+      break;
+
+    case &Aggregate_e(n, ts, des, _):
+      dumpqvar(n);
+      dump_char('{');
+      if (ts != NULL)
+        dumptps(ts);
+      group(dumpde, des, "", "}", ",");
+      break;
+
+    case &AnonStruct_e(_, is_tuple, des):
+      if (is_tuple) {
+        dump("$(");
+        dumpexps_prec(20, map(snd, des));
+        dump_char(')');
+      } else
+        group(dumpde, des, "{", "}", ",");
+      break;
+    case &Enum_e(_, ef):
+      fallthru(ef);
+    case &AnonEnum_e(_, ef):
+      dumpqvar(ef->name);
+      break;
+
+    case &Datatype_e(es, _, tuf):
+      dumpqvar(tuf->name);
+      if (es != NULL)
+        group(dumpexp, es, "(", ")", ",");
+      break;
+
+    case &Malloc_e(MallocInfo{mknd, ropt, aqopt, topt, e, _, inline_call}):
+      dumploc(e->loc);
+      if (mknd == Calloc) {
+        if (ropt != NULL) {
+          dump("rcalloc(");
+          dumpexp(ropt);
+          dump(",");
+          if (aqopt != NULL) {
+            dumpexp(aqopt);
+            dump(",");
+          }
+        } else {
+          if (aqopt != NULL) {
+            dump("qcalloc(");
+            dumpexp(aqopt);
+            dump(",");
+          } else
+            dump("calloc(");
+        }
+        dumpexp(e);
+        dump(",");
+        dumpexp(sizeoftype_exp(*topt, 0));
+        dump(")");
+      } else {
+        if (ropt != NULL) {
+          dump((mknd == Vmalloc ? "rvmalloc(" : inline_call ? "rmalloc_inline(" : "rmalloc("));
+          dumpexp(ropt);
+          dump(",");
+          if (aqopt != NULL) {
+            dumpexp(aqopt);
+            dump(",");
+          }
+        } else {
+          if (aqopt != NULL) {
+            dump("qmalloc(");
+            dumpexp(aqopt);
+            dump(",");
+          } else
+            dump("malloc(");
+        }
+        // see comments in absyn.h
+        if (topt != NULL)
+          dumpexp(times_exp(sizeoftype_exp(*topt, 0), e, 0));
+        else
+          dumpexp(e);
+        dump(")");
+      }
+      break;
+
+    case &Swap_e(e1, e2):
+      dumpexp_prec(myprec, e1);
+      dump_nospace(":=:");
+      dumpexp_prec(myprec, e2);
+      break;
+
+    case &UnresolvedMem_e(n, des):  // Currently n is always NULL from the parser ???
+      group(dumpde, des, "{", "}", ",");
+      break;
+
+    case &StmtExp_e(s):
+      dump_nospace("({");
+      dumpstmt(s, true, mt_set());
+      dump_nospace("})");
+      break;
+  }
+#if 0
+  if (inprec >= myprec)
+#else
+  if (inprec >= myprec && (inprec != 140 || myprec != 140))
+#endif
+  dump_char(')');
+}
+
+static void dumpexp(exp_t e) { dumpexp_prec(0, e); }
+
+static void dumpswitchclauses(list_t<switch_clause_t> scs,
+                              Dict::dict_t<qvar_t, qvar_t, `H> varsinblock) {
+  for (; scs != NULL; scs = scs->tl) {
+    let c = scs->hd;
+    if (c->where_clause == NULL && c->pattern->r == (raw_pat_t)&Wild_p_val)
+      dump("default:");
+    else {
+      dump("case");
+      dumppat(c->pattern);
+      if (c->where_clause != NULL) {
+        dump("&&");
+        dumpexp((exp_t)c->where_clause);
+      }
+      dump_nospace(":");
+    }
+    if (Absynpp::is_declaration(c->body)) {
+      dump(" {");
+      dumpstmt(c->body, false, mt_set()), dump_char('}');
+    } else
+      dumpstmt(c->body, false, varsinblock);
+  }
+}
+
+static $(bool, Dict::dict_t<qvar_t, qvar_t, `H>)
+    shadows(decl_t d, Dict::dict_t<qvar_t, qvar_t, `H> s) {
+  switch (d->r) {
+    case &Var_d(vd):
+      if (Dict::member(s, vd->name))
+        return $(true, Dict::singleton(qvar_cmp, vd->name, vd->name));
+      return $(false, Dict::insert(s, vd->name, vd->name));
+    default:
+      return $(false, s);
+  }
+}
+
+static void dumpstmt(stmt_t s, bool expstmt, Dict::dict_t<qvar_t, qvar_t, `H> varsinblock) {
+LOOP:
+  dumploc(s->loc);
+  switch (s->r) {
+    case &Skip_s:
+      dump_semi();
+      break;
+    case &Exp_s(e):
+      dumpexp_prec(-100, e);
+      dump_semi();
+      break;
+
+      // FIX:  gcc only allows declarations to be used at the beginning
+      // of blocks, so we force some explicit blocks to be written below.
+      // It is verbose for Cyclone; maybe it should be controlled by a flag.
+    case &Seq_s(s1, s2):
+      while (true) {
+        if (Absynpp::is_declaration(s1)) {
+          dump_char('{');
+          dumpstmt(s1, false, mt_set());
+          dump_char('}');
+        } else
+          dumpstmt(s1, false, varsinblock);
+        switch (s2->r) {
+          case &Seq_s(s3, s4):
+            dumploc(s3->loc);
+            s1 = s3;
+            s2 = s4;
+            continue;
+          default:
+            if (Absynpp::is_declaration(s2)) {
+              if (expstmt)
+                dump_char('(');
+              dump_char('{');
+              dumpstmt(s2, expstmt, mt_set());
+              dump_char('}');
+              if (expstmt) {
+                dump_char(')');
+                dump_semi();
+              }
+            } else
+              dumpstmt(s2, expstmt, varsinblock);
+            return;
+        }
+      }
+
+    case &Return_s(NULL):
+      dump("return;");
+      break;
+    case &Return_s(e):
+      dump("return");
+      dumpexp((exp_t)e);
+      dump_semi();
+      break;
+
+    case &IfThenElse_s(e, s1, s2):
+      dump("if(");
+      dumpexp(e);
+      switch (s1->r) {
+        case &Seq_s(...):
+        case &Decl_s(...):
+        case &IfThenElse_s(...):
+        case &Label_s(...):
+          dump_nospace("){");
+          dumpstmt(s1, false, mt_set());
+          dump_char('}');
+          break;
+        default:
+          dump_char(')');
+          dumpstmt(s1, false, varsinblock);
+      }
+      switch (s2->r) {
+        case &Skip_s:
+          break;
+        default:
+          dump("else{");
+          dumpstmt(s2, false, mt_set());
+          dump_char('}');
+          break;
+      }
+      break;
+
+    case &While_s($(e, _), s1):
+      dump("while(");
+      dumpexp(e);
+      dump_nospace("){");
+      dumpstmt(s1, false, mt_set());
+      dump_char('}');
+      break;
+    case &For_s(e1, $(e2, _), $(e3, _), s1):
+      dump("for(");
+      dumpexp(e1);
+      dump_semi();
+      dumpexp(e2);
+      dump_semi();
+      dumpexp(e3);
+      dump_nospace("){");
+      dumpstmt(s1, false, mt_set());
+      dump_char('}');
+      break;
+    case &Do_s(s1, $(e, _)):
+      dump("do{");
+      dumpstmt(s1, false, mt_set());
+      dump_nospace("}while(");
+      dumpexp(e);
+      dump_nospace(");");
+      break;
+
+    case &Break_s:
+      dump("break;");
+      break;
+    case &Continue_s:
+      dump("continue;");
+      break;
+    case &Goto_s(x):
+      dump("goto");
+      dump_str(x);
+      dump_semi();
+      break;
+
+    case &Switch_s(e, ss, _):
+      dump("switch(");
+      dumpexp(e);
+      dump_nospace("){");
+      dumpswitchclauses(ss, varsinblock);
+      dump_char('}');
+      break;
+    case &TryCatch_s(s1, ss, _):
+      dump("try");
+      dumpstmt(s1, false, varsinblock);
+      dump("catch{");
+      dumpswitchclauses(ss, varsinblock);
+      dump_char('}');
+      break;
+
+    case &Decl_s(d, s1):
+      let $(newblock, newvarsinblock) = shadows(d, varsinblock);
+      if (newblock) {
+        if (expstmt)
+          dump("({");
+        else
+          dump("{");
+        dumpdecl(d);
+        dumpstmt(s1, expstmt, mt_set());
+        if (expstmt)
+          dump_nospace("});");
+        else
+          dump("}");
+      } else
+        while (true) {
+          dumpdecl(d);
+          switch (s1->r) {
+            case &Decl_s(d2, s2):
+              let $(newblock, newvarsinblock2) = shadows(d2, newvarsinblock);
+              if (!newblock) {
+                dumploc(s1->loc);
+                newvarsinblock = newvarsinblock2;
+                d              = d2;
+                s1             = s2;
+                continue;
+              }
+              fallthru;
+            default:
+              dumpstmt(s1, expstmt, newvarsinblock);
+              return;
+          }
+        }
+      break;
+
+    case &Label_s(x, s1):
+      // FIX:  gcc does not allow declarations to be used immediately after
+      // labels.  This next case forces an explicit block to be written.
+      // It is verbose for Cyclone; maybe it should be controlled by a flag.
+      if (Absynpp::is_declaration(s1)) {
+        dump_str(x);
+        if (expstmt)
+          dump_nospace(": ({");
+        else
+          dump_nospace(": {");
+        dumpstmt(s1, expstmt, mt_set());
+        if (expstmt)
+          dump_nospace("});");
+        else
+          dump_char('}');
+      } else {
+        dump_str(x);
+        dump_char(':');
+        s = s1;
+        goto LOOP;
+      }
+      break;
+
+    case &Fallthru_s(NULL, _):
+      dump("fallthru;");
+      break;
+    case &Fallthru_s(es, _):
+      dump("fallthru(");
+      dumpexps_prec(20, es);
+      dump_nospace(");");
+      break;
+  }
+}
+
+static void dumpdp($(list_t<designator_t>, pat_t) @dp) {
+  egroup(dumpdesignator, (*dp)[0], "", "=", "=");
+  dumppat((*dp)[1]);
+}
+
+static string_t pat_term(bool dots) { return dots ? "...)" : ")"; }
+
+static void dumppat(pat_t p) {
+  switch (p->r) {
+    case &Wild_p:
+      dump_char('_');
+      break;
+    case &Null_p:
+      dump("NULL");
+      break;
+    case &Int_p(None, i):
+      fallthru(i);
+    case &Int_p(Signed, i):
+      dump(aprintf("%d", i));
+      break;
+    case &Int_p(_, i):
+      dump(aprintf("%u", i));
+      break;
+    case &Float_p(x, _):
+      dump(x);
+      break;
+    case &Enum_p(_, ef):
+      fallthru(ef);
+    case &AnonEnum_p(_, ef):
+      dumpqvar(ef->name);
+      break;
+    case &Char_p(ch):
+      dump("'");
+      dump_nospace(Absynpp::char_escape(ch));
+      dump_nospace("'");
+      break;
+    case &Reference_p(vd, &Pat{.r = &Wild_p, ...}):
+      dump("*");
+      fallthru(vd);
+    case &Var_p(vd, &Pat{.r = &Wild_p, ...}):
+      dumpqvar(vd->name);
+      break;
+    case &Reference_p(vd, p2):
+      dump("*");
+      fallthru(vd, p2);
+    case &Var_p(vd, p2):
+      dumpqvar(vd->name);
+      dump(" as ");
+      dumppat(p2);
+      break;
+    case &AliasVar_p(tv, vd):
+      dump("alias");
+      dump("<");
+      dumptvar(tv);
+      dump(">");
+      dumpvardecl(vd, p->loc, false);
+      break;
+    case &Pointer_p(p2):
+      dump("&");
+      dumppat(p2);
+      break;
+    case &TagInt_p(tv, vd):
+      dumpqvar(vd->name);
+      dump_char('<');
+      dumptvar(tv);
+      dump_char('>');
+      break;
+    case &UnknownId_p(q):
+      dumpqvar(q);
+      break;
+    case &UnknownCall_p(q, ps, dots):
+      dumpqvar(q);
+      group(dumppat, ps, "(", pat_term(dots), ",");
+      break;
+    case &Aggr_p(topt, is_tuple, exists, dps, dots):
+      if (is_tuple)
+        group(dumppat, map(snd, dps), "$(", pat_term(dots), ",");
+      else {
+        if (topt != NULL) {
+          switch (compress((type_t)topt)) {
+            case &AppType(&AggrCon(info), _):
+              dumpqvar(aggr_kinded_name(info)[1]);
+              break;
+            default:
+              break;
+          }
+        }
+        dump_char('{');
+        egroup(dumptvar, exists, "<", ">", ",");
+        group(dumpdp, dps, "", pat_term(dots), ",");
+      }
+      break;
+    case &Datatype_p(_, tuf, ps, dots):
+      dumpqvar(tuf->name);
+      if (ps != NULL)
+        group(dumppat, ps, "(", pat_term(dots), ",");
+      break;
+    case &Exp_p(e):
+      dumpexp(e);
+      break;
+  }
+}
+
+static void dumpdatatypefield(datatypefield_t ef) {
+  dumpqvar(ef->name);
+  if (ef->typs != NULL)
+    dumpargs(ef->typs);
+}
+
+static void dumpdatatypefields(list_t<datatypefield_t> fields) {
+  dump_sep(dumpdatatypefield, fields, ",");
+}
+
+static void dumpenumfield(enumfield_t ef) {
+  dumpqvar(ef->name);
+  if (ef->tag != NULL) {
+    dump("=");
+    dumpexp((exp_t)ef->tag);
+  }
+}
+
+static void dumpenumfields(list_t<enumfield_t> fields) { dump_sep(dumpenumfield, fields, ","); }
+
+static void dumpaggrfields(list_t<aggrfield_t> fields) {
+  for (; fields != NULL; fields = fields->tl) {
+    let &Aggrfield{name, tq, type, width, atts, req} = fields->hd;
+    switch (Flags::c_compiler) {
+      case Flags::Gcc_c:
+        dumptqtd(tq, type, dump_str, name);
+        dumpatts(atts);
+        break;
+      default:
+        dumpatts(atts);
+        dumptqtd(tq, type, dump_str, name);
+        break;
+    }
+    if (req) {
+      dump("@requires ");
+      dumpexp(req);
+    }
+    if (width != NULL) {
+      dump_char(':');
+      dumpexp(width);
+    }
+    dump_semi();
+  }
+}
+
+static void dumptypedefname(typedefdecl_t td) {
+  dumpqvar(td->name);
+  dumptvars(td->tvs);
+}
+
+static void dump_atts_qvar(fndecl_t fd) {
+  dumpatts(fd->i.attributes);
+  dumpqvar(fd->name);
+}
+
+static void dump_callconv_qvar($(attribute_t, qvar_t) @`r pr) {
+  switch ((*pr)[0]) {
+    case &Unused_att:
+      break;
+    case &Stdcall_att:
+      dump("_stdcall");
+      break;
+    case &Cdecl_att:
+      dump("_cdecl");
+      break;
+    case &Fastcall_att:
+      dump("_fastcall");
+      break;
+    default:
+      break;
+  }
+  dumpqvar((*pr)[1]);
+}
+
+static void dump_callconv_fdqvar(fndecl_t fd) {
+  dump_callconv(fd->i.attributes);
+  dumpqvar(fd->name);
+}
+
+static void dumpid(vardecl_t vd) { dumpqvar(vd->name); }
+
+static bool is_char_ptr(type_t t) {
+  // want to avoid compressing here when possible
+  switch (t) {
+    case &Evar(_, def, _, _) && def != NULL:
+      return is_char_ptr((type_t)def);
+
+    case &PointerType(PtrInfo{elt_typ, _, _}):
+      while (true)
+        switch (elt_typ) {
+          case &Evar(_, t, _, _) && t != NULL:
+            elt_typ = (type_t)t;
+            break;
+          case &TypedefType(_, _, _, t) && t != NULL:
+            elt_typ = (type_t)t;
+            break;
+          case &AppType(&IntCon(_, Char_sz), _):
+            return true;
+          default:
+            return false;
+        }
+
+    default:
+      return false;
+  }
+}
+
+static void dumpvardecl(vardecl_t vd, Position::seg_t loc, bool do_semi) {
+  let &Vardecl{sc, name, varloc, tq, type, initializer, _, atts, _, is_proto, rename} = vd;
+
+  switch (Flags::c_compiler) {
+    case Flags::Gcc_c:
+      // hack to avoid writing so many useless externs:
+      if (sc == Extern && qvar_to_Cids)
+        switch (compress(type)) {
+          case &FnType(_):
+            // finer grained control -- write extern only if
+            // not a proto, makes -Wall happier
+            if (!is_proto)
+              dumpscope(sc);
+            break;
+          default:
+            dumpscope(sc);
+        }
+      else
+        dumpscope(sc);
+      dumptqtd(tq, type, dumpqvar, name);
+      dumpatts(atts);
+      break;
+    default:
+      dumpatts(atts);
+      dumpscope(sc);
+      region temp;
+      bool is_cp        = is_char_ptr(type);
+      let $(tq, t, tms) = Absynpp::to_tms(temp, tq, type);
+      // a kludge -- seems to work -- Unused_att is just a hack for "no spec"
+      attribute_t call_conv = &Atts::Unused_att_val;
+      for (_ tms2 = tms; tms2 != NULL; tms2 = tms2->tl)
+        switch (tms2->hd) {
+          case &Attributes_mod(_, atts):
+            for (; atts != NULL; atts = atts->tl)
+              switch (atts->hd) {
+                case &Stdcall_att:
+                  call_conv = &Atts::Stdcall_att_val;
+                  break;
+                case &Cdecl_att:
+                  call_conv = &Atts::Cdecl_att_val;
+                  break;
+                case &Fastcall_att:
+                  call_conv = &Atts::Fastcall_att_val;
+                  break;
+                default:
+                  break;
+              }
+            break;
+          default:
+            break;
+        }
+      dumptq(tq);
+      dumpntyp(t);
+      let pr = $(call_conv, name);
+      dumptms(is_cp, List::imp_rev(tms), dump_callconv_qvar, &pr);
+      break;
+  }
+
+  if (rename != NULL)
+    dumpexp(rename);
+
+  if (initializer != NULL) {
+    dump_char('=');
+    dumpexp(initializer);
+  }
+  if (do_semi)
+    dump_semi();
+}
+
+static void dump_aggrdecl(aggrdecl_t ad) {
+  dumpscope(ad->sc);
+  if (ad->impl != NULL && ad->impl->tagged)
+    dump("@tagged ");
+  dumpaggr_kind(ad->kind);
+  dumpqvar(ad->name);
+  dumpkindedtvars(ad->tvs);
+  if (ad->impl != NULL) {
+    dump_char('{');
+    egroup(dumpkindedtvar, ad->impl->exist_vars, "<", ">", ",");
+    if (ad->impl->effconstr != NULL) {
+      dump_char(':');
+      dump_effc(ad->impl->effconstr);
+    }
+    if (ad->impl->qual_bnd != NULL) {
+      let sep = (ad->impl->effconstr == NULL ? ':' : ',');
+      dump_char(sep);
+      dump_qualbnd(ad->impl->qual_bnd);
+    }
+    dumpaggrfields(ad->impl->fields);
+    dump_char('}');
+    dumpatts(ad->attributes);
+  }
+}
+
+static void dump_enumdecl(enumdecl_t ed) {
+  let &Enumdecl{sc, nm, fields} = ed;
+
+  dumpscope(sc);
+  dump("enum ");
+  dumpqvar(nm);
+  if (fields != NULL) {
+    dump_char('{');
+    dumpenumfields(fields->v);
+    dump_char('}');
+  }
+}
+
+static void dump_datatypedecl(datatypedecl_t dd) {
+  let &Datatypedecl(sc, name, tvs, fields, is_x) = dd;
+
+  dumpscope(sc);
+  if (is_x)
+    dump("@extensible ");
+  dump("datatype ");
+  dumpqvar(name);
+  dumptvars(tvs);
+  if (fields != NULL) {
+    dump_char('{');
+    dumpdatatypefields(fields->v);
+    dump_char('}');
+  }
+}
+
+static void dumpexport($(seg_t, qvar_t, bool) @tup) { dumpqvar((*tup)[1]); }
+
+static void dump_braced_decls(list_t<decl_t> tdl) {
+  dump_char('{');
+  for (; tdl != NULL; tdl = tdl->tl)
+    dumpdecl(tdl->hd);
+  dump_char('}');
+}
+
+static void dumpdecl(decl_t d) {
+  dumploc(d->loc);
+  switch (d->r) {
+    case &Fn_d(fd):
+      switch (Flags::c_compiler) {
+        case Flags::Vc_c:
+          dumpatts(fd->i.attributes);
+          break;
+        default:
+          break;
+      }
+      if (fd->is_inline)
+        switch (Flags::c_compiler) {
+          case Flags::Vc_c:
+            dump("__inline");
+            break;
+          default:
+            dump("inline");
+            break;
+        }
+      dumpscope(fd->sc);
+
+      fn_info_t type_info  = fd->i;
+      type_info.attributes = NULL;
+      type_t t             = new FnType(type_info);
+      if (fd->cached_type != NULL)
+        switch (compress((type_t)fd->cached_type)) {
+          case &FnType(i):
+            fd->i.attributes = append(fd->i.attributes, i.attributes);
+            break;
+          default:
+            Warn::impos("function has non-function type");
+        }
+
+      switch (Flags::c_compiler) {
+        case Flags::Gcc_c:
+          dumptqtd(empty_tqual(0), t, dump_atts_qvar, fd);
+          break;
+        default:
+          dumptqtd(empty_tqual(0), t, dump_callconv_fdqvar, fd);
+          break;
+      }
+      dump_char('{');
+      dumpstmt(fd->body, false, mt_set());
+      dump_char('}');
+      break;
+    case &Var_d(vd):
+      dumpvardecl(vd, d->loc, true);
+      break;
+    case &Aggr_d(ad):
+      dump_aggrdecl(ad);
+      dump_semi();
+      break;
+    case &Datatype_d(dd):
+      dump_datatypedecl(dd);
+      dump_semi();
+      break;
+    case &Enum_d(ed):
+      dump_enumdecl(ed);
+      dump_semi();
+      break;
+    case &Letv_d(vds):
+      group(dumpid, vds, " let ", ";", ",");
+      break;
+    case &Let_d(p, _, e, _):
+      dump("let");
+      dumppat(p);
+      dump_char('=');
+      dumpexp(e);
+      dump_semi();
+      break;
+    case &Region_d(tv, vd, open_exp_opt):
+      dump("region");
+      dump("<");
+      dumptvar(tv);
+      dump("> ");
+      dumpqvar(vd->name);
+      if (open_exp_opt) {
+        dump(" = open(");
+        dumpexp(open_exp_opt);
+        dump(")");
+      }
+      dump_semi();
+      break;
+
+    case &Typedef_d(td):
+      // JGM: commenting out because abstract typdefs don't get printed
+      // otherwise (e.g., typedef _ T;)
+      // if (!expand_typedefs || (td->defn != NULL) &&
+      // (Absynpp::is_anon_aggrtype(td->defn->v))) {
+      dump("typedef");
+      type_t t = td->defn == NULL ? new_evar(td->kind, NULL) : (type_t)td->defn;
+      dumptqtd(td->tq, t, dumptypedefname, td);
+      dumpatts(td->atts);
+      dump_semi();
+      //}
+      break;
+    case &Namespace_d(v, tdl):
+      dump("namespace");
+      dump_str(v);
+      dump_braced_decls(tdl);
+      break;
+    case &Using_d(q, tdl):
+      dump("using");
+      dumpqvar(q);
+      dump_braced_decls(tdl);
+      break;
+    case &ExternC_d(tdl):
+      dump("extern \"C\" ");
+      dump_braced_decls(tdl);
+      break;
+    case &ExternCinclude_d(tdl, ovrs, exs, wc):
+      dump("extern \"C include\" ");
+      dump_braced_decls(tdl);
+      if (ovrs != NULL) {
+        dump(" cyclone_override ");
+        dump_braced_decls(ovrs);
+      }
+      if (wc) {
+        dump(" export { * }\n");
+        let &$(_, hides) = wc;
+        if (hides)
+          egroup(dumpqvar, hides, " cyclone_hide {", "}", ",");
+      } else
+        egroup(dumpexport, exs, " export {", "}", ",");
+      break;
+    case &Porton_d:
+      dump(" __cyclone_port_on__; ");
+      break;
+    case &Portoff_d:
+      dump(" __cyclone_port_off__; ");
+      break;
+    case &Tempeston_d:
+      dump(" __tempest_on__; ");
+      break;
+    case &Tempestoff_d:
+      dump(" __tempest_off__; ");
+      break;
+  }
+}
+
+static void dump_upperbound(exp_t e) {
+  $(unsigned int, bool) pr = Evexp::eval_const_uint_exp(e);
+  if (pr[0] != 1 || !pr[1]) {
+    dump_char('{');
+    dumpexp(e);
+    dump_char('}');
+  }
+}
+
+static void dumptms(bool is_char_ptr, list_t<type_modifier_t> tms, void f(`a), `a a) {
+  if (tms == NULL) {
+    f(a);
+    return;
+  }
+
+  switch (tms->hd) {
+      // FIX: doesn't invert zeroterm default when elt type is char!! (never
+      // did) FIX? What about attributes that we parse before tq2??
+    case &Pointer_mod(PtrAtts(rgn, nullable, bd, zt, _, rel, aq), tq2):
+      switch (compress(bd)) {
+        case &AppType(&FatCon, _):
+          dump_char('?');
+          break;
+        case &AppType(&ThinCon, &List{&ValueofType(e), _}):
+          dump_char(type2bool(true, nullable) ? '*' : '@');
+          dump_upperbound(e);
+          break;
+        default:
+          dump_char(type2bool(true, nullable) ? '*' : '@');
+      }
+
+      if (!qvar_to_Cids)
+        switch (compress(aq)) {
+          case &AppType(&AqualConstCon(aqv), _):
+            switch (aqv) {
+              case Aliasable_qual:
+                break;
+              default:
+                dump("@aqual(");
+                dump_aqual_val(aqv);
+                dump(")");
+                break;
+            }
+            break;
+          case &AppType(&AqualVarCon, tv):
+            dump("@aqual(");
+            dumpntyp(tv->hd);
+            dump(")");
+            break;
+          case &Evar(...):
+            dump("@aqual(");
+            dumpntyp(aq);
+            dump(")");
+            break;
+          default:
+            Warn::impos2("unexpected alias qualifier", aq);
+        }
+
+      if (!qvar_to_Cids && !is_char_ptr && type2bool(false, zt))
+        dump("@zeroterm");
+      if (!qvar_to_Cids && is_char_ptr && !type2bool(false, zt))
+        dump("@nozeroterm");
+      if (!qvar_to_Cids && type2bool(false, rel))
+        dump("@autoreleased");
+
+      switch (compress(rgn)) {
+        case &AppType(&HeapCon, _):
+          if (!qvar_to_Cids)
+            dump("`H");
+          break;
+
+        case &AppType(&UniqueHeapCon, _):
+          dump("`U");
+          break;
+        case &AppType(&RefCntHeapCon, _):
+          dump("`RC");
+          break;
+        case &AppType(&JoinCon, _):
+          dumpeff(rgn);
+          break;
+        case &VarType(tv):
+          dumptvar(tv);
+          break;
+
+        case &Evar(_, NULL, _, _):
+          dumpntyp(compress(rgn));
+          break;
+
+        case &TypedefType(...):
+          dump("@region(");
+          dumptyp(rgn);
+          dump(")");
+          break;
+
+        default:
+          Warn::impos("dumptms: bad rgn type in Pointer_mod");
+      }
+      dumptq(tq2);  // rare
+      dumptms(false, tms->tl, f, a);
+      break;
+
+    default:
+      bool next_is_pointer = false;
+      if (tms->tl != NULL)
+        switch (tms->tl->hd) {
+          case &Pointer_mod(_, _):
+            next_is_pointer = true;
+            break;
+          default:
+            break;
+        }
+
+      if (next_is_pointer)
+        dump_char('(');
+      dumptms(false, tms->tl, f, a);
+      if (next_is_pointer)
+        dump_char(')');
+
+      switch (tms->hd) {
+        case &Carray_mod(zeroterm, _):
+          dump("[]");
+          if (type2bool(false, zeroterm))
+            dump("@zeroterm");
+          break;
+        case &ConstArray_mod(e, zeroterm, _):
+          dump_char('[');
+          dumpexp(e);
+          dump_char(']');
+          if (type2bool(false, zeroterm))
+            dump("@zeroterm");
+          break;
+        case &Function_mod(
+            &WithTypes(args, c_varargs, cyc_varargs, effopt, effc, qb, chk, req, ens, thrws)):
+          dumpfunargs(args, c_varargs, cyc_varargs, effopt, effc, qb, chk, req, ens, thrws);
+          break;
+        case &Function_mod(&NoTypes(sl, _)):
+          group(dump_str, sl, "(", ")", ",");
+          break;
+        case &TypeParams_mod(ts, _, print_kinds):
+          if (print_kinds)
+            dumpkindedtvars(ts);
+          else
+            dumptvars(ts);
+          break;
+        case &Attributes_mod(_, atts):
+          dumpatts(atts);
+          break;
+        case &Pointer_mod(_, _):
+          Warn::impos("dumptms");
+      }
+
+      break;
+  }
+}
+
+static void dumptqtd(tqual_t tq, type_t t, void f(`a), `a a) {
+  let cp = is_char_ptr(t);
+  region temp;
+
+  let $(tq, t, tms) = Absynpp::to_tms(temp, tq, t);
+  dumptq(tq);
+  dumpntyp(t);
+  dumptms(cp, List::imp_rev(tms), f, a);
+}
+
+void dumpdecllist2file(list_t<decl_t> tdl, FILE @`H f) {
+#if 0
+  pos = 0;
+#endif
+  *dump_file = f;
+  for (; tdl != NULL; tdl = tdl->tl)
+    dumpdecl(tdl->hd);
+  fprintf(f, "\n");
+}
+
+static void dump_decl_interface(decl_t d) {
+  switch (d->r) {
+    case &Var_d(vd):
+      if (vd->sc == Static)
+        return;
+      exp_opt_t init  = vd->initializer;
+      vd->initializer = NULL;
+      if (vd->sc == Public)
+        dump("extern ");
+      else if (!vd->is_proto)
+        switch (compress(vd->type)) {
+          case &FnType(_):
+            dump("extern ");
+            break;
+          default:
+            break;
+        }
+      dumpvardecl(vd, d->loc, true);
+      dump("\n");
+      vd->initializer = init;
+      break;
+    case &Fn_d(fd):
+      if (fd->sc == Static)
+        return;
+      dumpscope(fd->sc);
+      fn_info_t type_info  = fd->i;
+      type_info.attributes = NULL;
+      type_t t             = new FnType(type_info);
+      dumptqtd(empty_tqual(0), t, dump_atts_qvar, fd);
+      dump(";\n");
+      break;
+    case &Aggr_d(ad):
+      if (ad->sc == Static)
+        return;
+      struct AggrdeclImpl *impl = ad->impl;
+      if (ad->sc == Abstract)
+        ad->impl = NULL;
+      dump_aggrdecl(ad);
+      ad->impl = impl;
+      dump(";\n");
+      break;
+    case &Datatype_d(dd):
+      dump_datatypedecl(dd);
+      dump(";\n");
+      break;
+    case &Enum_d(ed):
+      dump_enumdecl(ed);
+      dump(";\n");
+      break;
+    case &Typedef_d(td):
+      if (td->defn == NULL) {
+        dumpdecl(d);
+        dump("\n");
+      }
+      break;
+    case &Namespace_d(v, ds):
+      dump("namespace ");
+      dump_str(v);
+      dump("{\n");
+      for (; ds != NULL; ds = ds->tl)
+        dump_decl_interface(ds->hd);
+      dump("}\n");
+      break;
+    case &Using_d(_, ds):
+      for (; ds != NULL; ds = ds->tl)
+        dump_decl_interface(ds->hd);
+      break;
+    case &ExternC_d(ds):
+      dump("extern \"C\" {");
+      for (; ds != NULL; ds = ds->tl)
+        dump_decl_interface(ds->hd);
+      dump("}\n");
+      break;
+    case &ExternCinclude_d(ds, ovrs, exs, wc):
+      /* omit these for now */
+#if 0
+      dump ("extern \"C include\" {");
+      for (; ds != NULL; ds = ds->tl)
+        dump_decl_interface (ds->hd);
+      dump_char ('}');
+      if (exs != NULL)
+        {
+          dump (" export {");
+          for (; exs != NULL; exs = exs->tl)
+            {
+              let $(_, v, _) = *exs->hd;
+              dumpqvar (v);
+              if (exs->tl != NULL)
+                dump_char (',');
+            }
+          dump ("}");
+        }
+#endif
+      break;
+    default:
+      Warn::impos("bad top-level declaration");  // FIX: omitting cases!
+  }
+}
+
+void dump_interface(list_t<decl_t> ds, FILE @`H f) {
+  *dump_file = f;
+  for (; ds != NULL; ds = ds->tl)
+    dump_decl_interface(ds->hd);
+}

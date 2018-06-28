@@ -1,0 +1,181 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 1999-2001 Greg Morrisett, Dan Grossman
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+// Port of the splay tree implementation (c) Morrisett, Glew, Walker, Crary
+// Port by Dan, June 1999
+
+// Actually, I (Dan) changed the old implementation to have a
+// second function for lookup which doesn't splay.  The idea is that
+// while you lose the theoretical bounds, you win by not allocating repeatedly
+// on small things.  (And I'm not sure the theoretical bounds hold when
+// you have sharing between trees anyway.) We should consider adding this
+// and using it for (some, probably small) dictionaries.
+
+// Note that b/c these are functional things, we have to allocate a lot
+// (such as in rotate_left and rotate_right)
+
+#include "core.h"
+#include "list.h"
+#include "splay.h"
+
+using Core;
+using List;
+
+namespace Splay;
+
+datatype tree<`a,`b,`r::E> { Leaf(dummy_t), Node(struct noderef<`a,`b,`r> @`r) };
+
+static enum direction { LEFT, RIGHT };
+
+static void rotate_left(region_t<`r> r, struct noderef<`a,`b,`r> @`r nr) {
+  let n = nr->v;
+  switch (n->left) {
+    case &Node(nr2):
+      let n2 = nr2->v;
+      let t  = rnew(r) Node(rnew(r) noderef(rnew(r) node(n->key, n->data, n2->right, n->right)));
+      nr->v  = rnew(r) node(n2->key, n2->data, n2->left, t);
+      break;
+    default:
+      throw new Invalid_argument("Splay::rotate_left");
+  }
+}
+
+static void rotate_right(region_t<`r> r, struct noderef<`a,`b,`r> @`r nr) {
+  let n = nr->v;
+  switch (n->right) {
+    case &Node(nr2):
+      let n2 = nr2->v;
+      let t  = rnew(r) Node(rnew(r) noderef(rnew(r) node(n->key, n->data, n->left, n2->left)));
+      nr->v  = rnew(r) node(n2->key, n2->data, t, n2->right);
+      break;
+    default:
+      throw new Invalid_argument("Splay::rotate_right");
+  }
+}
+
+// THIS VERSION TRIPS OVER A GCC BUG
+//
+// static void rotate_left(struct noderef<`a,`b> @nr) {
+//   let n = nr->v;
+//   switch (n->left) {
+//   case Node(nr2):
+//     let n2 = nr2->v;
+//     nr->v = new node(n2->key, n2->data, n2->left,
+//                   Node(new noderef(new node(n->key, n->data,
+//                                       n2->right, n->right))));
+//     break;
+//   default:
+//     throw Invalid_argument("Splay::rotate_left");
+//   }
+// }
+//
+// static void rotate_right(struct noderef<`a,`b> @nr) {
+//   let n = nr->v;
+//   switch (n->right) {
+//   case Node(nr2):
+//     let n2 = nr2->v;
+//     nr->v = new node(n2->key, n2->data,
+//                   Node(new noderef(new node(n->key, n->data,
+//                                       n->left, n2->left))),
+//                   n2->right);
+//     break;
+//   default:
+//     throw Invalid_argument("Splay::rotate_right");
+//   }
+// }
+
+static void lift(region_t<`r> r, list_t<$(enum direction, struct noderef<`a,`b,`r> @`r) @> dnl) {
+  while (dnl != NULL) {
+    if (dnl->tl == NULL) {
+      switch (dnl->hd) {
+        case &$(LEFT, nr):
+          rotate_left(r, nr);
+          break;
+        case &$(_, nr):
+          rotate_right(r, nr);
+          break;
+      }
+      return;
+    }
+    let &$(parent_dir, parent)           = dnl->hd;
+    let &$(grandparent_dir, grandparent) = dnl->tl->hd;
+    dnl                                  = dnl->tl->tl;
+    switch (parent_dir) {
+      case LEFT:
+        switch (grandparent_dir) {
+          case LEFT:
+            rotate_left(r, grandparent);
+            rotate_left(r, grandparent);
+            break;
+          case _:
+            rotate_left(r, parent);
+            rotate_right(r, grandparent);
+            break;
+        }
+        break;
+      case _:
+        switch (grandparent_dir) {
+          case LEFT:
+            rotate_right(r, parent);
+            rotate_left(r, grandparent);
+            break;
+          case _:
+            rotate_right(r, grandparent);
+            rotate_right(r, grandparent);
+            break;
+        }
+        break;
+    }
+  }
+}
+
+// maybe want a splay_c too, but dict doesn't need it and that's the immediate
+// concern
+bool rsplay(region_t<`r> r, int reln(`a,`a), `a reln_first_arg, datatype tree<`a,`b,`r> @`r tree) {
+  region temp;
+  {
+    list_t<$(enum direction, struct noderef<`a,`b,`r> @`r) @`temp,`temp> path = NULL;
+    while (true) {
+      switch (tree) {
+        case &Node(nr):
+          let n    = nr->v;
+          let comp = reln(reln_first_arg, n->key);
+          if (comp == 0) {
+            lift(r, path);
+            return true;
+          } else if (comp < 0) {
+            path = rnew(temp) List(rnew(temp) $((enum direction)LEFT, nr), path);
+            tree = n->left;
+          } else {
+            path = rnew(temp) List(rnew(temp) $((enum direction)RIGHT, nr), path);
+            tree = n->right;
+          }
+          break;
+        case &Leaf(_):
+          if (path != NULL) {
+            lift(r, path->tl);  // b/c of Dict::delete for example
+          }
+          return false;
+      }
+    }
+  }
+}
+
+bool splay(int reln(`a,`a), `a reln_first_arg, datatype tree<`a,`b,`H> @`H tree) {
+  return rsplay(heap_region, reln, reln_first_arg, tree);
+}

@@ -1,0 +1,292 @@
+
+cyclone/testsuite/compiler/fail1.cyc:8:6: alias requires pointer type
+cyclone/testsuite/compiler/fail1.cyc:8:6: cannot alias value of type int to type int *@aqual(`EQ2)`r
+cyclone/testsuite/compiler/fail1.cyc:13:6: alias requires pointer type
+cyclone/testsuite/compiler/fail1.cyc:13:6: cannot alias value of type int *@aqual(UNIQUE) to type int
+cyclone/testsuite/compiler/fail1.cyc:18:6: cannot alias value of type int *@aqual(UNIQUE) to type int *@aqual(`EQ11) *`r
+cyclone/testsuite/compiler/fail1.cyc:23:2: must return a value of type int *
+cyclone/testsuite/compiler/fail1.cyc:33:2: returns value of type int but requires int *
+  int and int * are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:38:9: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:45:11: fallthru in a last case
+cyclone/testsuite/compiler/fail1.cyc:52:13: fallthru argument has type intbut pattern variable has type int *
+  int and int * are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:60:13: too many arguments in explicit fallthru
+cyclone/testsuite/compiler/fail1.cyc:68:13: too few arguments in explicit fallthru
+cyclone/testsuite/compiler/fail1.cyc:75:10: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:75:10: pattern for variable _tmpS0 dereferences an alias-free-pointer from a non-unique path
+
+cyclone/testsuite/compiler/fail1.cyc:83:2: switch on type int but case expects type `EA408 *{`EPTRBND411}@aqual(`EQ407)`EE409
+
+  int and `EA408 *{`EPTRBND411}@aqual(`EQ407)`EE409 are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:99:2: bad abstract scope for local variable
+cyclone/testsuite/compiler/fail1.cyc:111:2: type int () has kind A but as used here needs kind M
+cyclone/testsuite/compiler/fail1.cyc:111:2: extern declarations are not yet supported within functions
+cyclone/testsuite/compiler/fail1.cyc:118:2: initializer for static variable needs to be a constant expression
+cyclone/testsuite/compiler/fail1.cyc:123:2: x was declared with type int *@aqual(`EQ58) but initialized with type int
+  int *@aqual(`EQ58) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:128:2: pattern type `EM416 *{`EPTRBND421}@aqual(`EQ417)`EE415 does not match definition type 
+int
+  `EM416 *{`EPTRBND421}@aqual(`EQ417)`EE415 and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:138:2: type mismatch: int *`r2 != int *`r
+  `r and `r2 are not compatible. (variable types are not the same)
+cyclone/testsuite/compiler/fail1.cyc:160:2: bad storage class for inner function
+cyclone/testsuite/compiler/fail1.cyc:174:2: bad attribute packed in function declaration
+cyclone/testsuite/compiler/fail1.cyc:180:2: bad attribute aligned in function declaration
+cyclone/testsuite/compiler/fail1.cyc:241:6: test of if statement has type $(int,int) instead of integral or pointer type
+cyclone/testsuite/compiler/fail1.cyc:247:2: test of conditional expression has type $(int,int) instead of integral or pointer type
+
+cyclone/testsuite/compiler/fail1.cyc:253:11: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:258:14: descriptor has type const char ?@nozeroterm`EE441 but argument has type int
+  int and const char ?@nozeroterm`EE441 are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:263:14: descriptor has type int but argument has type $(int,int)
+  $(int,int) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:263:14: can't find a field in datatype PrintArg<`EE445> to inject value of type $(int,int)
+
+cyclone/testsuite/compiler/fail1.cyc:263:2: bad inject vararg type
+cyclone/testsuite/compiler/fail1.cyc:268:14: descriptor has type double but argument has type $(int,int)
+  $(int,int) and double are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:268:14: can't find a field in datatype PrintArg<`EE451> to inject value of type $(int,int)
+
+cyclone/testsuite/compiler/fail1.cyc:268:2: bad inject vararg type
+cyclone/testsuite/compiler/fail1.cyc:273:17: too many arguments
+cyclone/testsuite/compiler/fail1.cyc:278:13: too few arguments
+cyclone/testsuite/compiler/fail1.cyc:283:2: expecting numeric type but found $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:288:4: expecting numeric type but found $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:294:2: attempt to write a const location: p.x
+cyclone/testsuite/compiler/fail1.cyc:300:2: attempt to write a const location: p.x
+cyclone/testsuite/compiler/fail1.cyc:306:2: attempt to write a const location: p.f0
+cyclone/testsuite/compiler/fail1.cyc:312:2: attempt to overwrite an aggregate with const member f0
+cyclone/testsuite/compiler/fail1.cyc:318:2: attempt to overwrite an aggregate with const member i
+cyclone/testsuite/compiler/fail1.cyc:326:2: attempt to overwrite a datatype field (F59) with a const member
+cyclone/testsuite/compiler/fail1.cyc:333:2: attempt to overwrite a const array
+cyclone/testsuite/compiler/fail1.cyc:338:2: tuple projection cannot use sizeof or offsetof
+cyclone/testsuite/compiler/fail1.cyc:343:4: type struct F4 has kind A but as used here needs kind M
+cyclone/testsuite/compiler/fail1.cyc:343:4: struct F4 is not a known struct/union type
+cyclone/testsuite/compiler/fail1.cyc:343:2: tuple projection cannot use sizeof or offsetof
+cyclone/testsuite/compiler/fail1.cyc:348:4: valueof(-) can only occur within types
+cyclone/testsuite/compiler/fail1.cyc:348:2: tuple projection cannot use sizeof or offsetof
+cyclone/testsuite/compiler/fail1.cyc:353:2: attempt to write a const location: *x
+cyclone/testsuite/compiler/fail1.cyc:358:2: can't perform arithmetic on abstract pointer type
+cyclone/testsuite/compiler/fail1.cyc:363:2: can't perform arithmetic on abstract pointer type
+cyclone/testsuite/compiler/fail1.cyc:368:2: can't perform arithmetic on unique pointer
+cyclone/testsuite/compiler/fail1.cyc:373:4: can't perform arithmetic on unique pointer
+cyclone/testsuite/compiler/fail1.cyc:383:4: expecting arithmetic or ? type but found $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:388:2: expecting arithmetic or ? type but found $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:393:10: type mismatch: expecting char ?`r1 but found char ?`r2
+cyclone/testsuite/compiler/fail1.cyc:393:2: conditional clause types do not match: char ?`r1 != char ?`r2
+  `r2 and `r1 are not compatible. (variable types are not the same)
+cyclone/testsuite/compiler/fail1.cyc:400:2: cannot assign to an array
+cyclone/testsuite/compiler/fail1.cyc:400:2: assignment to non-lvalue
+cyclone/testsuite/compiler/fail1.cyc:405:2: assignment to non-lvalue
+cyclone/testsuite/compiler/fail1.cyc:411:6: actual argument has type int *`r but formal has type int *
+  `H and `r are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:417:6: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:422:2: too many arguments for function f77
+cyclone/testsuite/compiler/fail1.cyc:427:2: too few arguments for function f79
+cyclone/testsuite/compiler/fail1.cyc:433:2: vararg requires type int but argument has type $(int,int)
+  $(int,int) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:438:6: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:443:2: expected @extensible datatype exn @ but found int
+cyclone/testsuite/compiler/fail1.cyc:449:11: cannot take the address of an alias-free path
+cyclone/testsuite/compiler/fail1.cyc:454:11: cannot take the address of an alias-free path
+cyclone/testsuite/compiler/fail1.cyc:458:15: noalias pointers in datatypes are not allowed: F12
+cyclone/testsuite/compiler/fail1.cyc:467:11: cannot take the address of an alias-free path
+cyclone/testsuite/compiler/fail1.cyc:473:11: cannot take the address of an alias-free path
+cyclone/testsuite/compiler/fail1.cyc:479:11: cannot take the address of a @tagged union member
+cyclone/testsuite/compiler/fail1.cyc:484:11: union F91 has no x member
+cyclone/testsuite/compiler/fail1.cyc:491:2: type struct F92 has kind A but as used here needs kind M
+cyclone/testsuite/compiler/fail1.cyc:491:2: sizeof applied to type struct F92 which has unknown size here
+cyclone/testsuite/compiler/fail1.cyc:496:2: type struct F92 has kind A but as used here needs kind M
+cyclone/testsuite/compiler/fail1.cyc:496:2: struct F92 is not a known struct/union type
+cyclone/testsuite/compiler/fail1.cyc:502:2: no field of struct/union has name %sz
+cyclone/testsuite/compiler/fail1.cyc:504:2: no field of struct/union has name %sf3
+cyclone/testsuite/compiler/fail1.cyc:509:2: cannot dereference abstract pointer type
+cyclone/testsuite/compiler/fail1.cyc:515:2: cannot dereference abstract pointer type
+cyclone/testsuite/compiler/fail1.cyc:520:2: expecting pointer type but found int
+cyclone/testsuite/compiler/fail1.cyc:525:2: can't subscript an abstract pointer
+cyclone/testsuite/compiler/fail1.cyc:530:27: zero-terminated array doesn't end with zero.
+cyclone/testsuite/compiler/fail1.cyc:536:12: type mismatch: expecting double but found $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:536:12: elements of array do not all have the same type (double)
+cyclone/testsuite/compiler/fail1.cyc:536:2: x was declared with type $(int,int) [3U] but initialized with type double [3U]
+  $(int,int) and double are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:541:24: expecting unsigned int, found $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:553:2: can't construct abstract struct F103
+cyclone/testsuite/compiler/fail1.cyc:560:2: too many explicit witness types
+cyclone/testsuite/compiler/fail1.cyc:565:17: field x of struct F104 expects type int != $(int,int)
+  $(int,int) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:572:23: field y of struct expects type int != $(int,int)
+  $(int,int) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:579:7: datatype constructor F107 expects argument of type int but this argument has type 
+$(int,int)
+  $(int,int) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:584:11: malloc cannot be used with type int @@aqual(`EQ204)
+	(type needs initialization)
+
+cyclone/testsuite/compiler/fail1.cyc:589:10: expecting region_t type but found int
+cyclone/testsuite/compiler/fail1.cyc:596:2: malloc with existential types not yet implemented
+cyclone/testsuite/compiler/fail1.cyc:605:2: cannot assign to an array
+cyclone/testsuite/compiler/fail1.cyc:605:2: swap not allowed for non-pointer or non-word-sized types
+cyclone/testsuite/compiler/fail1.cyc:615:2: cannot dereference abstract pointer type
+cyclone/testsuite/compiler/fail1.cyc:615:9: cannot dereference abstract pointer type
+cyclone/testsuite/compiler/fail1.cyc:615:2: swap not allowed for non-pointer or non-word-sized types
+cyclone/testsuite/compiler/fail1.cyc:615:2: attempt to write abstract struct F112
+cyclone/testsuite/compiler/fail1.cyc:615:9: attempt to write abstract struct F112
+cyclone/testsuite/compiler/fail1.cyc:620:10: statement expression returns type tag_t<`i>
+  `EM507 and tag_t<`i> are not compatible. (type variable would escape scope)
+cyclone/testsuite/compiler/fail1.cyc:626:10: statement expression must end with expression
+cyclone/testsuite/compiler/fail1.cyc:631:2: expecting @tagged union but found int
+cyclone/testsuite/compiler/fail1.cyc:636:7: expecting region_t type but found int
+cyclone/testsuite/compiler/fail1.cyc:641:25: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:643:25: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:648:31: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:648:31: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:654:16: Cannot consume non-unique paths; do swap instead
+cyclone/testsuite/compiler/fail1.cyc:659:2: valueof(-) can only occur within types
+cyclone/testsuite/compiler/fail1.cyc:675:2: increment/decrement of non-lvalue
+cyclone/testsuite/compiler/fail1.cyc:680:2: assignment to non-lvalue
+cyclone/testsuite/compiler/fail1.cyc:686:2: type mismatch: int != $(int,int)
+  int and $(int,int) are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:692:2: type mismatch: int * != const int *
+  (qualifiers don't match)
+cyclone/testsuite/compiler/fail1.cyc:698:2: type mismatch: int *@aqual(`EQ263) != int *`r
+  `r and `H are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:704:2: type mismatch: int *{4U}`r != int *{3U}`r
+  int *{4U}`r and int *{3U}`r are not compatible. (different pointer bounds)
+cyclone/testsuite/compiler/fail1.cyc:710:2: type mismatch: $(int,int) *`r != int *`r
+  $(int,int) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:715:2: type $(int,int) cannot be used here
+cyclone/testsuite/compiler/fail1.cyc:720:7: type $(int,int) cannot be used here
+cyclone/testsuite/compiler/fail1.cyc:725:2: expected pointer to function but found int
+cyclone/testsuite/compiler/fail1.cyc:730:2: expected pointer to function but found int @
+cyclone/testsuite/compiler/fail1.cyc:736:10: too many type variables in instantiation
+cyclone/testsuite/compiler/fail1.cyc:741:2: expecting polymorphic type but found int
+cyclone/testsuite/compiler/fail1.cyc:746:2: cannot cast int to $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:752:2: struct F138 has no y member
+cyclone/testsuite/compiler/fail1.cyc:757:2: struct F139 has no y member
+cyclone/testsuite/compiler/fail1.cyc:762:2: cannot read union member x since it is not `bits-only'
+cyclone/testsuite/compiler/fail1.cyc:767:2: must use pattern-matching to access field x
+	due to existential type variables.
+cyclone/testsuite/compiler/fail1.cyc:771:2: type struct {int x;} has no y member
+cyclone/testsuite/compiler/fail1.cyc:775:2: cannot read union member x since it is not `bits-only'
+cyclone/testsuite/compiler/fail1.cyc:779:2: expecting struct or union, found int
+cyclone/testsuite/compiler/fail1.cyc:783:2: struct F141 has no y member
+cyclone/testsuite/compiler/fail1.cyc:788:2: subscript applied to struct {int x;}
+cyclone/testsuite/compiler/fail1.cyc:794:9: too many arguments for datatype constructor F147
+cyclone/testsuite/compiler/fail1.cyc:796:2: too few arguments for datatype constructor F147
+cyclone/testsuite/compiler/fail1.cyc:801:2: swap non-lvalue
+cyclone/testsuite/compiler/fail1.cyc:803:8: swap non-lvalue
+cyclone/testsuite/compiler/fail1.cyc:811:0: incompatible initializes() and noliveunique() attributes on parameter 1
+cyclone/testsuite/compiler/fail1.cyc:813:0: incompatible noliveunique() and initializes() attributes on parameter 1
+cyclone/testsuite/compiler/fail1.cyc:815:0: incompatible initializes() and consume() attributes on parameter 1
+cyclone/testsuite/compiler/fail1.cyc:817:0: incompatible consume() and initializes() attributes on parameter 1
+cyclone/testsuite/compiler/fail1.cyc:820:0: extern declaration should not have initializer
+cyclone/testsuite/compiler/fail1.cyc:823:0: bad attribute stdcall for variable f157
+cyclone/testsuite/compiler/fail1.cyc:825:0: bad attribute cdecl for variable f158
+cyclone/testsuite/compiler/fail1.cyc:827:0: bad attribute fastcall for variable f159
+cyclone/testsuite/compiler/fail1.cyc:829:0: bad attribute noreturn for variable f160
+cyclone/testsuite/compiler/fail1.cyc:831:0: bad attribute const for variable f161
+cyclone/testsuite/compiler/fail1.cyc:833:0: bad attribute constructor for variable f162
+cyclone/testsuite/compiler/fail1.cyc:835:0: bad attribute no_instrument_function for variable f163
+cyclone/testsuite/compiler/fail1.cyc:837:0: bad attribute destructor for variable f164
+cyclone/testsuite/compiler/fail1.cyc:839:0: bad attribute format(printf,0,0) for variable f165
+cyclone/testsuite/compiler/fail1.cyc:841:0: bad attribute no_check_memory_usage for variable f166
+cyclone/testsuite/compiler/fail1.cyc:843:0: bad attribute initializes(1) for variable f167
+cyclone/testsuite/compiler/fail1.cyc:845:0: bad attribute noliveunique(1) for variable f168
+cyclone/testsuite/compiler/fail1.cyc:847:0: bad attribute consume(1) for variable f169
+cyclone/testsuite/compiler/fail1.cyc:849:0: bad attribute pure for variable f170
+cyclone/testsuite/compiler/fail1.cyc:851:0: bad attribute aligned in function declaration
+cyclone/testsuite/compiler/fail1.cyc:853:0: bad attribute packed in function declaration
+cyclone/testsuite/compiler/fail1.cyc:855:0: bad attribute packed for variable f182
+cyclone/testsuite/compiler/fail1.cyc:857:0: initializer required for variable f183 of type int @
+cyclone/testsuite/compiler/fail1.cyc:859:0: f184 declared with type int @ but initialized with type int
+  int and int @ are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:862:0: initializer is not a constant expression
+cyclone/testsuite/compiler/fail1.cyc:864:0: bad attribute aligned in function declaration
+cyclone/testsuite/compiler/fail1.cyc:866:0: bad attribute packed in function declaration
+cyclone/testsuite/compiler/fail1.cyc:870:0: variable f189 was declared $(int,int) instead of int
+  int and $(int,int) are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:874:0: variable f190 is static but expected scope is public 
+cyclone/testsuite/compiler/fail1.cyc:876:0: variable f190 has different attributes
+	previous attributes: 
+	current attributes: shared 
+cyclone/testsuite/compiler/fail1.cyc:878:0: variable f190 has different type qualifiers
+cyclone/testsuite/compiler/fail1.cyc:882:0: redefinition of function f191
+cyclone/testsuite/compiler/fail1.cyc:885:0: unbound type variable `a when checking `a
+cyclone/testsuite/compiler/fail1.cyc:887:0: type int has kind B but as used here needs kind I
+cyclone/testsuite/compiler/fail1.cyc:893:2: extern "C" functions cannot be implemented in Cyclone
+cyclone/testsuite/compiler/fail1.cyc:896:0: type int has kind B but as used here needs kind I
+cyclone/testsuite/compiler/fail1.cyc:898:0: function declaration has repeated parameter: x
+cyclone/testsuite/compiler/fail1.cyc:900:0: unbound type variable `a when checking `a <`b::B>(`b x:ALIASABLE >= aquals(`a),ALIASABLE >= aquals(`b))
+
+cyclone/testsuite/compiler/fail1.cyc:902:0: unbound type variable `a when checking void <`b::B>(`a x:ALIASABLE >= aquals(`a),ALIASABLE >= aquals(`b))
+
+cyclone/testsuite/compiler/fail1.cyc:904:0: duplicate type variable: `a
+cyclone/testsuite/compiler/fail1.cyc:906:0: type variable `a used with inconsistent kinds E and <=M
+cyclone/testsuite/compiler/fail1.cyc:908:0: type variable `a used with inconsistent kinds A and <=M
+cyclone/testsuite/compiler/fail1.cyc:910:0: main declared with first argument of type int @ instead of int
+cyclone/testsuite/compiler/fail1.cyc:913:0: redefinition of function main
+cyclone/testsuite/compiler/fail1.cyc:913:0: main declared with return type $(int,int) instead of int or void
+cyclone/testsuite/compiler/fail1.cyc:915:0: redefinition of function main
+cyclone/testsuite/compiler/fail1.cyc:915:0: second argument of main has type int instead of char??
+cyclone/testsuite/compiler/fail1.cyc:917:0: redefinition of function main
+cyclone/testsuite/compiler/fail1.cyc:917:0: main declared with varargs
+cyclone/testsuite/compiler/fail1.cyc:919:0: redefinition of function main
+cyclone/testsuite/compiler/fail1.cyc:919:0: main declared with too many arguments
+cyclone/testsuite/compiler/fail1.cyc:921:0: duplicate type variable: `a
+cyclone/testsuite/compiler/fail1.cyc:923:0: type variable `r used with inconsistent kinds B and <=E
+cyclone/testsuite/compiler/fail1.cyc:925:0: duplicate type variable: `a
+cyclone/testsuite/compiler/fail1.cyc:927:0: duplicate member x
+cyclone/testsuite/compiler/fail1.cyc:929:0: type variable `r used with inconsistent kinds E and <=A
+cyclone/testsuite/compiler/fail1.cyc:931:0: duplicate type variable: `r
+cyclone/testsuite/compiler/fail1.cyc:937:0: type variable `a used with inconsistent kinds A and <=M
+cyclone/testsuite/compiler/fail1.cyc:939:0: bitfield x must have integral type but has type $(int,int)
+cyclone/testsuite/compiler/fail1.cyc:941:0: bitfield has negative width
+cyclone/testsuite/compiler/fail1.cyc:945:0: @requires clauses are allowed only on union members
+cyclone/testsuite/compiler/fail1.cyc:947:29: @requires clause has type $(int,int) instead of integral type
+cyclone/testsuite/compiler/fail1.cyc:949:29: unbound type variable `i in type valueof_t((unsigned int)(valueof(`i) == 1))
+cyclone/testsuite/compiler/fail1.cyc:952:29: @requires clause has type int @ instead of integral type
+cyclone/testsuite/compiler/fail1.cyc:954:0: unbound type variable `a in type `a
+cyclone/testsuite/compiler/fail1.cyc:956:0: type F220 attempts to abstract type variable `a of kind M
+cyclone/testsuite/compiler/fail1.cyc:958:0: bad attribute cdecl on F221
+cyclone/testsuite/compiler/fail1.cyc:964:0: @tagged is allowed only on union declarations
+cyclone/testsuite/compiler/fail1.cyc:967:0: type F224 : type mismatch on field x: $(int,int) != int
+  $(int,int) and int are not compatible. 
+cyclone/testsuite/compiler/fail1.cyc:969:0: type F224 has a different number of type parameters
+cyclone/testsuite/compiler/fail1.cyc:972:0: type F225 has a different number of type parameters
+cyclone/testsuite/compiler/fail1.cyc:974:0: type F225 has a different kind (E) for type parameter `r (A)
+cyclone/testsuite/compiler/fail1.cyc:976:0: type F225 has a different kind (E) for type parameter `r (A)
+cyclone/testsuite/compiler/fail1.cyc:978:0: type F225 has extra field y
+cyclone/testsuite/compiler/fail1.cyc:980:22: duplicate field C226 in datatype
+cyclone/testsuite/compiler/fail1.cyc:982:16: unbound type variable `i in type tag_t<`i>
+cyclone/testsuite/compiler/fail1.cyc:984:30: type variable `r used with inconsistent kinds <=M and <=E
+cyclone/testsuite/compiler/fail1.cyc:986:16: noalias pointers in datatypes are not allowed: C229
+cyclone/testsuite/compiler/fail1.cyc:990:39: @extensible datatype F231, field C231: parameter number mismatch
+cyclone/testsuite/compiler/fail1.cyc:994:0: type F233 attempts to abstract type variable `a of kind M
+cyclone/testsuite/compiler/fail1.cyc:996:0: duplicate type variable: `a
+cyclone/testsuite/compiler/fail1.cyc:1002:16: datatype F236: field name mismatch C237 != C236
+cyclone/testsuite/compiler/fail1.cyc:1002:31: datatype F236: field name mismatch C236 != C237
+cyclone/testsuite/compiler/fail1.cyc:1004:16: datatype F236, field C236: parameter qualifier
+cyclone/testsuite/compiler/fail1.cyc:1006:0: datatype F236 is missing field C237
+cyclone/testsuite/compiler/fail1.cyc:1008:0: datatype F236 has extra field C238
+cyclone/testsuite/compiler/fail1.cyc:1011:16: @extensible datatype F239, field C239: parameter number mismatch
+cyclone/testsuite/compiler/fail1.cyc:1013:16: @extensible datatype F239, field C239: parameter number mismatch
+cyclone/testsuite/compiler/fail1.cyc:1015:18: duplicate enum constructor C240
+cyclone/testsuite/compiler/fail1.cyc:1020:12: enum field name F242 shadows global name
+cyclone/testsuite/compiler/fail1.cyc:1026:0: consume(12) has an out-of-range index
+cyclone/testsuite/compiler/fail1.cyc:1028:0: noliveunique(12) has an out-of-range index
+cyclone/testsuite/compiler/fail1.cyc:1030:0: initializes(12) has an out-of-range index
+cyclone/testsuite/compiler/fail1.cyc:1032:0: consume allowed only on unique pointers
+cyclone/testsuite/compiler/fail1.cyc:1035:0: initializes attribute allowed only on non-null pointers
+cyclone/testsuite/compiler/fail1.cyc:1036:0: initializes attribute allowed only on pointers of size 1
+cyclone/testsuite/compiler/fail1.cyc:1037:0: initializes attribute allowed only on pointers to non-zero-terminated arrays
+cyclone/testsuite/compiler/fail1.cyc:1038:0: initializes attribute allowed only on pointers
+cyclone/testsuite/compiler/fail1.cyc:1040:0: noliveunique allowed only on unique pointers
+cyclone/testsuite/compiler/fail1.cyc:1048:29: pattern to array would create alias of no-alias pointer
+cyclone/testsuite/compiler/fail1.cyc:1052:29: type char [(unsigned int)valueof(`i)] has kind A but as used here needs kind M
+cyclone/testsuite/compiler/fail1.cyc:1052:29: alias requires pointer type
+cyclone/testsuite/compiler/fail1.cyc:1052:29: alias requires pointer type
+cyclone/testsuite/compiler/fail1.cyc:1057:12: cannot alias pattern expression in datatype
+cyclone/testsuite/compiler/fail1.cyc:1077:20: field a can only hold a no_throw function
+
+COMPILATION FAILED!

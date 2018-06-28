@@ -1,0 +1,569 @@
+/* Region orders.
+   Copyright (C) 2002 Dan Grossman
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+// Note: Many operations are O(n^2logn) time and/or space where n is the number
+//       of regions or type variables in scope.  That should be okay and is
+//       pretty simple.  But we should be careful.
+
+#include "absynpp.h"
+#include "cyclone/library/std/dict.h"
+#include "kinds.h"
+#include "rgnorder.h"
+#include "tcenv.h"
+#include "tcutil.h"
+#include "unify.h"
+#include "warn.h"
+using Absyn;
+using Absynpp;
+using List;
+namespace RgnOrder;
+
+// Encodes partial order for region lifetimes
+struct RgnPO {
+  Dict::dict_t<tvar_t, type_t> d;  // type has EffKind, tvar outlives it
+  type_t these_outlive_heap;       // EffKind
+  type_t these_outlive_unique;     // EffKind
+  tvar_t youngest;                 // fact: there always is one -- this is the youngest non-
+                                   // opened region.
+  type_t opened_regions;           // this is the set of regions opened since the
+                                   // youngest region was opened.  They outlive any
+                                   // subsequently declared non-opened regions, but
+                                   // not any opened regions.
+};
+
+/* Can assign a (col) to a (row):
+       R  UR TR
+   R   x  x  x
+   UR     x
+   TR        x
+
+   Therefore, we allow outlives constraints that have the form:
+     x can outlive an R
+     UR can outlive a UR
+     TR can outlive a TR
+   Or said another way
+     UR can outlive R,UR
+     R  can outlive R
+     TR can outlive TR,R
+*/
+
+// makes sure that for all regions r in [eff], kind(r) <= kind([rgn]);
+// also allows regions(`a) to outlive only regions having R kind
+static bool valid_constraint(type_t eff, type_t rgn) {
+  let &Kind(k, _) = Tcutil::type_kind(rgn);
+  if (k != RgnKind)
+    Warn::impos2("bad region type |", rgn, "| passed to add_outlives_constraint");
+  switch (compress(eff)) {
+    case &AppType(&JoinCon, es):
+      for (; es != NULL; es = es->tl)
+        if (!valid_constraint(es->hd, rgn))
+          return false;
+      return true;
+      // FIX: do I need to worry about how the effect might be instantiated?
+    case &Evar(...):
+    case &VarType(_):
+      // Only let regions(`a) outlive things that are aliasable or
+      //   have the same alias qualifier ... all regions are aliasable now
+    case &AppType(&RgnsCon, _):
+      return true;
+    case &AppType(&AccessCon, &List{r, _}):
+      let &Kind(rk, _) = Tcutil::type_kind(r);
+      return (rk == RgnKind);
+    default:
+      Warn::impos2("bad effect |", eff, "| passed to add_outlives_constraint");
+  }
+}
+
+// adds constraint: [eff] outlives [rgn]
+// Note: Evars get constrained to HeapRgn!
+// Note: assumes not resettable and all regions of RgnKind
+rgn_po_t add_outlives_constraint(rgn_po_t po, type_t eff, type_t rgn, Position::seg_t loc) {
+  eff     = Tcutil::normalize_effect(eff);
+  let ans = new *po;
+  // first check that this is a valid constraint
+  if (!valid_constraint(eff, rgn)) {
+    Warn::err2(loc, "Invalid region ordering constraint; kind mismatch");
+    return ans;
+  }
+  // now add it to the PO
+  switch (compress(rgn)) {
+    case &VarType(tv):
+      let d       = po->d;
+      let new_eff = Dict::member(d, tv) ? join_eff(list(eff, Dict::lookup(d, tv))) : eff;
+      d           = Dict::insert(d, tv, new_eff);
+      ans->d      = d;
+      return ans;
+    case &Evar(...):
+      Unify::unify(rgn, heap_rgn_type);
+      fallthru;
+    case &AppType(&HeapCon, _):
+      ans->these_outlive_heap = join_eff(list(eff, po->these_outlive_heap));
+      return ans;
+
+      /*   case &AppType(&UniqueCon,_): */
+      /*     ans->these_outlive_unique=join_eff(list(eff,po->these_outlive_unique));
+       */
+      /*     return ans; */
+      /*   case &AppType(&RefCntCon,_): */
+      /*     Warn::impos("RgnOrder::add_outlives_constraint can't outlive RC for
+       * now"); */
+
+    default:
+      Warn::impos("RgnOrder::add_outlives_constraint passed a bad region");
+  }
+}
+
+rgn_po_t add_youngest(rgn_po_t po, tvar_t rgn, bool opened) {
+  // sanity check
+  if (!opened && Dict::member(po->d, rgn))
+    Warn::impos("RgnOrder::add_youngest: repeated region");
+  let ans = new *po;
+  if (opened) {
+    ans->d              = Dict::insert(po->d, rgn, empty_effect);
+    ans->opened_regions = join_eff(list(access_eff(var_type(rgn)), ans->opened_regions));
+  } else {
+    let eff       = join_eff(list(access_eff(var_type(po->youngest)), ans->opened_regions));
+    ans->d        = Dict::insert(po->d, rgn, eff);
+    ans->youngest = rgn;
+  }
+  return ans;
+}
+rgn_po_t add_unordered(rgn_po_t po, tvar_t rgn) {
+  if (Dict::member(po->d, rgn))
+    Warn::impos("RgnOrder::add_unordered: repeated region");
+  let ans = new *po;
+  ans->d  = Dict::insert(ans->d, rgn, empty_effect);
+  return ans;
+}
+
+rgn_po_t initial_fn_po(list_t<tvar_t> tvs, list_t<$(type_t, type_t) @> po, type_t effect,
+                       tvar_t fst_rgn, Position::seg_t loc) {
+  // put all region tvs in the dict and make fst_rgn outlive all tvs
+  let d = Dict::empty(tvar_cmp);
+  for (let tvs2 = tvs; tvs2 != NULL; tvs2 = tvs2->tl)
+    if (Kinds::tvar_kind(tvs2->hd, &Kinds::bk)->kind == RgnKind)
+      d = Dict::insert(d, tvs2->hd, empty_effect);
+
+  if (!valid_constraint(effect, var_type(fst_rgn))) {
+    Warn::err2(loc, "Invalid region ordering constraint; kind mismatch");
+    return new RgnPO(d, empty_effect, empty_effect, fst_rgn, empty_effect);
+  }
+  d = Dict::insert(d, fst_rgn, effect);
+  // add in the explicit partial order -- no longer detects cycles
+  let ans = new RgnPO(d, empty_effect, empty_effect, fst_rgn, empty_effect);
+  for (; po != NULL; po = po->tl)
+    ans = add_outlives_constraint(ans, (*po->hd)[0], (*po->hd)[1], loc);
+  return ans;
+}
+
+// FIX: this can probably lead to tyvars not in the dict
+//  bool sub_constraints(region_t<`r> r, list_t<tvar_t> tvs,
+//  		     list_t<$(type_t,type_t)@> po1,
+//  		     list_t<$(type_t,type_t)@> po2) {
+//    tvar_t dummy = new Tvar(new "",0,new Eq_kb(RgnKind)); // ALLOCATION
+//    Dict::dict_t<_,struct RgnInfo@`r,`r> d = Dict::rempty(r,tvar_cmp);
+//    for(let tvs2 = tvs; tvs2 != NULL; tvs2 = tvs2->tl)
+//      switch(tvar_kind(tvs2->hd,BoxKind)) {
+//      case RgnKind:
+//      case UniqueRgnKind:
+//      case TopRgnKind:
+//        d = Dict::insert(d,tvs2->hd,rnew (r) RgnInfo(empty_effect,false));
+//        break; break;
+//      default: break;
+//      }
+//    let ans = rnew(r) RgnPO(d,empty_effect,empty_effect,dummy);
+//    for(; po2 != NULL; po2 = po2->tl)
+//      ans = add_outlives_constraint(r, ans, (*po2->hd)[0], (*po2->hd)[1],
+//      NULL);
+//    return satisfies_constraints(ans,po1,&HeapRgn_val,false);
+//  }
+
+// is regions(`rgns_of_var) in eff?
+static bool contains_rgnseff(tvar_t rgns_of_var, type_t eff) {
+  switch (Tcutil::normalize_effect(compress(eff))) {
+    case &AppType(&RgnsCon, &List(t, _)):
+      switch (compress(t)) {
+        case &VarType(tv):
+          return tvar_cmp(tv, rgns_of_var) == 0;
+        default:
+          return false;
+      }
+    case &AppType(&JoinCon, effs):
+      for (; effs != NULL; effs = effs->tl)
+        if (contains_rgnseff(rgns_of_var, effs->hd))
+          return true;
+      return false;
+    default:
+      return false;
+  }
+}
+
+static struct OutlivesEnv<`r::R> {
+  region_t<`r> r;
+  list_t<tvar_t,`r> seen;  // region vars that we have already considered
+  list_t<tvar_t,`r> todo;  // region vars that outlive vars already considered
+};
+
+static void add_to_search(struct OutlivesEnv @env, type_t eff) {
+  switch (compress(eff)) {
+    case &AppType(&AccessCon, &List(&VarType(tv), _)):
+      for (let seen = env->seen; seen != NULL; seen = seen->tl)
+        if (tvar_cmp(tv, seen->hd) == 0)
+          return;
+      env->seen = rnew(env->r) List(tv, env->seen);
+      env->todo = rnew(env->r) List(tv, env->todo);
+      return;
+    case &AppType(&JoinCon, effs):
+      for (; effs != NULL; effs = effs->tl)
+        add_to_search(env, effs->hd);
+      return;
+    default:
+      return;
+  }
+}
+
+static struct OutlivesEnv<`r> initial_env(region_t<`r> listrgn, rgn_po_t po, type_t rgn) {
+  let ans         = OutlivesEnv(listrgn, NULL, NULL);
+  type_t r        = compress(rgn);
+  let &Kind(k, a) = Tcutil::type_kind(r);
+  if (k != RgnKind)
+    Warn::impos("RgnOrder: rgn not of correct kind");
+  add_to_search(&ans, po->these_outlive_unique);
+  add_to_search(&ans, po->these_outlive_heap);
+
+  /*   switch (a) { */
+  /*     // FIX: currently doesn't deal with refcnt region */
+  /*   case Aliasable: */
+  /*     add_to_search(&ans,po->these_outlive_unique); */
+  /*     add_to_search(&ans,po->these_outlive_heap); */
+  /*     break; */
+  /*   case Unique: add_to_search(&ans,po->these_outlive_unique); break; */
+  /*     // can't say anything about what top-level regions outlive */
+  /*     // a top-kinded region variable, because we just don't know */
+  /*     // how this variable was created/is being used. */
+  /*   case Top: default: break; */
+  /*   } */
+
+  switch (r) {
+    case &VarType(tv):
+      ans.seen = rnew(listrgn) List(tv, ans.seen);
+      ans.todo = rnew(listrgn) List(tv, ans.todo);
+      fallthru;
+    default:
+      return ans;
+  }
+}
+
+// does [po] prove that [eff] outlives [rgn]?
+// evar treatment: return false and do not constrain
+static bool
+atomic_effect_outlives(rgn_po_opt_t po, type_t eff, type_t rgn) {
+  region listrgn;
+  switch (compress(eff)) {
+    case &AppType(&AccessCon, &List(vt, _)):
+      // does `vt outlive `rgn ?
+      switch (compress(vt)) {
+          /*     case &AppType(&UniqueCon,_): */
+          /*       // The unique region outlives all regions with R and UR kind
+           */
+          /*       let &Kind(k,a) = Tcutil::type_kind(compress(rgn)); */
+          /*       return (k == RgnKind) && (a != Top); */
+          /*     case &AppType(&RefCntCon,_):  */
+          /*       // The refcnt region outlives all regions the heap does, plus
+           * itself */
+          /*       // FIX: this won't work if rgn is `c, and `c outlives
+           * RefCntRgn */
+          /*       if (compress(rgn) == refcnt_rgn_type) return true; */
+          /*       fallthru; */
+        case &AppType(&HeapCon, _):
+          // The heap outlives all regions with R kind
+          let &Kind(k, _) = Tcutil::type_kind(compress(rgn));
+          return (k == RgnKind);  // && (a == Aliasable);
+        case &VarType(tv):
+          if (po == NULL)
+            Warn::impos("RgnOrder: tvar without a partial-order");
+          // move region_outlives to here. Pass coerce* etc. a rgn_po_t *
+          // (a pain because that field is private to tcenv, so think more!)
+
+          // To determine if tv outlives rgn, we generate the transitive
+          // set of variables (env.todo) that outlive rgn.  If during this
+          // process we discover tv is in this set, we return true; if we
+          // reach a fixed-point, then we return false.  We start by
+          // building the set to include rgn and all those variables that
+          // outlive the heap.
+          // fprintf(stderr,"seeing if %s outlives
+          // %s\n",tvar2string(tv),typ2string(rgn));
+          let env = initial_env(listrgn, po, rgn);
+          while (env.todo != NULL) {
+            let next = env.todo->hd;
+            env.todo = env.todo->tl;
+            if (tvar_cmp(next, tv) == 0)
+              return true;
+
+            // didn't find it; add all variables that outlive this variable
+            // to the env.todo list, unless they appear in env.seen list
+            // (meaning we already tried them or will try them).
+            if (Dict::member(po->d, next))
+              add_to_search(&env, Dict::lookup(po->d, next));
+            else  // JGM:  just returning false here to avoid a cascading error
+              return false;
+            // impos(aprintf("RgnOrder: type variable %s not in
+            // dict",*tv->name));
+          }
+          return false;
+        default:
+          return false;
+      }
+    case &AppType(&RgnsCon, &List(vt, _)):
+      switch (compress(vt)) {
+        // does regions(`tv) outlive `rgn?
+        case &VarType(tv):
+          if (po == NULL)
+            Warn::impos("RgnOrder: tvar without a partial-order");
+          // This is similar to the VarType case, above, except that we
+          // check that for each variable `r in todo, whether regions(`tv)
+          // outlives it.
+          let env         = initial_env(listrgn, po, rgn);
+          let &Kind(k, a) = Tcutil::type_kind(rgn);
+          // FIX: deal with RefCnt region
+          if (k == RgnKind)
+            //	if (a == Aliasable) {
+            if (contains_rgnseff(tv, po->these_outlive_heap) ||
+                contains_rgnseff(tv, po->these_outlive_unique))
+              return true;
+          /* 	} else if (a == Unique) { */
+          /* 	  if(contains_rgnseff(tv,po->these_outlive_unique)) */
+          /* 	    return true; */
+          /* 	} */
+
+          while (env.todo != NULL) {
+            let next = env.todo->hd;
+            env.todo = env.todo->tl;
+            if (!Dict::member(po->d, next))
+              Warn::impos("RgnOrder: type variable not in dict");
+            let next_eff = Dict::lookup(po->d, next);
+            if (contains_rgnseff(tv, next_eff))
+              return true;
+            add_to_search(&env, next_eff);
+          }
+          return false;
+        default:
+          return false;
+      }
+    default:
+      return false;  // see comment above about evars
+  }
+}
+
+// does [po] prove that all regions in [eff] outlive [rgn]?
+// evar treatment: return false and do not constrain
+bool effect_outlives(seg_t loc, rgn_po_opt_t po, type_t eff, type_t rgn) {
+  eff = Tcutil::normalize_effect(eff);
+#ifdef INSTR_OUTLIVES
+  if (loc) {
+    switch (compress(eff)) {
+      case &AppType(&AccessCon, &List(vt, _)):
+        switch (compress(vt)) {
+          case &AppType(&HeapCon, _):
+            loc = 0;
+          default:
+            break;
+        }
+        break;
+      default:
+        break;
+    }
+    /*     if(loc != 0 && Tcenv::glob_curr_rgn && !Tcutil::typecmp(rgn,
+     * Tcenv::glob_curr_rgn)) */
+    /*       loc =0; */
+    if (loc) {
+      Warn::warn2(loc, "!!!!!!!!effect_outlives used here for effect ", eff, " and region ", rgn);
+      /*       if(po) */
+      /* 	print_region_po(po); */
+    }
+    loc = 0;
+  }
+#endif
+  switch (compress(eff)) {
+    case &AppType(&JoinCon, effs):
+      for (; effs != NULL; effs = effs->tl)
+        if (!effect_outlives(loc, po, effs->hd, rgn))
+          return false;
+      return true;
+    default:
+      return atomic_effect_outlives(po, eff, rgn);
+  }
+}
+
+static void pin_effect(type_t eff, type_t bd) {
+  eff = Tcutil::normalize_effect(eff);
+  switch (compress(eff)) {
+    case &AppType(&JoinCon, effs):
+      for (; effs != NULL; effs = effs->tl)
+        pin_effect(effs->hd, bd);
+      return;
+    case &AppType(&RgnsCon, &List(t, _)):
+      switch (compress(t)) {
+        case &Evar(...):
+          Unify::unify(t, uint_type);
+          return;
+        default:
+          return;
+      }
+    case &AppType(&AccessCon, &List(r, _)):
+      switch (compress(r)) {
+        case &Evar(...):
+          Unify::unify(r, bd);
+          return;
+        default:
+          return;
+      }
+    case &Evar(...):
+      Unify::unify(eff, empty_effect);
+      return;  // going away
+    default:
+      return;
+  }
+}
+
+// FIX: reorganized -- this is where the real work should be
+//   (right now we have an unnecessary heap allocation)
+bool rgn_outlives_rgn(seg_t loc, rgn_po_opt_t po, type_t rgn1, type_t rgn2) {
+  return effect_outlives(loc, po, access_eff(rgn1), rgn2);
+}
+
+static bool eff_outlives_atomic_eff(rgn_po_opt_t po, type_t eff1, type_t eff2) {
+  // assumes eff1 is compressed and normalized
+  eff2 = compress(Tcutil::normalize_effect(eff2));
+  switch (eff2) {
+    case &AppType(&JoinCon, effs):
+      for (; effs != NULL; effs = effs->tl)
+        if (eff_outlives_atomic_eff(po, eff1, effs->hd))
+          return true;
+      return false;
+    case &AppType(&AccessCon, &List(vt, _)):
+      return effect_outlives(0, po, eff1, vt);
+    case &AppType(&RgnsCon, &List(vt1, _)):
+      switch (eff1) {
+        case &AppType(&RgnsCon, &List(vt2, _)):
+          switch ($(compress(vt1), compress(vt2))) {
+            case $(&VarType(tv1), &VarType(tv2)):
+              return tvar_cmp(tv1, tv2) == 0;
+            default:
+              break;
+          }
+          fallthru;
+        default:
+          return eff1 == heap_rgn_type;
+      }
+    default:
+      return eff1 == heap_rgn_type;
+  }
+}
+
+bool eff_outlives_eff(seg_t loc, rgn_po_opt_t po, type_t eff1, type_t eff2) {
+  eff1 = compress(Tcutil::normalize_effect(eff1));
+#ifdef INSTR_OUTLIVES
+  if (loc) {
+    switch (eff1) {
+      case &AppType(&AccessCon, &List(vt, _)):
+        switch (compress(vt)) {
+          case &AppType(&HeapCon, _):
+            loc = 0;
+            break;
+          case &Evar(...):
+            loc = 0;
+            break;
+          default:
+            break;
+        }
+        break;
+      default:
+        break;
+    }
+    if (loc) {
+      Warn::warn2(loc, "!!!!!!!!eff_outlives_eff used here for effect ", eff1, " and effect ",
+                  eff2);
+      /*       if(po) */
+      /* 	print_region_po(po); */
+    }
+    loc = 0;
+  }
+#endif
+  switch (eff1) {
+    case &AppType(&JoinCon, effs):
+      for (; effs != NULL; effs = effs->tl)
+        if (!eff_outlives_eff(loc, po, effs->hd, eff2))
+          return false;
+      return true;
+    default:
+      return eff_outlives_atomic_eff(po, eff1, eff2);
+  }
+}
+
+// does po prove all the constraints
+// evar treatment:
+//    evar on right of e > r -- constrain r to rgn
+//    evar in left  of e > r -- rgnkind: make r, anykind: make int
+// so call this last when doing a pack or call, and programmers will probably
+// want to use an explicit instantiation.  (A better thing to do for the
+// evar on right is find the longest living region that satisfies the
+// constraints, but for now we do this simpler thing.)
+// Of course, this sucks without explicit type instantiation on structs, but
+// the topt in tcexp, lets struct Foo<`r> x = Foo(...) do what we want. Sigh.
+bool satisfies_constraints(seg_t loc, rgn_po_opt_t po, list_t<$(type_t, type_t) @> constraints,
+                           type_t default_bound, bool do_pin) {
+#ifdef INSTR_OUTLIVES
+  if (constraints && loc) {
+    Warn::warn(loc, "!!!!!!!!satisfies_constraints used here");
+    loc = 0;
+  }
+#endif
+  // do all the bounds first so order doesn't matter
+  for (let cs = constraints; cs != NULL; cs = cs->tl) {
+    let &$(_, bd) = cs->hd;
+    switch (compress(bd)) {
+      case &Evar(...):
+        if (do_pin)
+          Unify::unify(bd, default_bound);
+        break;
+      default:
+        break;
+    }
+  }
+  for (let cs = constraints; cs != NULL; cs = cs->tl) {
+    let &$(eff, bd) = cs->hd;
+    if (do_pin)
+      pin_effect(eff, bd);
+    if (!effect_outlives(loc, po, eff, bd))
+      return false;
+  }
+  return true;
+}
+
+// DEBUGGING
+void print_region_po(rgn_po_t po) {
+  Iter::iter_t iter = Dict::make_iter(Core::heap_region, po->d);
+  let elem          = *Dict::rchoose(Core::heap_region, po->d);
+  fprintf(stderr, "region po:\n");
+  while (Iter::next(iter, &elem))
+    fprintf(stderr, "  %s outlived by %s\n", *(elem[0]->name), Absynpp::typ2string(elem[1]));
+  fprintf(stderr, "  these outlive heap: %s\n", Absynpp::typ2string(po->these_outlive_heap));
+  fprintf(stderr, "  these outlive unique: %s\n", Absynpp::typ2string(po->these_outlive_unique));
+}

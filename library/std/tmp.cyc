@@ -1,0 +1,22 @@
+#include <stdio.h>
+#include "core.h"
+#include "string.h"
+
+using Core;
+
+namespace Cstdio {
+  extern "C" {
+  struct __abstractFILE *tmpfile();
+  Cstring tmpnam(Cstring);
+  }
+}  // namespace Cstdio
+
+FILE *tmpfile() {
+  struct Cstdio::__abstractFILE *cf = Cstdio::tmpfile();
+  return fromCfile(cf);
+}
+
+char ?`H tmpnam(char ?`H s) {
+  char *name = Cstdio::tmpnam(NULL);
+  return s ? strcpy(s, (char ?) name) : (char ?) name;
+}

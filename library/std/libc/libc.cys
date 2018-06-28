@@ -1,0 +1,5858 @@
+// Realtime
+// Has a structure containing void *
+// Not supported yet
+aio.h:
+cpp {
+  /* Mac OS 10.4 needs off_t */
+  #include <sys/types.h>
+}
+;
+
+arpa/inet.h:
+cpp {
+  // OS X does not include struct in_addr in arpa/inet.h, but here instead
+  #include <sys/types.h> // needed by in_addr, defines u_int32_t
+  #include <netinet/in.h>
+  #ifdef __APPLE__
+  // for uint32_t and uint16_t on OS X
+  #include <stdint.h>
+  #endif
+}
+include {
+  in_port_t
+  in_addr_t
+  in_addr
+  INET_ADDRSTRLEN
+  INET6_ADDRSTRLEN
+  uint32_t
+  uint16_t
+}
+hstub {
+  /* Cygwin does not define these types so we take a guess :-( */
+  /* FIX: make this specific to cygwin ?? */
+  #ifndef _in_addr_t_def_
+  #define _in_addr_t_def_
+  typedef unsigned long in_addr_t;
+  #endif
+}
+hstub {
+  /* Posix says these can be macros or functions.  Typically they are
+     macros but in Linux at least they use asm, which we don't support
+     in Cyclone.  So, we make them functions. */
+  extern uint32_t htonl(uint32_t x);
+  extern uint16_t htons(uint16_t x);
+  extern uint32_t ntohl(uint32_t x);
+  extern uint16_t ntohs(uint16_t x);
+}
+cycstub {
+  namespace Cbyteswap {
+    extern "C" uint32_t __stub_htonl(uint32_t x);
+    extern "C" uint16_t __stub_htons(uint16_t x);
+    extern "C" uint32_t __stub_ntohl(uint32_t x);
+    extern "C" uint16_t __stub_ntohs(uint16_t x);
+  }
+  uint32_t htonl(uint32_t x) {
+    return Cbyteswap::__stub_htonl(x);
+  }
+  uint16_t htons(uint16_t x) {
+    return Cbyteswap::__stub_htons(x);
+  }
+  uint32_t ntohl(uint32_t x) {
+    return Cbyteswap::__stub_ntohl(x);
+  }
+  uint16_t ntohs(uint16_t x) {
+    return Cbyteswap::__stub_ntohs(x);
+  }
+}
+cstub {
+  #include <sys/types.h>
+  #if defined(__APPLE__)
+  #include <netinet/in.h>
+  #include <stdint.h>
+  #endif
+  #include <arpa/inet.h>
+  uint32_t __stub_htonl(uint32_t x) {
+    return htonl(x);
+  }
+  uint16_t __stub_htons(uint16_t x) {
+    return htons(x);
+  }
+  uint32_t __stub_ntohl(uint32_t x) {
+    return ntohl(x);
+  }
+  uint16_t __stub_ntohs(uint16_t x) {
+    return ntohs(x);
+  }
+}
+hstub inet_addr {
+  // FIX: should I worry about Cstring being not-NULL?
+  extern "C" in_addr_t inet_addr(const char *);
+}
+hstub inet_aton {
+  /* Note, inet_aton is not required by POSIX */
+  // FIX: should I worry about char * being not-NULL?
+  extern "C" int inet_aton(const char *, struct in_addr @);
+}
+hstub inet_ntoa {
+  extern "C" char * inet_ntoa(struct in_addr);
+}
+hstub inet_ntop {
+  // inet_ntop is not supported yet
+}
+hstub inet_pton {
+  // inet_pton is not supported yet
+}
+;
+
+// We do this all in Cyclone
+assert.h:
+hstub {
+#include "cyclone/library/std/assert.h"
+}
+;
+
+// Our compiler can't handle this yet.  E.g., it doesn't like
+// types such as 'long double complex'.
+complex.h:
+// include {
+// complex
+// _Complex_I
+// imaginary
+// _Imaginary_I
+// I
+// }
+// hstub cabs {
+//   extern "C" double cabs(double complex);
+// }
+// hstub cabsf {
+//   extern "C" float cabsf(float complex);
+// }
+// hstub cabsl {
+//   extern "C" long double cabsl(long double complex);
+// }
+// hstub cacos {
+//   extern "C" double complex cacos(double complex);
+// }
+// hstub cacosf {
+//   extern "C" float complex cacosf(float complex);
+// }
+// hstub cacosh {
+//   extern "C" double complex cacosh(double complex);
+// }
+// hstub cacoshf {
+//   extern "C" float complex cacoshf(float complex);
+// }
+// hstub cacoshl {
+//   extern "C" long double complex cacoshl(long double complex);
+// }
+// hstub cacosl {
+//   extern "C" long double complex cacosl(long double complex);
+// }
+// hstub carg {
+//   extern "C" double carg(double complex);
+// }
+// hstub cargf {
+//   extern "C" float cargf(float complex);
+// }
+// hstub cargl {
+//   extern "C" long double cargl(long double complex);
+// }
+// hstub casin {
+//   extern "C" double complex casin(double complex);
+// }
+// hstub casinf {
+//   extern "C" float complex casinf(float complex);
+// }
+// hstub casinh {
+//   extern "C" double complex casinh(double complex);
+// }
+// hstub casinhf {
+//   extern "C" float complex casinhf(float complex);
+// }
+// hstub casinhl {
+//   extern "C" long double complex casinhl(long double complex);
+// }
+// hstub casinl {
+//   extern "C" long double complex casinl(long double complex);
+// }
+// hstub catan {
+//   extern "C" double complex catan(double complex);
+// }
+// hstub catanf {
+//   extern "C" float complex catanf(float complex);
+// }
+// hstub catanh {
+//   extern "C" double complex catanh(double complex);
+// }
+// hstub catanhf {
+//   extern "C" float complex catanhf(float complex);
+// }
+// hstub catanhl {
+//   extern "C" long double complex catanhl(long double complex);
+// }
+// hstub catanl {
+//   extern "C" long double complex catanl(long double complex);
+// }
+// hstub ccos {
+//   extern "C" double complex ccos(double complex);
+// }
+// hstub ccosf {
+//   extern "C" float complex ccosf(float complex);
+// }
+// hstub ccosh {
+//   extern "C" double complex ccosh(double complex);
+// }
+// hstub ccoshf {
+//   extern "C" float complex ccoshf(float complex);
+// }
+// hstub ccoshl {
+//   extern "C" long double complex ccoshl(long double complex);
+// }
+// hstub ccosl {
+//   extern "C" long double complex ccosl(long double complex);
+// }
+// hstub cexp {
+//   extern "C" double complex cexp(double complex);
+// }
+// hstub cexpf {
+//   extern "C" float complex cexpf(float complex);
+// }
+// hstub cexpl {
+//   extern "C" long double complex cexpl(long double complex);
+// }
+// hstub cimag {
+//   extern "C" double cimag(double complex);
+// }
+// hstub cimagf {
+//   extern "C" float cimagf(float complex);
+// }
+// hstub cimagl {
+//   extern "C" long double cimagl(long double complex);
+// }
+// hstub clog {
+//   extern "C" double complex clog(double complex);
+// }
+// hstub clogf {
+//   extern "C" float complex clogf(float complex);
+// }
+// hstub clogl {
+//   extern "C" long double complex clogl(long double complex);
+// }
+// hstub conj {
+//   extern "C" double complex conj(double complex);
+// }
+// hstub conjf {
+//   extern "C" float complex conjf(float complex);
+// }
+// hstub conjl {
+//   extern "C" long double complex conjl(long double complex);
+// }
+// hstub cpow {
+//   extern "C" double complex cpow(double complex, double complex);
+// }
+// hstub cpowf {
+//   extern "C" float complex cpowf(float complex, float complex);
+// }
+// hstub cpowl {
+//   extern "C" long double complex cpowl(long double complex, long double complex);
+// }
+// hstub cproj {
+//   extern "C" double complex cproj(double complex);
+// }
+// hstub cprojf {
+//   extern "C" float complex cprojf(float complex);
+// }
+// hstub cprojl {
+//   extern "C" long double complex cprojl(long double complex);
+// }
+// hstub creal {
+//   extern "C" double creal(double complex);
+// }
+// hstub crealf {
+//   extern "C" float crealf(float complex);
+// }
+// hstub creall {
+//   extern "C" long double creall(long double complex);
+// }
+// hstub csin {
+//   extern "C" double complex csin(double complex);
+// }
+// hstub csinf {
+//   extern "C" float complex csinf(float complex);
+// }
+// hstub csinh {
+//   extern "C" double complex csinh(double complex);
+// }
+// hstub csinhf {
+//   extern "C" float complex csinhf(float complex);
+// }
+// hstub csinhl {
+//   extern "C" long double complex csinhl(long double complex);
+// }
+// hstub csinl {
+//   extern "C" long double complex csinl(long double complex);
+// }
+// hstub csqrt {
+//   extern "C" double complex csqrt(double complex);
+// }
+// hstub csqrtf {
+//   extern "C" float complex csqrtf(float complex);
+// }
+// hstub csqrtl {
+//   extern "C" long double complex csqrtl(long double complex);
+// }
+// hstub ctan {
+//   extern "C" double complex ctan(double complex);
+// }
+// hstub ctanf {
+//   extern "C" float complex ctanf(float complex);
+// }
+// hstub ctanh {
+//   extern "C" double complex ctanh(double complex);
+// }
+// hstub ctanhf {
+//   extern "C" float complex ctanhf(float complex);
+// }
+// hstub ctanhl {
+//   extern "C" long double complex ctanhl(long double complex);
+// }
+// hstub ctanl {
+//   extern "C" long double complex ctanl(long double complex);
+// }
+;
+
+cpio.h:
+include {
+  C_IRUSR
+  C_IWUSR
+  C_IXUSR
+  C_IRGRP
+  C_IWGRP
+  C_IXGRP
+  C_IROTH
+  C_IWOTH
+  C_IXOTH
+  C_ISUID
+  C_ISGID
+  C_ISVTX
+  C_ISDIR
+  C_ISFIFO
+  C_ISREG
+  C_ISBLK
+  C_ISCHR
+  C_ISCTG
+  C_ISLNK
+  C_ISSOCK
+  MAGIC
+}
+;
+
+crypt.h:
+hstub encrypt {
+  // FIX: should this be null-terminated or not?
+  extern "C" void encrypt(char @{64}, int);
+}
+hstub crypt {
+  extern "C" char * crypt(const char @ key, const char @ salt);
+}
+;
+
+ctype.h:
+hstub {
+  extern "C" int isalnum(int);
+}
+hstub {
+  extern "C" int isalpha(int);
+}
+hstub {
+  extern "C" int isascii(int);
+}
+hstub {
+  extern "C" int iscntrl(int);
+}
+hstub {
+  extern "C" int isdigit(int);
+}
+hstub {
+  extern "C" int isgraph(int);
+}
+hstub {
+  extern "C" int islower(int);
+}
+hstub {
+  extern "C" int isprint(int);
+}
+hstub {
+  extern "C" int ispunct(int);
+}
+hstub {
+  extern "C" int isspace(int);
+}
+hstub {
+  extern "C" int isupper(int);
+}
+hstub {
+  extern "C" int isxdigit(int);
+}
+hstub {
+  extern "C" int toascii(int);
+}
+hstub {
+  extern "C" int tolower(int);
+}
+hstub {
+  extern "C" int toupper(int);
+}
+hstub _tolower {
+  extern "C" int _tolower(int);
+}
+hstub _toupper {
+  extern "C" int _toupper(int);
+}
+;
+
+// Dynamic linking
+// Not supported yet
+dlfcn.h:
+cpp {
+#define _GNU_SOURCE 1
+}
+include {
+  dlerror
+  //RTLD_DI_LMID
+}
+hstub {
+  typedef struct dlhandle *dlhandle_t;
+  typedef struct dlsym *dlsym_t;
+}
+hstub dlopen {
+  dlhandle_t dlopen (char const @file, int mode);
+}
+hstub dlclose {
+  int dlclose (dlhandle_t handle);
+}
+hstub dlsym {
+  dlsym_t dlsym (dlhandle_t handle, char const @name);
+}
+hstub dladdr {
+  typedef struct
+  {
+    const char @dli_fname;
+    char @dli_fbase;
+    const char @dli_sname;
+    char @dli_saddr;
+  } Dl_info;
+  int dladdr (dlsym_t address, Dl_info @info);
+
+  extern "C" `a cast_dlsym (dlsym_t sym);
+}
+cstub dladdr {
+  void *cast_dlsym (void *sym) { return sym; }
+}
+hstub dlinfo {
+  //int dlinfo (dlhandle_t handle, enum __anonymous_enum_11__ request,
+}
+;
+
+dirent.h:
+cpp {
+  #include <sys/types.h>
+}
+include {
+  dirent
+  ino_t
+  NAME_MAX
+}
+hstub opendir {
+  // There is an odd case for arm-elf + newlib where the file dirent.h
+  // can exist but not define anything.  Because of the way we handle
+  // the DIR type, this would lead to parse errors in the buildlib
+  // output.  So, we make sure opendir is defined, here and below,
+  // before generating output.
+  //
+  // We define DIR as an abstract struct because it can contain
+  // pointers, e.g., in cygwin
+  extern struct __cycDIR;
+  typedef struct __cycDIR DIR;
+}
+hstub opendir {
+  // struct dirent on Mac OS X does not have a d_ino member as
+  // required by POSIX, instead it is named d_fileno.
+  // This #define makes cross-platform porting easier.
+  // Probably this applies to other BSD variants...
+#ifdef __APPLE__
+#define d_ino d_fileno
+#endif
+}
+cycstub opendir {
+  namespace Cdirent {
+    extern "C" struct __abstractDIR;
+    typedef struct __abstractDIR __cDIR;
+  }
+  abstract struct __cycDIR { // must match defn in c stub
+    Cdirent::__cDIR @dir;
+  };
+}
+cstub opendir {
+  /* OS X needs sys/types.h before dirent.h */
+  #include <sys/types.h>
+  #include <dirent.h>
+  struct Cyc___cycDIR { // must match defn in cyclone stub
+    DIR *dir;
+  };
+}
+hstub closedir {
+  extern int closedir(DIR @);
+}
+cycstub closedir {
+  namespace Cdirent {
+    extern "C" int closedir(__cDIR @d);
+  }
+  int closedir(DIR @d) {
+    return Cdirent::closedir(d->dir);
+  }
+}
+hstub opendir {
+  extern DIR *opendir(const char @);
+}
+cycstub opendir {
+  namespace Cdirent {
+    extern "C" __cDIR *opendir(const char @);
+  }
+  static datatype exn.Failure __opendir_failure =
+    Failure("opendir called with NULL string");
+  DIR *opendir(const char @ f) {
+    let cd = Cdirent::opendir(f);
+    // FIX: get rid of heap allocation
+    return cd ? new __cycDIR((Cdirent::__cDIR @)cd) : NULL;
+  }
+}
+hstub readdir {
+  extern struct dirent @readdir(DIR @);
+}
+cycstub readdir {
+  namespace Cdirent {
+    extern "C" struct dirent @readdir(__cDIR @);
+  }
+  struct dirent @readdir(DIR @d) {
+    return Cdirent::readdir(d->dir);
+  }
+}
+hstub {
+  // FIX: We don't handle this yet. The third arg is an array,
+  // needs a wrapper
+  //int readdir_r(DIR *, struct dirent *, struct dirent **);
+}
+hstub rewinddir {
+  extern void rewinddir(DIR @);
+}
+cycstub rewinddir {
+  namespace Cdirent {
+    extern "C" void rewinddir(__cDIR @d);
+  }
+  void rewinddir(DIR @d) {
+    return Cdirent::rewinddir(d->dir);
+  }
+}
+hstub seekdir {
+  extern void seekdir(DIR @, long);
+}
+cycstub seekdir {
+  namespace Cdirent {
+    extern "C" void seekdir(__cDIR @d, long);
+  }
+  void seekdir(DIR @d, long x) {
+    return Cdirent::seekdir(d->dir,x);
+  }
+}
+hstub telldir {
+  extern long telldir(DIR @);
+}
+cycstub telldir {
+  namespace Cdirent {
+    extern "C" long telldir(__cDIR @d);
+  }
+  long telldir(DIR @d) {
+    return Cdirent::telldir(d->dir);
+  }
+};
+
+errno.h:
+include {
+  E2BIG
+  EACCES
+  EADDRINUSE
+  EADDRNOTAVAIL
+  EAFNOSUPPORT
+  EAGAIN
+  EALREADY
+  EBADF
+  EBADMSG
+  EBUSY
+  ECANCELED
+  ECHILD
+  ECONNABORTED
+  ECONNREFUSED
+  ECONNRESET
+  EDEADLK
+  EDESTADDRREQ
+  EDOM
+  EDQUOT
+  EEXIST
+  EFAULT
+  EFBIG
+  EHOSTUNREACH
+  EIDRM
+  EILSEQ
+  EINPROGRESS
+  EINTR
+  EINVAL
+  EIO
+  EISCONN
+  EISDIR
+  ELOOP
+  EMFILE
+  EMSGSIZE
+  EMULTIHOP
+  ENAMETOOLONG
+  ENETDOWN
+  ENETUNREACH
+  ENFILE
+  ENOBUFS
+  ENODATA
+  ENODEV
+  ENOENT
+  ENOEXEC
+  ENOLCK
+  ENOLINK
+  ENOMEM
+  ENOMSG
+  ENOPROTOOPT
+  ENOSPC
+  ENOSR
+  ENOSTR
+  ENOSYS
+  ENOTCONN
+  ENOTDIR
+  ENOTEMPTY
+  ENOTSOCK
+  ENOTSUP
+  ENOTTY
+  ENXIO
+  EOPNOTSUPP
+  EOVERFLOW
+  EPERM
+  EPIPE
+  EPROTO
+  EPROTONOSUPPORT
+  EPROTOTYPE
+  ERANGE
+  EROFS
+  ESPIPE
+  ESRCH
+  ESTALE
+  ETIME
+  ETIMEDOUT
+  ETXTBSY
+  EWOULDBLOCK
+  EXDEV
+}
+hstub {
+extern "C" int *__CYCLONE_ERRNO();
+#define errno (*__CYCLONE_ERRNO())
+}
+cstub {
+  // We do this because errno is probably a C macro that refers to
+  // a C function, and buildlib's closure algorithm does not properly
+  // declare an indirectly-needed C function as extern "C".
+  // Also, if it's a macro we don't want a declaration for it in Cyclone,
+  // but we don't have a nice way of suppressing this with buildlib.
+  #include <errno.h>
+  int *__CYCLONE_ERRNO() {
+    return &errno;
+  }
+}
+;
+
+fcntl.h:
+include {
+  F_DUPFD
+  F_GETFD
+  F_SETFD
+  F_GETFL
+  F_SETFL
+  F_GETLK
+  F_SETLK
+  F_SETLKW
+  F_GETOWN
+  F_SETOWN
+  FD_CLOEXEC
+  F_RDLCK
+  F_UNLCK
+  F_WRLCK
+  SEEK_SET
+  SEEK_CUR
+  SEEK_END
+  O_CREAT
+  O_EXCL
+  O_NOCTTY
+  O_TRUNC
+  O_APPEND
+  O_DSYNC
+  O_NONBLOCK
+  O_RSYNC
+  O_SYNC
+  O_ACCMODE
+  O_RDONLY
+  O_RDWR
+  O_WRONLY
+  flock
+  mode_t
+  off_t
+  pid_t
+}
+hstub {
+  // FIX: ADV is not supported
+
+  datatype FcntlArg<`r::E> {
+    Flock(struct flock @`r);
+    Long(long);
+  };
+  typedef datatype FcntlArg<`r>@`r fcntlarg_t<`r>;
+
+  extern int fcntl(int fd, int cmd, ... inject fcntlarg_t);
+  extern int open(const char *, int, ... mode_t);
+  // FIX: should arg be non-NULL?
+  extern "C" int creat(const char *,mode_t);
+}
+cycstub {
+  namespace Cfcntl {
+    extern "C" int fcntl(int fd, int cmd);
+    extern "C" int fcntl_with_arg(int fd, int cmd, long arg);
+    extern "C" int fcntl_with_lock(int fd, int cmd, struct flock *lock);
+    extern "C" int open_without_mode(const char *,int);
+    extern "C" int open_with_mode(const char *,int,mode_t);
+  }
+  static datatype exn.Failure __fcntl_failure =
+    Failure("fcntl: too many args");
+  int fcntl(int fd, int cmd, ... inject fcntlarg_t argv) {
+    if (numelts(argv) == 0) return Cfcntl::fcntl(fd, cmd);
+    else if (numelts(argv) != 1) throw &__fcntl_failure;
+    else switch (argv[0]) {
+    case &Long(arg): return Cfcntl::fcntl_with_arg(fd, cmd, arg);
+    case &Flock(lock): return Cfcntl::fcntl_with_lock(fd, cmd, lock);
+    }
+  }
+
+  int open(const char * s, int i, ... mode_t ms) {
+    /* Note: if open is called with more than 3 arguments, the
+       additional args are simply ignored. */
+    if (numelts(ms) >= 1)
+      return Cfcntl::open_with_mode(s,i,ms[0]);
+    else
+      return Cfcntl::open_without_mode(s,i);
+  }
+}
+cstub {
+  #include <setjmp.h> // Needed by precore_c.h
+  #include "precore_c.h"
+  #include <fcntl.h>
+  int fcntl_with_arg(int fd, int cmd, long arg) {
+    return fcntl(fd, cmd, arg);
+  }
+  // We call lock a void* so we don't have to #include anything else
+  int fcntl_with_lock(int fd, int cmd, void *lock) {
+    return fcntl(fd, cmd, lock);
+  }
+
+  int open_with_mode(const char * s, int flags, mode_t m) {
+    return open(s,flags,m);
+  }
+
+  int open_without_mode(const char * s, int flags) {
+    /* Use 0 as the mode argument, in case flags contains O_CREAT.  In
+       that case the file will be created with 0 permissions; if we
+       omitted the 0 it would be created with random permissions. */
+    return open(s,flags,0);
+  }
+}
+;
+
+fenv.h:
+include {
+  fenv_t
+  fexcept_t
+  FE_DIVBYZERO
+  FE_INEXACT
+  FE_INVALID
+  FE_OVERFLOW
+  FE_UNDERFLOW
+  FE_ALL_EXCEPT
+  FE_DOWNWARD
+  FE_TONEAREST
+  FE_TOWARDZERO
+  FE_UPWARD
+  FE_DFL_ENV
+}
+hstub feclearexcept {
+  extern "C" int feclearexcept(int);
+}
+hstub fegetexceptflag {
+  extern "C" int fegetexceptflag(fexcept_t @, int);
+}
+hstub feraiseexcept {
+  extern "C" int feraiseexcept(int);
+}
+hstub fesetexceptflag {
+  extern "C" int fesetexceptflag(const fexcept_t @, int);
+}
+hstub fetestexcept {
+  extern "C" int fetestexcept(int);
+}
+hstub fegetround {
+  extern "C" int fegetround(void);
+}
+hstub fesetround {
+  extern "C" int fesetround(int);
+}
+hstub fegetenv {
+  extern "C" int fegetenv(fenv_t @);
+}
+hstub feholdexcept {
+  extern "C" int feholdexcept(fenv_t @);
+}
+hstub fesetenv {
+  extern "C" int fesetenv(const fenv_t @);
+}
+hstub feupdateenv {
+  extern "C" int feupdateenv(const fenv_t @);
+}
+;
+
+float.h:
+include {
+FLT_ROUNDS
+FLT_EVAL_METHOD
+FLT_RADIX
+FLT_MANT_DIG
+DBL_MANT_DIG
+LDBL_MANT_DIG
+DECIMAL_DIG
+FLT_DIG
+DBL_DIG
+LDBL_DIG
+FLT_MIN_EXP
+DBL_MIN_EXP
+LDBL_MIN_EXP
+FLT_MIN_10_EXP
+DBL_MIN_10_EXP
+LDBL_MIN_10_EXP
+FLT_MAX_EXP
+DBL_MAX_EXP
+LDBL_MAX_EXP
+FLT_MAX_10_EXP
+DBL_MAX_10_EXP
+LDBL_MAX_10_EXP
+FLT_MAX
+DBL_MAX
+LDBL_MAX
+FLT_EPSILON
+DBL_EPSILON
+LDBL_EPSILON
+FLT_MIN
+DBL_MIN
+LDBL_MIN
+}
+;
+
+fmtmsg.h:
+include {
+  MM_HARD
+  MM_SOFT
+  MM_FIRM
+  MM_APPL
+  MM_UTIL
+  MM_OPSYS
+  MM_RECOVER
+  MM_NRECOV
+  MM_HALT
+  MM_ERROR
+  MM_WARNING
+  MM_INFO
+  MM_NOSEV
+  MM_PRINT
+  MM_CONSOLE
+  MM_NULLSEV
+  MM_NULLMC
+  MM_OK
+  MM_NOTOK
+  MM_NOMSG
+  MM_NOCON
+}
+hstub {
+#define MM_NULLLBL ((const char ?)NULL)
+#define MM_NULLTXT ((const char ?)NULL)
+#define MM_NULLACT ((const char ?)NULL)
+#define MM_NULLTAG ((const char ?)NULL)
+/* FIX: should I worry about these char *s being non-NULL */
+extern "C" int fmtmsg(long a, const char * b, int c, const char * d,
+		      const char * e, const char * f);
+}
+;
+
+fnmatch.h:
+include {
+  FNM_NOMATCH
+  FNM_PATHNAME
+  FNM_PERIOD
+  FNM_NOESCAPE
+  FNM_NOSYS
+}
+hstub {
+  // FIX: does this old comment still apply:
+  // Our implementation copies the first two arguments.  This is
+  // only a stopgap measure, the function should be rewitten in
+  // Cyclone.
+  extern "C" int fnmatch(char @, char @, int);
+}
+;
+
+// This one requires true closures, or an implementation
+// completely in Cyclone.
+// Our parser dies on it in Linux
+ftw.h:
+// omitvariables { stat }
+// include {
+// FTW
+// FTW_F
+// FTW_D
+// FTW_DNR
+// FTW_DP
+// FTW_NS
+// FTW_SL
+// FTW_SLN
+// FTW_PHYS
+// FTW_MOUNT
+// FTW_DEPTH
+// FTW_CHDIR
+// stat
+// S_IFMT
+// S_IFBLK
+// S_IFCHR
+// S_IFIFO
+// S_IFREG
+// S_IFDIR
+// S_IFLNK
+// S_IFSOCK
+// S_IRWXU
+// S_IRUSR
+// S_IWUSR
+// S_IXUSR
+// S_IRWXG
+// S_IRGRP
+// S_IWGRP
+// S_IXGRP
+// S_IRWXO
+// S_IROTH
+// S_IWOTH
+// S_IXOTH
+// S_ISUID
+// S_ISGID
+// S_ISVTX
+// S_ISBLK
+// S_ISCHR
+// S_ISDIR
+// S_ISFIFO
+// S_ISREG
+// S_ISLNK
+// S_ISSOCK
+// S_TYPEISMQ
+// S_TYPEISSEM
+// S_TYPEISSHM
+// S_TYPEISTMO
+// }
+// hstub ftw {
+//   extern int ftw(const char ?,
+//                  int (@)(const char ?, const struct stat @, int),
+//                  int);
+// }
+// hstub nftw {
+//   extern int nftw(const char ?
+//                   int (@)(const char ?, const struct stat @, int, struct FTW @),
+//                   int,
+//                   int);
+// }
+;
+
+// This may need to be written entirely in Cyclone, since it manipulates
+// arrays of paths
+glob.h:
+;
+
+grp.h:
+cpp {
+  #if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
+  #include <sys/types.h> // defines gid_t
+  #include <unistd.h> // defines initgroups on APPLE
+  #endif
+}
+include {
+  gid_t
+  group {
+    struct group
+    {
+      char @gr_name;		/* Group name.	*/
+      char @gr_passwd;		/* Password.	*/
+      gid_t gr_gid;		/* Group ID.	*/
+      char ** @zeroterm gr_mem;	/* Member list.	*/
+    };
+  }
+}
+hstub initgroups {
+  extern "C" int initgroups(const char @ @zeroterm user, gid_t group);
+}
+hstub getgroups {
+  extern "C" int getgroups(tag_t<`i> size, const gid_t @{valueof(`i)} list);
+}
+hstub setgroups {
+  extern "C" int setgroups(tag_t<`i> size, const gid_t @{valueof(`i)} list);
+}
+hstub getgrnam {
+  extern "C" struct group *getgrnam(const char @ name);
+}
+hstub getgrgid {
+  extern "C" struct group *getgrgid(gid_t gid);
+}
+;
+
+// Not supported yet
+inttypes.h:
+// include {
+// imaxdiv_t
+// }
+// hstub {
+//   // This isn't quite right.  Posix requires <inttypes.h> to include
+//   // <stdint.h>, but this include is not making the definitions of
+//   // <stdint.h> available in the Std namespace.
+// #include <stdint.h>
+// }
+;
+
+iso646.h:
+include {
+  and
+  and_eq
+  bitand
+  bitor
+  compl
+  not
+  not_eq
+  or
+  or_eq
+  xor
+  xor_eq
+}
+;
+
+// Not supported yet
+langinfo.h:
+;
+
+libgen.h:
+hstub {
+  // Probably best to do entirely in Cyclone
+}
+;
+
+limits.h:
+include {
+  AIO_LISTIO_MAX
+  _POSIX_AIO_LISTIO_MAX
+  AIO_MAX
+  _POSIX_AIO_MAX
+  AIO_PRIO_DELTA_MAX
+  ARG_MAX
+  _POSIX_ARG_MAX
+  ATEXIT_MAX
+  CHILD_MAX
+  _POSIX_CHILD_MAX
+  DELAYTIMER_MAX
+  _POSIX_DELAYTIMER_MAX
+  HOST_NAME_MAX
+  _POSIX_HOST_NAME_MAX
+  IOV_MAX
+  _XOPEN_IOV_MAX
+  LOGIN_NAME_MAX
+  _POSIX_LOGIN_NAME_MAX
+  MQ_OPEN_MAX
+  _POSIX_MQ_OPEN_MAX
+  MQ_PRIO_MAX
+  _POSIX_MQ_PRIO_MAX
+  OPEN_MAX
+  _POSIX_OPEN_MAX
+  PAGESIZE
+  PAGE_SIZE
+  PTHREAD_DESTRUCTOR_ITERATIONS
+  _POSIX_THREAD_DESTRUCTOR_ITERATIONS
+  PTHREAD_KEYS_MAX
+  _POSIX_THREAD_KEYS_MAX
+  PTHREAD_STACK_MIN
+  PTHREAD_THREADS_MAX
+  _POSIX_THREAD_THREADS_MAX
+  RE_DUP_MAX
+  _POSIX2_RE_DUP_MAX
+  RTSIG_MAX
+  _POSIX_RTSIG_MAX
+  SEM_NSEMS_MAX
+  _POSIX_SEM_NSEMS_MAX
+  SEM_VALUE_MAX
+  _POSIX_SEM_VALUE_MAX
+  SIGQUEUE_MAX
+  _POSIX_SIGQUEUE_MAX
+  SS_REPL_MAX
+  _POSIX_SS_REPL_MAX
+  STREAM_MAX
+  _POSIX_STREAM_MAX
+  SYMLOOP_MAX
+  _POSIX_SYMLOOP_MAX
+  TIMER_MAX
+  _POSIX_TIMER_MAX
+  TRACE_EVENT_NAME_MAX
+  _POSIX_TRACE_EVENT_NAME_MAX
+  TRACE_NAME_MAX
+  _POSIX_TRACE_NAME_MAX
+  TRACE_SYS_MAX
+  _POSIX_TRACE_SYS_MAX
+  TRACE_USER_EVENT_MAX
+  _POSIX_TRACE_USER_EVENT_MAX
+  TTY_NAME_MAX
+  _POSIX_TTY_NAME_MAX
+  TZNAME_MAX
+  _POSIX_TZNAME_MAX
+  FILESIZEBITS
+  LINK_MAX
+  _POSIX_LINK_MAX
+  MAX_CANON
+  _POSIX_MAX_CANON
+  MAX_INPUT
+  _POSIX_MAX_INPUT
+  NAME_MAX
+  _POSIX_NAME_MAX
+  _XOPEN_NAME_MAX
+  PATH_MAX
+  _POSIX_PATH_MAX
+  _XOPEN_PATH_MAX
+  PIPE_BUF
+  _POSIX_PIPE_BUF
+  POSIX_ALLOC_SIZE_MIN
+  POSIX_REC_INCR_XFER_SIZE
+  POSIX_REC_MAX_XFER_SIZE
+  POSIX_REC_MIN_XFER_SIZE
+  POSIX_REC_XFER_ALIGN
+  SYMLINK_MAX
+  _POSIX_SYMLINK_MAX
+  BC_BASE_MAX
+  _POSIX2_BC_BASE_MAX
+  BC_DIM_MAX
+  _POSIX2_BC_DIM_MAX
+  BC_SCALE_MAX
+  _POSIX2_BC_SCALE_MAX
+  BC_STRING_MAX
+  _POSIX2_BC_STRING_MAX
+  CHARCLASS_NAME_MAX
+  _POSIX2_CHARCLASS_NAME_MAX
+  COLL_WEIGHTS_MAX
+  _POSIX2_COLL_WEIGHTS_MAX
+  EXPR_NEST_MAX
+  _POSIX2_EXPR_NEST_MAX
+  LINE_MAX
+  _POSIX2_LINE_MAX
+  NGROUPS_MAX
+  _POSIX_NGROUPS_MAX
+  RE_DUP_MAX
+  _POSIX2_RE_DUP_MAX
+  _POSIX_CLOCKRES_MIN
+  _POSIX_AIO_LISTIO_MAX
+  _POSIX_AIO_MAX
+  _POSIX_ARG_MAX
+  _POSIX_CHILD_MAX
+  _POSIX_DELAYTIMER_MAX
+  _POSIX_HOST_NAME_MAX
+  _POSIX_LINK_MAX
+  _POSIX_LOGIN_NAME_MAX
+  _POSIX_MAX_CANON
+  _POSIX_MAX_INPUT
+  _POSIX_MQ_OPEN_MAX
+  _POSIX_MQ_PRIO_MAX
+  _POSIX_NAME_MAX
+  _POSIX_NGROUPS_MAX
+  _POSIX_OPEN_MAX
+  _POSIX_PATH_MAX
+  _POSIX_PIPE_BUF
+  _POSIX_RE_DUP_MAX
+  _POSIX_RTSIG_MAX
+  _POSIX_SEM_NSEMS_MAX
+  _POSIX_SEM_VALUE_MAX
+  _POSIX_SIGQUEUE_MAX
+  _POSIX_SSIZE_MAX
+  _POSIX_STREAM_MAX
+  _POSIX_SS_REPL_MAX
+  _POSIX_SYMLINK_MAX
+  _POSIX_SYMLOOP_MAX
+  _POSIX_THREAD_DESTRUCTOR_ITERATIONS
+  _POSIX_THREAD_KEYS_MAX
+  _POSIX_THREAD_THREADS_MAX
+  _POSIX_TIMER_MAX
+  _POSIX_TRACE_EVENT_NAME_MAX
+  _POSIX_TRACE_NAME_MAX
+  _POSIX_TRACE_SYS_MAX
+  _POSIX_TRACE_USER_EVENT_MAX
+  _POSIX_TTY_NAME_MAX
+  _POSIX_TZNAME_MAX
+  _POSIX2_BC_BASE_MAX
+  _POSIX2_BC_DIM_MAX
+  _POSIX2_BC_SCALE_MAX
+  _POSIX2_BC_STRING_MAX
+  _POSIX2_CHARCLASS_NAME_MAX
+  _POSIX2_COLL_WEIGHTS_MAX
+  _POSIX2_EXPR_NEST_MAX
+  _POSIX2_LINE_MAX
+  _POSIX2_RE_DUP_MAX
+  _XOPEN_IOV_MAX
+  _XOPEN_NAME_MAX
+  _XOPEN_PATH_MAX
+  CHAR_BIT
+  CHAR_MAX
+  CHAR_MIN
+  INT_MAX
+  LONG_BIT
+  LONG_MAX
+  MB_LEN_MAX
+  SCHAR_MAX
+  SHRT_MAX
+  SSIZE_MAX
+  _POSIX_SSIZE_MAX
+  UCHAR_MAX
+  UINT_MAX
+  ULONG_MAX
+  USHRT_MAX
+  WORD_BIT
+  INT_MIN
+  LONG_MIN
+  SCHAR_MIN
+  SHRT_MIN
+  LLONG_MIN
+  LLONG_MAX
+  ULLONG_MAX
+  CHARCLASS_NAME_MAX
+  NL_ARGMAX
+  NL_LANGMAX
+  NL_MSGMAX
+  NL_NMAX
+  NL_SETMAX
+  NL_TEXTMAX
+  _POSIX2_LINE_MAX
+  NZERO
+}
+;
+
+link.h:
+cpp {
+#define _GNU_SOURCE 1
+}
+include {
+  ElfW
+  dl_phdr_info
+}
+hstub dl_iterate_phdr {
+  extern "C"
+  int dl_iterate_phdr (int (*__callback)(struct dl_phdr_info *, size_t, `a),
+                       `a data);
+}
+;
+
+locale.h:
+include {
+  LC_CTYPE
+  LC_NUMERIC
+  LC_TIME
+  LC_COLLATE
+  LC_MONETARY
+  LC_MESSAGES
+  LC_ALL
+  LC_PAPER
+  LC_NAME
+  LC_ADDRESS
+  LC_TELEPHONE
+  LC_MEASUREMENT
+  LC_IDENTIFICATION
+  LC_CTYPE_MASK
+  LC_NUMERIC_MASK
+  LC_TIME_MASK
+  LC_COLLATE_MASK
+  LC_MONETARY_MASK
+  LC_MESSAGES_MASK
+  LC_PAPER_MASK
+  LC_NAME_MASK
+  LC_ADDRESS_MASK
+  LC_TELEPHONE_MASK
+  LC_MEASUREMENT_MASK
+  LC_IDENTIFICATION_MASK
+  LC_ALL_MASK
+  LC_GLOBAL_LOCALE
+  locale_t
+  lconv
+}
+hstub setlocale {
+  extern "C" char *setlocale (int category, const char *locale);
+}
+hstub localeconv {
+  extern "C" struct lconv *localeconv (void);
+}
+;
+
+math.h:
+include {
+  float_t
+  double_t
+  FLT_EVAL_METHOD
+  fpclassify
+  isfinite
+  isinf
+  isnan
+  isnormal
+  signbit
+  isgreater
+  isgreaterequal
+  isless
+  islessequal
+  islessgreater
+  isunordered
+  M_E
+  M_LOG2E
+  M_LOG10E
+  M_LN2
+  M_LN10
+  M_PI
+  M_PI_2
+  M_PI_4
+  M_1_PI
+  M_2_PI
+  M_2_SQRTP
+  M_SQRT2
+  M_SQRT1_2
+  MAXFLOAT
+  HUGE_VAL
+  HUGE_VALF
+  HUGE_VALL
+  INFINITY
+  NAN
+  FP_INFINITE
+  FP_NAN
+  FP_NORMAL
+  FP_SUBNORMAL
+  FP_ZERO
+  FP_FAST_FMA
+  FP_FAST_FMAF
+  FP_FAST_FMAL
+  FP_ILOGB0
+  FP_ILOGBNAN
+  MATH_ERRNO
+  MATH_ERREXCEPT
+  math_errhandling
+}
+
+hstub acos {
+  extern "C" double acos(double);
+}
+hstub acosf {
+  extern "C" float acosf(float);
+}
+hstub acosh {
+  extern "C" double acosh(double);
+}
+hstub acoshf {
+  extern "C" float acoshf(float);
+}
+hstub acoshl {
+  extern "C" long double acoshl(long double);
+}
+hstub acosl {
+  extern "C" long double acosl(long double);
+}
+hstub asin {
+  extern "C" double asin(double);
+}
+hstub asinf {
+  extern "C" float asinf(float);
+}
+hstub asinh {
+  extern "C" double asinh(double);
+}
+hstub asinhf {
+  extern "C" float asinhf(float);
+}
+hstub asinhl {
+  extern "C" long double asinhl(long double);
+}
+hstub asinl {
+  extern "C" long double asinl(long double);
+}
+hstub atan {
+  extern "C" double atan(double);
+}
+hstub atan2 {
+  extern "C" double atan2(double, double);
+}
+hstub atan2f {
+  extern "C" float atan2f(float, float);
+}
+hstub atan2l {
+  extern "C" long double atan2l(long double, long double);
+}
+hstub atanf {
+  extern "C" float atanf(float);
+}
+hstub atanh {
+  extern "C" double atanh(double);
+}
+hstub atanhf {
+  extern "C" float atanhf(float);
+}
+hstub atanhl {
+  extern "C" long double atanhl(long double);
+}
+hstub atanl {
+  extern "C" long double atanl(long double);
+}
+hstub cbrt {
+  extern "C" double cbrt(double);
+}
+hstub cbrtf {
+  extern "C" float cbrtf(float);
+}
+hstub cbrtl {
+  extern "C" long double cbrtl(long double);
+}
+hstub ceil {
+  extern "C" double ceil(double);
+}
+hstub ceilf {
+  extern "C" float ceilf(float);
+}
+hstub ceill {
+  extern "C" long double ceill(long double);
+}
+hstub copysign {
+  extern "C" double copysign(double, double);
+}
+hstub copysignf {
+  extern "C" float copysignf(float, float);
+}
+hstub copysignl {
+  extern "C" long double copysignl(long double, long double);
+}
+hstub cos {
+  extern "C" double cos(double);
+}
+hstub cosf {
+  extern "C" float cosf(float);
+}
+hstub cosh {
+  extern "C" double cosh(double);
+}
+hstub coshf {
+  extern "C" float coshf(float);
+}
+hstub coshl {
+  extern "C" long double coshl(long double);
+}
+hstub cosl {
+  extern "C" long double cosl(long double);
+}
+hstub erf {
+  extern "C" double erf(double);
+}
+hstub erfc {
+  extern "C" double erfc(double);
+}
+hstub erfcf {
+  extern "C" float erfcf(float);
+}
+hstub erfcl {
+  extern "C" long double erfcl(long double);
+}
+hstub erff {
+  extern "C" float erff(float);
+}
+hstub erfl {
+  extern "C" long double erfl(long double);
+}
+hstub exp {
+  extern "C" double exp(double);
+}
+hstub exp2 {
+  extern "C" double exp2(double);
+}
+hstub exp2f {
+  extern "C" float exp2f(float);
+}
+hstub exp2l {
+  extern "C" long double exp2l(long double);
+}
+hstub expf {
+  extern "C" float expf(float);
+}
+hstub expl {
+  extern "C" long double expl(long double);
+}
+hstub expm1 {
+  extern "C" double expm1(double);
+}
+hstub expm1f {
+  extern "C" float expm1f(float);
+}
+hstub expm1l {
+  extern "C" long double expm1l(long double);
+}
+hstub fabs {
+  extern "C" double fabs(double);
+}
+hstub fabsf {
+  extern "C" float fabsf(float);
+}
+hstub fabsl {
+  extern "C" long double fabsl(long double);
+}
+hstub fdim {
+  extern "C" double fdim(double, double);
+}
+hstub fdimf {
+  extern "C" float fdimf(float, float);
+}
+hstub fdiml {
+  extern "C" long double fdiml(long double, long double);
+}
+hstub floor {
+  extern "C" double floor(double);
+}
+hstub floorf {
+  extern "C" float floorf(float);
+}
+hstub floorl {
+  extern "C" long double floorl(long double);
+}
+hstub fma {
+  extern "C" double fma(double, double, double);
+}
+hstub fmaf {
+  extern "C" float fmaf(float, float, float);
+}
+hstub fmal {
+  extern "C" long double fmal(long double, long double, long double);
+}
+hstub fmax {
+  extern "C" double fmax(double, double);
+}
+hstub fmaxf {
+  extern "C" float fmaxf(float, float);
+}
+hstub fmaxl {
+  extern "C" long double fmaxl(long double, long double);
+}
+hstub fmin {
+  extern "C" double fmin(double, double);
+}
+hstub fminf {
+  extern "C" float fminf(float, float);
+}
+hstub fminl {
+  extern "C" long double fminl(long double, long double);
+}
+hstub fmod {
+  extern "C" double fmod(double, double);
+}
+hstub fmodf {
+  extern "C" float fmodf(float, float);
+}
+hstub fmodl {
+  extern "C" long double fmodl(long double, long double);
+}
+hstub frexp {
+  extern "C" double frexp(double, int @);
+}
+hstub frexpf {
+  extern "C" float frexpf(float value, int @);
+}
+hstub frexpl {
+  extern "C" long double frexpl(long double value, int @);
+}
+hstub hypot {
+  extern "C" double hypot(double, double);
+}
+hstub hypotf {
+  extern "C" float hypotf(float, float);
+}
+hstub hypotl {
+  extern "C" long double hypotl(long double, long double);
+}
+hstub ilogb {
+  extern "C" int ilogb(double);
+}
+hstub ilogbf {
+  extern "C" int ilogbf(float);
+}
+hstub ilogbl {
+  extern "C" int ilogbl(long double);
+}
+hstub j0 {
+  extern "C" double j0(double);
+}
+hstub j1 {
+  extern "C" double j1(double);
+}
+hstub jn {
+  extern "C" double jn(int, double);
+}
+hstub ldexp {
+  extern "C" double ldexp(double, int);
+}
+hstub ldexpf {
+  extern "C" float ldexpf(float, int);
+}
+hstub ldexpl {
+  extern "C" long double ldexpl(long double, int);
+}
+hstub lgamma {
+  extern "C" double lgamma(double);
+}
+hstub lgammaf {
+  extern "C" float lgammaf(float);
+}
+hstub lgammal {
+  extern "C" long double lgammal(long double);
+}
+hstub llrint {
+  extern "C" long long llrint(double);
+}
+hstub llrintf {
+  extern "C" long long llrintf(float);
+}
+hstub llrintl {
+  extern "C" long long llrintl(long double);
+}
+hstub llround {
+  extern "C" long long llround(double);
+}
+hstub llroundf {
+  extern "C" long long llroundf(float);
+}
+hstub llroundl {
+  extern "C" long long llroundl(long double);
+}
+hstub log {
+  extern "C" double log(double);
+}
+hstub log10 {
+  extern "C" double log10(double);
+}
+hstub log10f {
+  extern "C" float log10f(float);
+}
+hstub log10l {
+  extern "C" long double log10l(long double);
+}
+hstub log1p {
+  extern "C" double log1p(double);
+}
+hstub log1pf {
+  extern "C" float log1pf(float);
+}
+hstub log1pl {
+  extern "C" long double log1pl(long double);
+}
+hstub log2 {
+  extern "C" double log2(double);
+}
+hstub log2f {
+  extern "C" float log2f(float);
+}
+hstub log2l {
+  extern "C" long double log2l(long double);
+}
+hstub logb {
+  extern "C" double logb(double);
+}
+hstub logbf {
+  extern "C" float logbf(float);
+}
+hstub logbl {
+  extern "C" long double logbl(long double);
+}
+hstub logf {
+  extern "C" float logf(float);
+}
+hstub logl {
+  extern "C" long double logl(long double);
+}
+hstub lrint {
+  extern "C" long lrint(double);
+}
+hstub lrintf {
+  extern "C" long lrintf(float);
+}
+hstub lrintl {
+  extern "C" long lrintl(long double);
+}
+hstub lround {
+  extern "C" long lround(double);
+}
+hstub lroundf {
+  extern "C" long lroundf(float);
+}
+hstub lroundl {
+  extern "C" long lroundl(long double);
+}
+hstub modf {
+  extern "C" double modf(double, double @);
+}
+hstub modff {
+  extern "C" float modff(float, float @);
+}
+hstub modfl {
+  extern "C" long double modfl(long double, long double @);
+}
+hstub nan {
+  // FIX: not yet implemented
+  //  extern "C" double nan(const char *);
+}
+hstub nanf {
+  // FIX: not yet implemented
+  //  extern "C" float nanf(const char *);
+}
+hstub nanl {
+  // FIX: not yet implemented
+  //  extern "C" long double nanl(const char *);
+}
+hstub nearbyint {
+  extern "C" double nearbyint(double);
+}
+hstub nearbyintf {
+  extern "C" float nearbyintf(float);
+}
+hstub nearbyintl {
+  extern "C" long double nearbyintl(long double);
+}
+hstub nextafter {
+  extern "C" double nextafter(double, double);
+}
+hstub nextafterf {
+  extern "C" float nextafterf(float, float);
+}
+hstub nextafterl {
+  extern "C" long double nextafterl(long double, long double);
+}
+hstub nexttoward {
+  extern "C" double nexttoward(double, long double);
+}
+hstub nexttowardf {
+  extern "C" float nexttowardf(float, long double);
+}
+hstub nexttowardl {
+  extern "C" long double nexttowardl(long double, long double);
+}
+hstub pow {
+  extern "C" double pow(double, double);
+}
+hstub powf {
+  extern "C" float powf(float, float);
+}
+hstub powl {
+  extern "C" long double powl(long double, long double);
+}
+hstub remainder {
+  extern "C" double remainder(double, double);
+}
+hstub remainderf {
+  extern "C" float remainderf(float, float);
+}
+hstub remainderl {
+  extern "C" long double remainderl(long double, long double);
+}
+hstub remquo {
+  extern "C" double remquo(double, double, int @);
+}
+hstub remquof {
+  extern "C" float remquof(float, float, int @);
+}
+hstub remquol {
+  extern "C" long double remquol(long double, long double, int @);
+}
+hstub rint {
+  extern "C" double rint(double);
+}
+hstub rintf {
+  extern "C" float rintf(float);
+}
+hstub rintl {
+  extern "C" long double rintl(long double);
+}
+hstub round {
+  extern "C" double round(double);
+}
+hstub roundf {
+  extern "C" float roundf(float);
+}
+hstub roundl {
+  extern "C" long double roundl(long double);
+}
+hstub scalb {
+  extern "C" double scalb(double, double);
+}
+hstub scalbln {
+  extern "C" double scalbln(double, long);
+}
+hstub scalblnf {
+  extern "C" float scalblnf(float, long);
+}
+hstub scalblnl {
+  extern "C" long double scalblnl(long double, long);
+}
+hstub scalbn {
+  extern "C" double scalbn(double, int);
+}
+hstub scalbnf {
+  extern "C" float scalbnf(float, int);
+}
+hstub scalbnl {
+  extern "C" long double scalbnl(long double, int);
+}
+hstub sin {
+  extern "C" double sin(double);
+}
+hstub sinf {
+  extern "C" float sinf(float);
+}
+hstub sinh {
+  extern "C" double sinh(double);
+}
+hstub sinhf {
+  extern "C" float sinhf(float);
+}
+hstub sinhl {
+  extern "C" long double sinhl(long double);
+}
+hstub sinl {
+  extern "C" long double sinl(long double);
+}
+hstub sqrt {
+  extern "C" double sqrt(double);
+}
+hstub sqrtf {
+  extern "C" float sqrtf(float);
+}
+hstub sqrtl {
+  extern "C" long double sqrtl(long double);
+}
+hstub tan {
+  extern "C" double tan(double);
+}
+hstub tanf {
+  extern "C" float tanf(float);
+}
+hstub tanh {
+  extern "C" double tanh(double);
+}
+hstub tanhf {
+  extern "C" float tanhf(float);
+}
+hstub tanhl {
+  extern "C" long double tanhl(long double);
+}
+hstub tanl {
+  extern "C" long double tanl(long double);
+}
+hstub tgamma {
+  extern "C" double tgamma(double);
+}
+hstub tgammaf {
+  extern "C" float tgammaf(float);
+}
+hstub tgammal {
+  extern "C" long double tgammal(long double);
+}
+hstub trunc {
+  extern "C" double trunc(double);
+}
+hstub truncf {
+  extern "C" float truncf(float);
+}
+hstub truncl {
+  extern "C" long double truncl(long double);
+}
+hstub y0 {
+  extern "C" double y0(double);
+}
+hstub y1 {
+  extern "C" double y1(double);
+}
+hstub yn {
+  extern "C" double yn(int, double);
+}
+hstub {
+  extern "C" int signgam;
+}
+;
+
+// Defines a printf-like function, so we need to define it in Cyclone
+// Not supported yet
+monetary.h:
+;
+
+// Realtime
+// Not supported yet
+mqueue.h:
+;
+
+// Defines a structure containing a char *
+// Not supported yet
+net/if.h:
+;
+
+netdb.h:
+include {
+  in_port_t
+  in_addr
+  uint32_t
+  IPPORT_RESERVED
+  HOST_NOT_FOUND
+  NO_DATA
+  NO_RECOVERY
+  TRY_AGAIN
+  socklen_t
+  servent
+  protoent
+}
+hstub {
+  /* Not defined in OS X or cygwin so we guess :-( */
+  #ifndef _in_port_t_def_
+  #define _in_port_t_def_
+  typedef unsigned short in_port_t;
+  #endif
+}
+hstub {
+  // FIX:  Need to put in by hand so that we can translate
+  // to struct in_addr, rather than the prescribed char *.
+  // We thus bake in the fact that addresses are 4 bytes long;
+  // i.e. that the length is assumed to be 4.  If this is not
+  // the case, then we are in trouble.
+  struct hostent {
+    char *h_name;
+    char ** @zeroterm h_aliases;
+#if defined(__CYGWIN32__) || defined(__CYGWIN__)
+      short h_addrtype;
+      short h_length; // always 4
+#else
+      int h_addrtype;
+      int h_length;   // always 4
+#endif
+    struct in_addr **h_addr_list;
+#define h_addr h_addr_list[0]
+  };
+}
+hstub getservbyname {
+  // FIX: might this be unsafe?  In particular, we might either end up
+  //   with a memory leak, since this was probably malloced, or
+  //   with some clobbered memory if it's using a static buffer.
+  // FIX: should strings be non-NULL?
+  extern "C" struct servent *getservbyname(const char * name, const char * proto);
+}
+hstub gethostbyname {
+  // FIX: see getservbyname comment
+  extern "C" struct hostent *gethostbyname(const char * name);
+}
+hstub getprotobyname {
+  // FIX: see getservbyname comment
+  extern "C" struct protoent * getprotobyname(const char * name);
+}
+hstub herror {
+  // FIX: should string be non-NULL
+  extern "C" void herror(const char *);
+}
+;
+
+netinet/in.h:
+cpp {
+  #include <sys/types.h>
+  #ifdef __APPLE__
+  // for uint32_t and uint16_t on OS X
+  #include <stdint.h>
+  #endif
+}
+include {
+  in_port_t
+  in_addr_t
+  sa_family_t
+  uint8_t
+  uint16_t
+  uint32_t
+  in_addr
+  sockaddr_in
+  in6_addr
+  sockaddr_in6
+  in6addr_any
+  IN6ADDR_ANY_INIT
+  in6addr_loopback
+  IN6ADDR_LOOPBACK_INIT
+  ipv6_mreq
+  IPPROTO_IP
+  IPPROTO_IPV6
+  IPPROTO_ICMP
+  IPPROTO_RAW
+  IPPROTO_TCP
+  IPPROTO_UDP
+  INADDR_ANY
+  INADDR_BROADCAST
+  INADDR_NONE
+  INADDR_LOOPBACK
+  INET_ADDRSTRLEN
+  INET6_ADDRSTRLEN
+  IPV6_JOIN_GROUP
+  IPV6_LEAVE_GROUP
+  IPV6_MULTICAST_HOPS
+  IPV6_MULTICAST_IF
+  IPV6_MULTICAST_LOOP
+  IPV6_UNICAST_HOPS
+  IPV6_V6ONLY
+  IN6_IS_ADDR_UNSPECIFIED
+  IN6_IS_ADDR_MULTICAST
+  IN6_IS_ADDR_MC_NODELOCAL
+  IN6_IS_ADDR_MC_LINKLOCAL
+  IN6_IS_ADDR_MC_SITELOCAL
+  IN6_IS_ADDR_MC_ORGLOCAL
+  IN6_IS_ADDR_MC_GLOBAL
+}
+hstub {
+  /* We'd like to do
+     include {
+     IN6_IS_ADDR_LINKLOCAL
+     IN6_IS_ADDR_LOOPBACK
+     IN6_IS_ADDR_SITELOCAL
+     IN6_IS_ADDR_V4COMPAT
+     IN6_IS_ADDR_V4MAPPED
+     }
+     but these bring in declarations for htonl and ntohl, which
+     conflict with the declarations below.
+  */
+}
+hstub {
+  /* These aren't defined in OS X or Cygwin so we guess :-( */
+  #ifndef _in_port_t_def_
+  #define _in_port_t_def_
+  typedef unsigned short in_port_t;
+  #endif
+  #ifndef _in_addr_t_def_
+  #define _in_addr_t_def_
+  typedef unsigned int in_addr_t;
+  #endif
+  /* Not defined in OS X */
+  #ifndef _sa_family_t_def_
+  #define _sa_family_t_def_
+  typedef unsigned char sa_family_t;
+  #endif
+}
+// These aren't supposed to be here according to POSIX, but
+// they are here on Linux and other platforms, so we include them.
+hstub htonl {
+  extern uint32_t htonl(uint32_t x);
+}
+hstub htons {
+  extern uint16_t htons(uint16_t x);
+}
+hstub ntohl {
+  extern uint32_t ntohl(uint32_t x);
+}
+hstub ntohs {
+  extern uint16_t ntohs(uint16_t x);
+}
+;
+
+netinet/tcp.h:
+cpp {
+#ifdef __CYGWIN__
+#include <sys/types.h>
+#endif
+}
+include {
+  TCP_NODELAY
+}
+;
+
+// Locale stuff
+// Not supported yet
+nl_types.h:
+;
+
+poll.h:
+include {
+  pollfd
+  nfds_t
+  POLLIN
+  POLLRDNORM
+  POLLRDBAND
+  POLLPRI
+  POLLOUT
+  POLLWRNORM
+  POLLWRBAND
+  POLLERR
+  POLLHUP
+  POLLNVAL
+}
+hstub {
+  /* Cygwin does not define this type so we take a guess :-( */
+  /* FIX: make this specific to cygwin ?? */
+  #ifndef _nfds_t_def_
+  #define _nfds_t_def_
+  typedef unsigned int nfds_t;
+  #endif
+}
+hstub poll {
+  extern int poll (struct pollfd?, nfds_t, int);
+}
+cycstub poll {
+  namespace Cpoll {
+    extern "C" int poll(struct pollfd @{0}, nfds_t b, int c);
+  }
+  static datatype exn.Failure __poll_failure_1 =
+    Failure("poll called with NULL");
+  static datatype exn.Failure __poll_failure_2 =
+    Failure("poll called with out-of-bounds pointer");
+  int poll(struct pollfd?a, nfds_t b, int c) {
+    if (!a) throw &__poll_failure_1;
+    int len = numelts(a);
+    if (len < 1) throw &__poll_failure_2;
+    return Cpoll::poll((struct pollfd @{0})a,
+                       (b<(nfds_t)len)?b:(nfds_t)len,
+                       c);
+  }
+}
+;
+
+sched.h:
+hstub sched_yield {
+  extern "C" int sched_yield(void);
+}
+;
+
+// Threads
+pthread.h:
+include {
+  pthread_mutex_t
+  pthread_mutexattr_t
+  pthread_cond_t
+  pthread_condattr_t
+  pthread_t
+  pthread_attr_t
+}
+hstub pthread_mutex_init {
+  extern "C" int pthread_mutex_init(pthread_mutex_t @mutex,
+				    const pthread_mutexattr_t *attr);
+}
+hstub pthread_mutex_lock {
+  extern "C" int pthread_mutex_lock (pthread_mutex_t @mutex);
+}
+hstub pthread_mutex_unlock {
+  extern "C" int pthread_mutex_unlock (pthread_mutex_t @mutex);
+}
+
+hstub pthread_cond_init {
+  extern "C" int pthread_cond_init (pthread_cond_t @cond,
+                                    const pthread_condattr_t *attr);
+}
+hstub pthread_cond_signal {
+  extern "C" int pthread_cond_signal (pthread_cond_t *cond);
+}
+hstub pthread_cond_wait {
+  extern "C" int pthread_cond_wait (pthread_cond_t *cond, pthread_mutex_t *mutex);
+}
+hstub pthread_create {
+  int pthread_create (pthread_t @thread, const pthread_attr_t *attr,
+		      `a (@`H cycfun) (`b), `b arg: regions(`b) <= `H)
+    __attribute__((initializes(1)));
+}
+cycstub pthread_create {
+      // TODO: could change the type of pthread_t to be pthread_t<`a>
+      // where `a is the return type for the invocation function.
+      // Then the type of join() could be changed to properly
+      // communicate the type back to the caller.
+  namespace Cpthread {
+    extern "C" int pthread_cycfun_wrap($(`a (*__start_routine) (`b),
+				       `b arg) @`H);
+    extern "C" int pthread_create (pthread_t @thread, const pthread_attr_t *attr,
+				   `a (*__start_routine) (`b), `b arg)
+          __attribute__((initializes(1)));
+  }
+
+  int pthread_create (pthread_t @thread, const pthread_attr_t *attr,
+		      `a (@`H cycfun) (`b), `b arg: regions(`b) <= `H)
+    __attribute__((initializes(1)))
+    {
+    // FIX: heap allocation
+    return Cpthread::pthread_create(thread,attr,
+				    Cpthread::pthread_cycfun_wrap,new $(cycfun,arg));
+  }
+}
+hstub pthread_join {
+  extern "C" int pthread_join (pthread_t thread, void **ret);
+}
+hstub pthread_yield {
+  extern "C" int pthread_yield(void);
+}
+cstub pthread_create {
+#include <stdio.h>
+extern void GC_free(void *ptr);
+extern void _pop_handler();
+extern void _push_handler(struct _handler_cons *h);
+extern void*Cyc_Core_get_exn_thrown(void);
+extern const char *Cyc_Core_get_exn_filename(void);
+extern int Cyc_Core_get_exn_lineno();
+struct __pair {
+  void * (*cycf)(void *);
+  void *arg;
+};
+void *pthread_cycfun_wrap(struct __pair *arg) {
+  struct _handler_cons h;
+  void *res = 0;
+  int status = 0;
+  char *exn_name = NULL;
+  void *(*cycf)(void *) = arg->cycf;
+  void *cycarg = arg->arg;
+  GC_free(arg);
+  _push_handler(&h);
+  if (setjmp(h.handler)) status = 1;
+  if (!status) {
+     res = cycf (cycarg);
+     _pop_handler();
+   } else {
+     void*exn_thrown = Cyc_Core_get_exn_thrown();
+     const char *exn_filename = Cyc_Core_get_exn_filename();
+     int exn_lineno = Cyc_Core_get_exn_lineno();
+     exn_name = *(char**)exn_thrown;
+     fprintf(stderr,"Uncaught exception %s thrown from thread around %s:%d\n",exn_name,
+	     exn_filename,exn_lineno);
+  }
+  return res;
+}
+}
+;
+
+pwd.h:
+cpp {
+#ifdef __linux__
+/* Linux does not define uid_t and gid_t in pwd.h, they are in sys/types.h */
+#include <sys/types.h>
+#endif
+}
+include {
+  passwd
+  uid_t
+  gid_t
+}
+hstub getpwnam {
+  extern "C" struct passwd *getpwnam(const char @name);
+}
+hstub getpwuid {
+  extern "C" struct passwd *getpwuid(uid_t uid);
+}
+;
+
+// Real time
+// Not supported yet
+sched.h:
+;
+
+// Defines a structure containing a char *
+// Not supported yet
+search.h:
+;
+
+// Not supported yet
+semaphore.h:
+;
+
+// Not supported yet
+// NB even though we don't support this yet, we must retain still
+// process this because we need the setjmp.h for every architecture
+// so we can make the internal compiler file cyc_setjmp.h
+setjmp.h:
+;
+
+// Not supported:
+signal.h:
+include {
+  sigaction
+  sa_sigaction
+  sa_handler
+  sig_atomic_t
+  pid_t
+  SIGEV_NONE
+  SIGEV_SIGNAL
+  SIGEV_THREAD
+  SIGABRT
+  SIGALRM
+  SIGBUS
+  SIGCHLD
+  SIGCONT
+  SIGFPE
+  SIGHUP
+  SIGILL
+  SIGINT
+  SIGKILL
+  SIGPIPE
+  SIGQUIT
+  SIGSEGV
+  SIGSTOP
+  SIGTERM
+  SIGTSTP
+  SIGTTIN
+  SIGTTOU
+  SIGUSR1
+  SIGUSR2
+  SIGPOLL
+  SIGPROF
+  SIGSYS
+  SIGTRAP
+  SIGURG
+  SIGVTALRM
+  SIGXCPU
+  SIGXFSZ
+  SA_NOCLDSTOP
+  SIG_BLOCK
+  SIG_UNBLOCK
+  SIG_SETMASK
+  SA_ONSTACK
+  SA_RESETHAND
+  SA_RESTART
+  SA_SIGINFO
+  SA_NOCLDWAIT
+  SA_NODEFER
+  SA_ONSTACK
+  SA_DISABLE
+  MINSIGSTACKSZ
+  SIGSTACKSZ
+  ucontext_t
+  mcontext_t
+  SIG_HOLD
+  sigset_t
+}
+hstub {
+  // We'd like to
+  // include { sigevent sigval stack_t sigstack siginfo_t }
+  // but in Linux this pulls in structures that contain void *'s.
+
+  // If SIG_HOLD is defined in the C library, it is defined as an
+  // integer cast to a function pointer, which won't be allowed in
+  // Cyclone, so we undef it here.  We define _SIG_HOLD_def_ to
+  // remember that we should support it, though.
+  #ifdef SIG_HOLD
+  #define _SIG_HOLD_def_
+  #undef SIG_HOLD
+  #endif
+}
+hstub kill {
+  extern "C" int kill(pid_t, int);
+}
+hstub raise {
+  extern "C" int raise(int);
+}
+hstub sigaddset {
+  extern "C" int sigaddset(sigset_t@, int);
+}
+hstub sigdelset {
+  extern "C" int sigdelset(sigset_t@, int);
+}
+hstub sigemptyset {
+  extern "C" int sigemptyset(sigset_t@);
+}
+hstub sigfillset {
+  extern "C" int sigfillset(sigset_t@);
+}
+hstub sighold {
+  extern "C" int sighold(int);
+}
+hstub sigignore {
+  extern "C" int sigignore(int);
+}
+hstub siginterrupt {
+  extern "C" int siginterrupt(int,int);
+}
+hstub sigismember {
+  extern "C" int sigismember(sigset_t@, int);
+}
+hstub sigpause {
+  extern "C" int sigpause(int);
+}
+hstub sigrelse {
+  extern "C" int sigrelse(int);
+}
+hstub {
+  typedef void (@sigarg_t)(int);
+  extern void SIG_DFL(int);
+  extern void SIG_ERR(int);
+  extern void SIG_IGN(int);
+  #ifdef _SIG_HOLD_def_
+  extern void SIG_HOLD(int); // Rare
+  #endif
+}
+hstub sigset {
+  extern sigarg_t sigset(int, sigarg_t);
+}
+cycstub sigset {
+  namespace Csignal {
+    extern "C" void *sigset(void *arg);
+    extern "C" sigarg_t sigset_SIG_DFL(int);
+    extern "C" sigarg_t sigset_SIG_ERR(int);
+    extern "C" sigarg_t sigset_SIG_IGN(int);
+  #ifdef _SIG_HOLD_def_
+    extern "C" sigarg_t sigset_SIG_HOLD(int);
+  #endif
+    extern "C" sigarg_t sigset_SIG_HANDLER(int, sigarg_t);
+  }
+  sigarg_t sigset(int a, sigarg_t b) {
+    if (b == SIG_DFL)  return Csignal::sigset_SIG_DFL(a);
+    if (b == SIG_ERR)  return Csignal::sigset_SIG_ERR(a);
+  #ifdef _SIG_HOLD_def_
+    if (b == SIG_HOLD) return Csignal::sigset_SIG_HOLD(a);
+  #endif
+    if (b == SIG_IGN)  return Csignal::sigset_SIG_IGN(a);
+    return Csignal::sigset_SIG_HANDLER(a,b);
+  }
+}
+cstub {
+  #include <signal.h>
+  typedef void *Cyc_sigarg_t;
+  void Cyc_SIG_DFL(int ignore) { return; }
+  void Cyc_SIG_ERR(int ignore) { return; }
+  void Cyc_SIG_IGN(int ignore) { return; }
+  #ifdef SIG_HOLD
+  void Cyc_SIG_HOLD(int ignore) { return; }
+  #endif
+
+  // This takes a C sighandler_t and turns it into a Cyclone sigarg_t
+  Cyc_sigarg_t sigarg_wrap(void (*f)(int)) {
+    if (f == SIG_DFL)  return Cyc_SIG_DFL;
+    if (f == SIG_ERR)  return Cyc_SIG_ERR;
+    if (f == SIG_IGN)  return Cyc_SIG_IGN;
+  #ifdef SIG_HOLD
+    if (f == SIG_HOLD) return Cyc_SIG_HOLD;
+  #endif
+    return f;
+  }
+
+  // This takes a Cyclone sigarg_t and turns it into a C sighandler_t
+  void (*sigarg_unwrap(Cyc_sigarg_t f))(int) {
+    if (f == Cyc_SIG_DFL)  return SIG_DFL;
+    if (f == Cyc_SIG_ERR)  return SIG_ERR;
+    if (f == Cyc_SIG_IGN)  return SIG_IGN;
+  #ifdef SIG_HOLD
+    if (f == Cyc_SIG_HOLD) return SIG_HOLD;
+  #endif
+    return f;
+  }
+}
+cstub sigset {
+  Cyc_sigarg_t sigset_SIG_DFL(int a) { return sigarg_wrap(sigset(a,SIG_DFL)); }
+  Cyc_sigarg_t sigset_SIG_ERR(int a) { return sigarg_wrap(sigset(a,SIG_ERR)); }
+  Cyc_sigarg_t sigset_SIG_IGN(int a) { return sigarg_wrap(sigset(a,SIG_IGN)); }
+#ifdef SIG_HOLD
+  Cyc_sigarg_t sigset_SIG_HOLD(int a) { return sigarg_wrap(sigset(a,SIG_HOLD)); }
+#endif
+  Cyc_sigarg_t sigset_SIG_HANDLER(int a, void (*f)(int)) {
+    return sigarg_wrap(sigset(a,f));
+  }
+}
+hstub signal {
+  extern sigarg_t signal(int, sigarg_t);
+}
+cycstub signal {
+  namespace Csignal {
+    extern "C" sigarg_t signal_SIG_DFL(int);
+    extern "C" sigarg_t signal_SIG_ERR(int);
+#ifdef _SIG_HOLD_def_
+    extern "C" sigarg_t signal_SIG_HOLD(int);
+#endif
+    extern "C" sigarg_t signal_SIG_IGN(int);
+    extern "C" sigarg_t signal_SIG_HANDLER(int, sigarg_t);
+  }
+  sigarg_t signal(int a, sigarg_t b) {
+    if (b == SIG_DFL) return Csignal::signal_SIG_DFL(a);
+    if (b == SIG_ERR) return Csignal::signal_SIG_ERR(a);
+#ifdef _SIG_HOLD_def_
+    if (b == SIG_HOLD) return Csignal::signal_SIG_HOLD(a);
+#endif
+    if (b == SIG_IGN) return Csignal::signal_SIG_IGN(a);
+    return Csignal::signal_SIG_HANDLER(a,b);
+  }
+}
+cstub signal {
+  Cyc_sigarg_t signal_SIG_DFL(int a) { return sigarg_wrap(signal(a,SIG_DFL)); }
+  Cyc_sigarg_t signal_SIG_ERR(int a) { return sigarg_wrap(signal(a,SIG_ERR)); }
+  Cyc_sigarg_t signal_SIG_IGN(int a) { return sigarg_wrap(signal(a,SIG_IGN)); }
+  #ifdef SIG_HOLD
+  Cyc_sigarg_t signal_SIG_HOLD(int a) { return sigarg_wrap(signal(a,SIG_HOLD)); }
+  #endif
+  Cyc_sigarg_t signal_SIG_HANDLER(int a, void (*f)(int)) {
+    return sigarg_wrap(signal(a,f));
+  }
+}
+hstub sigaction {
+  extern "C" struct sigaction fresh_sigaction();
+}
+cycstub sigaction {
+  namespace Csignal {
+    extern "C" int sigaction(int, const struct sigaction *,
+		             struct sigaction *);
+    extern "C" int sigaction_wrap(struct sigaction const *);
+    extern "C" int sigaction_unwrap(struct sigaction const *);
+  }
+  int sigaction(int sig, struct sigaction const *act,
+		struct sigaction *oact)
+    __attribute__((no_throw))
+  {
+    if (act != NULL) Csignal::sigaction_unwrap(act);
+    int ret = Csignal::sigaction(sig,act,oact);
+    // we really don't have to do this, since the compiler won't
+    // let the user read out of these fields anyway ...
+    if (act != NULL) Csignal::sigaction_wrap(act);
+    if (oact != NULL) Csignal::sigaction_wrap(oact);
+    return ret;
+  }
+}
+cstub sigaction {
+  #include <string.h>
+  #include <stdio.h>
+
+  struct sigaction *sigaction_wrap(struct sigaction *f) {
+    f->sa_handler = sigarg_wrap(f->sa_handler);
+    return f;
+  }
+  struct sigaction *sigaction_unwrap(struct sigaction *f) {
+    f->sa_handler = sigarg_unwrap(f->sa_handler);
+    return f;
+  }
+  // hack to allow a user to initialize a sigaction
+  struct sigaction fresh_sigaction() {
+    struct sigaction sa;
+    memset(&sa,0,sizeof(struct sigaction));
+    return sa;
+  }
+}
+;
+
+// Realtime
+// Not supported yet
+spawn.h:
+;
+
+// We have safe ways of handling varargs in Cyclone already
+// need for linux kernel protos
+stdarg.h:
+include {
+  va_list
+}
+hstub {
+
+}
+;
+
+// Maybe this should replace Cyclone's treatment of bool?
+// Not supported yet
+stdbool.h:
+;
+
+stddef.h:
+include {
+  ptrdiff_t
+  wchar_t
+  size_t
+}
+hstub {
+  // NULL is not defined here because it is a keyword in Cyclone
+}
+;
+
+stdint.h:
+include {
+  int8_t
+  int16_t
+  int32_t
+  uint8_t
+  uint16_t
+  uint32_t
+  int64_t
+  uint64_t
+  int_least8_t
+  int_least16_t
+  int_least32_t
+  int_least64_t
+  uint_least8_t
+  uint_least16_t
+  uint_least32_t
+  uint_least64_t
+  int_fast8_t
+  int_fast16_t
+  int_fast32_t
+  int_fast64_t
+  uint_fast8_t
+  uint_fast16_t
+  uint_fast32_t
+  uint_fast64_t
+  intptr_t
+  uintptr_t
+  intmax_t
+  uintmax_t
+  INTN_MIN
+  INTN_MAX
+  UINTN_MAX
+  INT_LEASTN_MIN
+  INT_LEASTN_MAX
+  UINT_LEASTN_MAX
+  INT_FASTN_MIN
+  INT_FASTN_MAX
+  UINT_FASTN_MAX
+  INTPTR_MIN
+  INTPTR_MAX
+  UINTPTR_MAX
+  INTMAX_MIN
+  INTMAX_MAX
+  UINTMAX_MAX
+  PTRDIFF_MIN
+  PTRDIFF_MAX
+  SIG_ATOMIC_MIN
+  SIG_ATOMIC_MAX
+  SIZE_MAX
+  WCHAR_MIN
+  WCHAR_MAX
+  WINT_MIN
+  WINT_MAX
+  INTN_C
+  UINTN_C
+  INTMAX_C
+  UINTMAX_C
+}
+hstub {
+  // Note that intptr_t, uintptr_t, and related macros
+  // all involve casting to and from void *, so they
+  // are probably useless in Cyclone
+}
+;
+
+stdio.h:
+cpp {
+  /* Mac OS 10.4 needs off_t */
+  #include <sys/types.h>
+}
+include {
+  BUFSIZ
+  _IOFBF
+  _IOLBF
+  _IONBF
+  L_ctermid
+  L_tmpnam
+  SEEK_CUR
+  SEEK_END
+  SEEK_SET
+  FILENAME_MAX
+  FOPEN_MAX
+  TMP_MAX
+  EOF
+  P_tmpdir
+  fpos_t
+  size_t
+  off_t
+}
+hstub {
+/* I expect the OS 10.4 hack above fixes this */
+//  // FreeBSD doesn't seem to define off_t here but does it in unistd.h!
+//  #if defined(__FreeBSD__)
+//  #if !defined(_off_t_def_) && !defined(_OFF_T_DECLARED)
+//  #define _off_t_def_
+//  #define _OFF_T_DECLARED
+//  typedef __off_t off_t;
+//  #endif
+//  #endif
+}
+hstub {
+  // NOTES:
+  // NULL is not defined because it is a keyword in Cyclone.
+  // va_list is not defined because Cyclone has safe varargs.
+}
+hstub {
+  extern struct __cycFILE;
+  // Be sure to use _def_ so we don't interfere with cycboot.h
+#ifndef _FILE_def_
+#define _FILE_def_
+  typedef struct __cycFILE FILE;
+#endif
+  extern FILE @stdout;
+  extern FILE @stdin;
+  extern FILE @stderr;
+}
+hstub {
+  namespace Cstdio {
+    extern "C" struct __abstractFILE;    // needed by tmp.cyc
+  }
+}
+cycstub {
+  namespace Cstdio {
+    extern "C" struct __abstractFILE;
+    typedef struct __abstractFILE __cFILE;
+  }
+  abstract struct __cycFILE { // must match defn in c stub
+    Cstdio::__cFILE *file;
+  };
+}
+hstub {
+  // fromCfile needed by tmp.cyc
+  extern FILE *`H fromCfile(struct Cstdio::__abstractFILE *`H cf);
+}
+cycstub {
+  FILE*`H fromCfile(Cstdio::__cFILE *`H cf) {
+    return cf ? new __cycFILE(cf) : NULL;
+  }
+}
+cstub {
+  #include <stdio.h>
+  // Define struct __cycFILE
+  struct Cyc___cycFILE { // must match defn in cyclone stub
+    FILE *file;
+  };
+}
+hstub {
+  // vararg for printf functions.  The functions themselves are defined
+  // in printf.cyc.
+  extern datatype PrintArg<`r::E> {
+    String_pa(const char ? @nozeroterm`r);
+    Int_pa(unsigned long);
+    LongLong_pa(unsigned long long);
+    Double_pa(double);
+    LongDouble_pa(long double);
+    ShortPtr_pa(short @`r);
+    IntPtr_pa(unsigned long @`r);
+    LongLongPtr_pa(unsigned long long @`r);
+  };
+  // Be sure to use _def_ so we don't interfere with cycboot.h
+#ifndef _parg_t_def_
+#define _parg_t_def_
+  typedef datatype PrintArg<`r> @`r parg_t<`r>;
+#endif
+
+  // Cyclone specific.
+  // Similar to sprintf but allocates a result of the right size on the heap.
+  extern char ?aprintf(const char ?, ... inject parg_t)
+    __attribute__((format(printf,1,2)))
+    ;
+}
+hstub clearerr {
+  extern void clearerr(FILE @);
+}
+cycstub clearerr {
+  namespace Cstdio {
+    extern "C" void clearerr(__cFILE @);
+  }
+  void clearerr(FILE @f) {
+    return Cstdio::clearerr(f->file);
+  }
+}
+hstub ctermid {
+  // FIX: not supported yet
+  //  char *ctermid(char *);
+}
+hstub fclose {
+  extern int fclose(FILE @);
+}
+cycstub fclose {
+  namespace Cstdio {
+    extern "C" int fclose(__cFILE @);
+  }
+  static datatype exn.Failure __fclose_failure =
+    Failure("fclose: FILE already closed");
+  int fclose(FILE @f) {
+    if (f->file == NULL) throw &__fclose_failure;
+    int retc = Cstdio::fclose(f->file);
+    f->file = NULL;
+    return retc;
+  }
+}
+hstub fdopen {
+  // FIX: second arg allowed to be NULL?
+  extern FILE *fdopen(int, const char *);
+}
+cycstub fdopen {
+  namespace Cstdio {
+    extern "C" Cstdio::__cFILE *fdopen(int,const char *);
+  }
+  FILE *fdopen(int i, const char * s) {
+    let cf = Cstdio::fdopen(i,s);
+    // FIX: get rid of the heap allocation
+    return cf ? new __cycFILE((Cstdio::__cFILE @)cf) : NULL;
+  }
+}
+hstub feof {
+  extern int feof(FILE @);
+}
+cycstub feof {
+  namespace Cstdio {
+    extern "C" int feof(__cFILE @);
+  }
+  int feof(FILE @f) {
+    return Cstdio::feof(f->file);
+  }
+}
+hstub ferror {
+  extern int ferror(FILE @);
+}
+cycstub ferror {
+  namespace Cstdio {
+    extern "C" int ferror(__cFILE @);
+  }
+  int ferror(FILE @f) {
+    return Cstdio::ferror(f->file);
+  }
+}
+hstub fflush {
+  extern int fflush(FILE *);
+}
+cycstub fflush {
+  namespace Cstdio {
+    extern "C" int fflush(__cFILE *);
+  }
+  int fflush(FILE *f) {
+    if (f)
+      return Cstdio::fflush(f->file);
+    else return Cstdio::fflush(NULL);
+  }
+}
+hstub fgetc {
+  extern int fgetc(FILE @);
+}
+cycstub fgetc {
+  namespace Cstdio {
+    extern "C" int fgetc(__cFILE @);
+  }
+  int fgetc(FILE @f) {
+    return Cstdio::fgetc(f->file);
+  }
+}
+hstub fgetpos {
+  extern int fgetpos(FILE @, fpos_t @);
+}
+cycstub fgetpos {
+  namespace Cstdio {
+    extern "C" int fgetpos(__cFILE @, fpos_t @);
+  }
+  int fgetpos(FILE @f, fpos_t @x) {
+    return Cstdio::fgetpos(f->file,x);
+  }
+}
+hstub fgets {
+  extern char ? @nozeroterm`r fgets(char ? @nozeroterm`r, int, FILE @);
+}
+cycstub fgets {
+  namespace Cstdio {
+    extern "C" char * @nozeroterm`r fgets(char * @nozeroterm`r, int, __cFILE @);
+  }
+  static datatype exn.Failure __fgets_failure_1 =
+    Failure("fgets called with NULL string");
+  static datatype exn.Failure __fgets_failure_2 =
+    Failure("fgets: buffer insufficient");
+  char ? @nozeroterm`r fgets(char ? @nozeroterm`r s, int n, FILE @f) {
+    if (!s) throw &__fgets_failure_1;
+    char * @nozeroterm`r result;
+    char * @nozeroterm buffer = (char * @nozeroterm)s;
+    unsigned int len = numelts(s);
+    if (len < n) throw &__fgets_failure_2;
+    // n = (len < n) ? len : n;
+    result = Cstdio::fgets(buffer, n, f->file);
+    if (result == NULL)
+      return NULL;
+    else
+      return s;
+  }
+}
+hstub fileno {
+  extern int fileno(FILE @);
+}
+cycstub fileno {
+  namespace Cstdio {
+    extern "C" int fileno(__cFILE @);
+  }
+  int fileno(FILE @f) {
+    return Cstdio::fileno(f->file);
+  }
+}
+
+hstub flockfile {
+  #ifndef __CYGWIN__
+  extern void flockfile(FILE @);
+  #endif
+}
+cycstub flockfile {
+  #ifndef __CYGWIN__
+  namespace Cstdio {
+    extern "C" void flockfile(__cFILE @);
+  }
+  void flockfile(FILE @f) {
+    return Cstdio::flockfile(f->file);
+  }
+  #endif
+}
+hstub fopen {
+  extern FILE *fopen(const char @, const char @);
+}
+cycstub fopen {
+  namespace Cstdio {
+    extern "C" __cFILE *fopen(const char @, const char @);
+  }
+  FILE *fopen(const char @ name, const char @ type) {
+    let cf = Cstdio::fopen(name, type);
+    // FIX: get rid of the heap allocation
+    return cf ? new __cycFILE((Cstdio::__cFILE @)cf) : NULL;
+  }
+}
+hstub {
+  extern int fprintf(FILE @,const char ?, ... inject parg_t)
+    __attribute__((format(printf,2,3)))
+    ;
+}
+hstub fputc {
+  extern int fputc(int, FILE @);
+}
+cycstub fputc {
+  namespace Cstdio {
+    extern "C" int fputc(int, __cFILE @);
+  }
+  int fputc(int x, FILE @f) {
+    return Cstdio::fputc(x,f->file);
+  }
+}
+hstub fputs {
+  extern int fputs(const char @, FILE @);
+}
+cycstub fputs {
+  namespace Cstdio {
+    extern "C" int fputs(const char @, __cFILE @);
+  }
+  int fputs(const char @ x, FILE @f) {
+    return Cstdio::fputs(x,f->file);
+  }
+}
+hstub fread {
+  extern size_t fread(char ? @nozeroterm, size_t, size_t, FILE @);
+}
+cycstub fread {
+  namespace Cstdio {
+    extern "C" size_t fread(char * @nozeroterm, size_t, size_t, __cFILE @);
+  }
+  static datatype exn.Failure __fread_failure =
+    Failure("fread: buffer insufficient");
+  size_t fread(char ? @nozeroterm ptr, size_t size, size_t nmemb, FILE @f) {
+    if (size == 0 || nmemb > (numelts(ptr) / size))
+      throw &__fread_failure;
+    return Cstdio::fread((char * @nozeroterm)ptr, size, nmemb, f->file);
+  }
+}
+hstub freopen {
+  extern FILE * freopen(const char *, const char @, FILE @`H);
+  extern FILE *`r r_freopen(region_t<`r> r, const char *, const char @, FILE @`r);
+}
+cycstub freopen {
+  namespace Cstdio {
+    extern "C" __cFILE *`H freopen(const char *, const char @,
+				   __cFILE @`H);
+  }
+  FILE *`r r_freopen(region_t<`r> r, const char * filename, const char @modes, FILE @`r f) {
+    // Note, filename is allowed to be NULL
+    let cf = Cstdio::freopen(filename,modes,f->file);
+    return cf ? rnew(r) __cycFILE((Cstdio::__cFILE @)cf) : NULL;
+  }
+
+  FILE *`H freopen(const char * filename, const char @ modes, FILE @`H f) {
+    // Note, filename is allowed to be NULL
+    let cf = Cstdio::freopen(filename,modes,f->file);
+    return cf ? new __cycFILE((Cstdio::__cFILE @)cf) : NULL;
+  }
+
+}
+hstub {
+  // vararg for scanf functions.  The functions themselves are defined
+  // in scanf.cyc.
+  extern datatype ScanfArg<`r::E> {
+    ShortPtr_sa(short @`r);
+    UShortPtr_sa(unsigned short @`r);
+    IntPtr_sa(int @`r);
+    UIntPtr_sa(unsigned int @`r);
+    StringPtr_sa(char ?`r);
+    DoublePtr_sa(double @`r);
+    FloatPtr_sa(float @`r);
+    CharPtr_sa(char ? @nozeroterm`r)
+  };
+  // Be sure to use _def_ so we don't interfere with cycboot.h
+#ifndef _sarg_t_def_
+#define _sarg_t_def_
+  typedef datatype ScanfArg<`r1> @`r2 sarg_t<`r1,`r2>;
+#endif
+}
+hstub {
+  extern int fscanf(FILE @, const char ?, ... inject sarg_t)
+    __attribute__((format(scanf,2,3)))
+    ;
+}
+hstub fseek {
+  extern int fseek(FILE @, long, int);
+}
+cycstub fseek {
+  namespace Cstdio {
+    extern "C" int fseek(__cFILE @, long, int);
+  }
+  int fseek(FILE @a, long b, int c) {
+    return Cstdio::fseek(a->file,b,c);
+  }
+}
+hstub fseeko {
+  #ifndef __CYGWIN__
+  extern int fseeko(FILE @, off_t, int);
+  #endif
+}
+cycstub fseeko {
+  #ifndef __CYGWIN__
+  namespace Cstdio {
+    extern "C" int fseeko(__cFILE @, off_t, int);
+  }
+  int fseeko(FILE @a, off_t b, int c) {
+    return Cstdio::fseeko(a->file,b,c);
+  }
+  #endif
+}
+hstub fsetpos {
+  extern int fsetpos(FILE @, const fpos_t @);
+}
+cycstub fsetpos {
+  namespace Cstdio {
+    extern "C" int fsetpos(__cFILE @, const fpos_t @);
+  }
+  int fsetpos(FILE @f, const fpos_t @b) {
+    return Cstdio::fsetpos(f->file,b);
+  }
+}
+hstub ftell {
+  extern long ftell(FILE @);
+}
+cycstub ftell {
+  namespace Cstdio {
+    extern "C" long ftell(__cFILE @);
+  }
+  long ftell(FILE @f) {
+    return Cstdio::ftell(f->file);
+  }
+}
+hstub ftello {
+  #ifndef __CYGWIN__
+  extern off_t ftello(FILE @);
+  #endif
+}
+cycstub ftello {
+  #ifndef __CYGWIN__
+  namespace Cstdio {
+    extern "C" off_t ftello(__cFILE @);
+  }
+  off_t ftello(FILE @f) {
+    return Cstdio::ftello(f->file);
+  }
+  #endif
+}
+hstub ftrylockfile {
+  #ifndef __CYGWIN__
+  extern int ftrylockfile(FILE @);
+  #endif
+}
+cycstub ftrylockfile {
+  #ifndef __CYGWIN__
+  namespace Cstdio {
+    extern "C" int ftrylockfile(__cFILE @);
+  }
+  int ftrylockfile(FILE @f) {
+    return Cstdio::ftrylockfile(f->file);
+  }
+  #endif
+}
+hstub ftryunlockfile {
+  extern int ftryunlockfile(FILE @);
+}
+cycstub ftryunlockfile {
+  namespace Cstdio {
+    extern "C" int ftryunlockfile(__cFILE @);
+  }
+  int ftryunlockfile(FILE @f) {
+    return Cstdio::ftryunlockfile(f->file);
+  }
+}
+hstub funlockfile {
+  #ifndef __CYGWIN__
+  extern void funlockfile(FILE @);
+  #endif
+}
+cycstub funlockfile {
+  #ifndef __CYGWIN__
+  namespace Cstdio {
+    extern "C" void funlockfile(__cFILE @);
+  }
+  void funlockfile(FILE @f) {
+    return Cstdio::funlockfile(f->file);
+  }
+  #endif
+}
+hstub fwrite {
+  extern size_t fwrite(const char ? @nozeroterm, size_t, size_t, FILE @);
+}
+cycstub fwrite {
+  namespace Cstdio {
+    extern "C" size_t fwrite(const char @ @nozeroterm, size_t, size_t, __cFILE @);
+  }
+  static datatype exn.Failure __fwrite_failure_1 =
+    Failure("fwrite called with NULL string");
+  static datatype exn.Failure __fwrite_failure_2 =
+    Failure("fwrite: buffer insufficient");
+  size_t fwrite(const char ? @nozeroterm`r ptr, size_t size, size_t nmemb, FILE @f) {
+    if (!ptr) { throw &__fwrite_failure_1; }
+    else {
+      if (size * nmemb > numelts(ptr)) throw &__fwrite_failure_2;
+      return Cstdio::fwrite((const char @ @nozeroterm)ptr, size, nmemb, f->file);
+    }
+  }
+}
+hstub getc {
+  extern int getc(FILE @);
+}
+cycstub getc {
+  namespace Cstdio {
+    extern "C" int getc(__cFILE @);
+  }
+  int getc(FILE @f) {
+    return Cstdio::getc(f->file);
+  }
+}
+hstub getchar {
+  extern int getchar(void);
+}
+cycstub getchar {
+  namespace Cstdio {
+    extern "C" int getchar(void);
+  }
+  int getchar(void) {
+    return Cstdio::getchar();
+  }
+}
+hstub getc_unlocked {
+  #ifndef __CYGWIN__
+  extern int getc_unlocked(FILE @);
+  #endif
+}
+cycstub getc_unlocked {
+  #ifndef __CYGWIN__
+  namespace Cstdio {
+    extern "C" int getc_unlocked(__cFILE @);
+  }
+  int getc_unlocked(FILE @f) {
+    return Cstdio::getc_unlocked(f->file);
+  }
+  #endif
+}
+hstub gets {
+  // FIX: we don't support gets because the C version is completely
+  // unsafe.  We could support it safely by writing it in Cyclone.
+  //  extern char *gets(char *);
+}
+hstub pclose {
+  extern int pclose(FILE @);
+}
+cycstub pclose {
+  namespace Cstdio {
+    extern "C" int pclose(__cFILE @);
+  }
+  int pclose(FILE @f) {
+    return Cstdio::pclose(f->file);
+  }
+}
+hstub perror {
+  // FIX: worry about char * being NULL?
+  extern "C" void perror(const char *);
+}
+hstub popen {
+  extern FILE *popen(const char @, const char @);
+}
+cycstub popen {
+  namespace Cstdio {
+    extern "C" __cFILE *popen(const char @, const char @);
+  }
+  FILE *popen(const char @ name, const char @ type) {
+    let cf = Cstdio::popen(name, type);
+    // FIX: get rid of the heap allocation
+    return cf ? new __cycFILE((Cstdio::__cFILE @)cf) : NULL;
+  }
+}
+hstub {
+  extern int printf(const char ?, ... inject parg_t)
+    __attribute__((format(printf,1,2)))
+    ;
+}
+hstub putc {
+  extern int putc(int, FILE @);
+}
+cycstub putc {
+  namespace Cstdio {
+    extern "C" int putc(int, __cFILE @);
+  }
+  int putc(int x, FILE @f) {
+    return Cstdio::putc(x,f->file);
+  }
+}
+hstub putchar {
+  extern "C" int putchar(int);
+}
+hstub putc_unlocked {
+  #ifndef __CYGWIN__
+  extern int putc_unlocked(int, FILE @);
+  #endif
+}
+cycstub putc_unlocked {
+  #ifndef __CYGWIN__
+  namespace Cstdio {
+    extern "C" int putc_unlocked(int, __cFILE @);
+  }
+  int putc_unlocked(int x, FILE @f) {
+    return Cstdio::putc_unlocked(x,f->file);
+  }
+  #endif
+}
+hstub putchar_unlocked {
+  extern "C" int putchar_unlocked(int);
+}
+hstub puts {
+  extern "C" int puts(const char @);
+}
+hstub remove {
+  extern "C" int remove(const char @);
+}
+hstub rename {
+  extern "C" int rename(const char @, const char @);
+}
+hstub rewind {
+  extern void rewind(FILE @);
+}
+cycstub rewind {
+  namespace Cstdio {
+    extern "C" void rewind(__cFILE @);
+  }
+  void rewind(FILE @f) {
+    return Cstdio::rewind(f->file);
+  }
+}
+hstub {
+  // Cyclone specific.
+  extern char ?`r rprintf(region_t<`r>, const char ?, ... inject parg_t)
+    __attribute__((format(printf,2,3)))
+    ;
+}
+hstub {
+  extern int scanf(const char ?, ... inject sarg_t)
+    __attribute__((format(scanf,1,2)))
+    ;
+}
+hstub setvbuf {
+  // FIX: should the second arg be const?
+  extern int setvbuf(FILE @, char ? @nozeroterm`H, int, size_t);
+  // The second arg of setvbuf must be heap-allocated because
+  // it will be used by the IO library after setvbuf returns.
+}
+cycstub setvbuf {
+  namespace Cstdio {
+    extern "C" int setvbuf(__cFILE @, char * @nozeroterm`H, int, size_t);
+  }
+  static datatype exn.Failure __setvbuf_failure_1 =
+    Failure("setvbuf: buffer is NULL");
+  static datatype exn.Failure __setvbuf_failure_2 =
+    Failure("setvbuf: buffer insufficient");
+  int setvbuf(FILE @f, char ? @nozeroterm`H buf, int type, size_t size) {
+    if (!buf && type != _IONBF) throw &__setvbuf_failure_1;
+    if (buf && numelts(buf) < size) throw &__setvbuf_failure_2;
+    return Cstdio::setvbuf(f->file,(char * @nozeroterm`H)buf,type,size);
+  }
+}
+hstub setbuf {
+  extern void setbuf(FILE @, char ? @nozeroterm`H);
+}
+cycstub setbuf {
+  void setbuf(FILE @f, char ? @nozeroterm`H buf) {
+    setvbuf(f, buf, buf ? _IOFBF : _IONBF, BUFSIZ);
+    return;
+  }
+}
+hstub {
+  extern int snprintf(char ? @nozeroterm, size_t, const char ?, ... inject parg_t)
+    __attribute__((format(printf,3,4)))
+    ;
+}
+hstub {
+  extern int sprintf(char ? @nozeroterm, const char ?, ... inject parg_t)
+    __attribute__((format(printf,2,3)))
+    ;
+}
+hstub {
+  extern int sscanf(const char ?, const char ?, ... inject sarg_t)
+    __attribute__((format(scanf,2,3)))
+    ;
+}
+hstub tempnam {
+  // FIX: tempnam is not yet supported.  The C version does a heap
+  // allocation (with malloc).  We need to write a C stub to free
+  // this.
+  // Note, tempnam is considered insecure because in between the call
+  // of tempnam and open, a file can be created with the supposedly
+  // fresh name.
+  //  extern char *tempnam(const char *, const char *);
+}
+hstub tmpfile {
+  extern FILE *tmpfile(void);
+}
+cycstub tmpfile {
+// currently in tmp.cyc
+//  namespace Cstdio {
+//    extern "C" __cFILE *tmpfile(void);
+//  }
+//  extern FILE *tmpfile(void) {
+//    let cf = Cstdio::tmpfile();
+//    // FIX: get rid of the heap allocation
+//    return cf ? new __cycFILE((Cstdio::__cFILE @)cf) : NULL;
+//  }
+}
+hstub tmpnam {
+  // Note, tmpnam is considered insecure because in between the call
+  // of tmpnam and open, a file can be created with the supposedly
+  // fresh name.
+  // Note, we require the argument of tmpnam to be heap-allocated.
+  // This is because if tmpnam is called with NULL, it is supposed
+  // to return a pointer to a static (heap allocated) buffer, while if
+  // tmpnam is called with a non-NULL argument, it returns that
+  // argument.  So the only way to type tmpnam is to require the arg
+  // to be heap allocated.
+  extern char ? tmpnam(char ?`H);
+}
+cycstub tmpnam {
+// currently defined in tmp.cyc
+//  extern char ?`r strcpy(char ?`r,const char ?);
+//  // Instead of putting this in the stub file, we should just
+//  // have a separate file for it.  That way the linker can leave
+//  // it out if it isn't used, preventing a warning about the
+//  // security problem.
+//  namespace Cstdio {
+//    extern "C" char * tmpnam(char *);
+//  }
+//  char ?`H tmpnam(char ?`H s) {
+//    char ?name = static_c2s(Cstdio::tmpnam(NULL));
+//    return s ? strcpy(s, name) : name;
+//  }
+}
+hstub ungetc {
+  extern int ungetc(int, FILE @);
+}
+cycstub ungetc {
+  namespace Cstdio {
+    extern "C" int ungetc(int, __cFILE @);
+  }
+  int ungetc(int x, FILE @f) {
+    return Cstdio::ungetc(x,f->file);
+  }
+}
+hstub vfprintf {
+  extern int vfprintf(FILE @, const char ?, parg_t ?)
+    __attribute__((format(printf,2,0)))
+    ;
+}
+hstub vfscanf {
+  extern int vfscanf(FILE @, const char ?, sarg_t ?)
+    __attribute__((format(scanf,2,0)))
+    ;
+}
+hstub vprintf {
+  extern int vprintf(const char ?, parg_t ?)
+    __attribute__((format(printf,1,0)))
+    ;
+}
+hstub {
+  extern char ?`r vrprintf(region_t<`r>, const char ?, parg_t ?)
+    __attribute__((format(printf,2,0)))
+    ;
+}
+hstub vscanf {
+  // WE NEED TO ADD THIS TO SCANF.CYC
+  //  extern int vscanf(const char *restrict, va_list);
+}
+hstub vsnprintf {
+  extern int vsnprintf(char ? @nozeroterm, size_t, const char ?, parg_t ?)
+    __attribute__((format(printf,3,0)))
+    ;
+}
+hstub vsprintf {
+  extern int vsprintf(char ? @nozeroterm, const char ?, parg_t ?)
+    __attribute__((format(printf,2,0)))
+    ;
+}
+hstub vsscanf {
+  extern int vsscanf(const char ?, const char ?, sarg_t ?)
+    __attribute__((format(scanf,2,0)))
+    ;
+}
+hstub getw {
+  // getw is a glibc function but does not appear in posix; remove ??
+  extern int getw(FILE @);
+}
+cycstub getw {
+  namespace Cstdio {
+    extern "C" int getw(__cFILE @);
+  }
+  int getw(FILE @f) {
+    return Cstdio::getw(f->file);
+  }
+}
+hstub putw {
+  // putw is a glibc function but does not appear in posix; remove ??
+  extern int putw(int, FILE @);
+}
+cycstub putw {
+  namespace Cstdio {
+    extern "C" int putw(int, __cFILE @);
+  }
+  int putw(int x, FILE @f) {
+    return Cstdio::putw(x,f->file);
+  }
+}
+hstub {
+  // These functions appear in glibc but are not part of the posix
+  // standard.  They are omitted for now.
+  //  extern void setbuffer (FILE @, char ?, size_t);
+  //  extern void setlinebuf (FILE @);
+}
+hstub {
+  // FIX: These functions are are not part of POSIX, they
+  // are Cyclone-specific.  We should get rid of them or move
+  // them elsewhere.
+
+  // FIX: Not sure if these should use NULL-terminated strings or not
+  extern datatype exn {
+    extern FileOpenError(const char ?);
+    extern FileCloseError;
+  };
+  extern FILE @file_open(const char ?, const char ?);
+  extern void file_close(FILE @);
+
+  // These two don't seem to be defined anywhere.
+  //  extern void file_delete(const char ?);
+  //  extern void file_length(const char ?);
+
+  // these two provided in c stubs
+  extern int file_string_read(FILE @, char ?dest, int dest_offset,
+                              int max_count);
+  extern int file_string_write(FILE @, const char ?src, int src_offset,
+                               int max_count);
+}
+cstub {
+  #include <stdlib.h>
+
+  FILE *_sfile_to_file(struct Cyc___cycFILE *sf) {
+    if(!sf) {
+      fprintf(stderr,"Attempt to access null file descriptor.\n");
+      exit(255);
+    }
+    if(!sf->file)
+      _throw(Cyc_Null_Exception); // FIX:  should be more descriptive?
+    return sf->file;
+  }
+  int Cyc_file_string_read(struct Cyc___cycFILE *sf,
+                                 struct _fat_ptr dest,
+                                 int dest_offset, int max_count) {
+    unsigned char *new_curr = dest.curr + dest_offset;
+    size_t sz = dest.last_plus_one - new_curr;
+    FILE *fd = _sfile_to_file(sf);
+    if (new_curr < dest.base || new_curr >= dest.last_plus_one)
+      _throw(Cyc_Null_Exception);
+    if(dest_offset + max_count > sz) {
+      fprintf(stderr,"Attempt to read off end of string.\n");
+      exit(255);
+    }
+    return fread(new_curr, 1, max_count, fd);
+  }
+  int Cyc_file_string_write(struct Cyc___cycFILE *sf,
+                                  struct _fat_ptr src,
+                                  int src_offset, int max_count) {
+    size_t sz = src.last_plus_one - src.curr;
+    unsigned char *new_curr = src.curr + src_offset;
+    FILE *fd = _sfile_to_file(sf);
+    if (new_curr < src.base || new_curr >= src.last_plus_one)
+      _throw(Cyc_Null_Exception);
+    if(src_offset + max_count > sz) {
+      fprintf(stderr,"Attempt to write off end of string.\n");
+      exit(255);
+    }
+    return fwrite(new_curr, 1, max_count, fd);
+  }
+}
+cycstub {
+  datatype exn {
+    FileOpenError(const char ?);
+    FileCloseError;
+  };
+
+  FILE @file_open(const char ?fname, const char ?mode) {
+    FILE *f = fopen((const char @)fname, (const char @)mode);
+    if (f == NULL) {
+      const char ? fn = new {for i < numelts(fname) : fname[i]};
+      throw new FileOpenError(fn);
+    }
+    return (FILE @)f; // FIX: get rid of cast?
+  }
+
+  datatype exn.FileCloseError FileCloseError_val = FileCloseError;
+  void file_close(FILE @ f) {
+    if (fclose(f) != 0) throw &FileCloseError_val;
+  }
+}
+;
+
+stdlib.h:
+include {
+  EXIT_FAILURE
+  EXIT_SUCCESS
+  RAND_MAX
+  MB_CUR_MAX
+  div_t
+  ldiv_t
+  lldiv_t
+  size_t
+  wchar_t
+  WNOHANG
+  WUNTRACED
+  WEXITSTATUS
+  WIFEXITED
+  WIFSIGNALED
+  WIFSTOPPED
+  WSTOPSIG
+  WTERMSIG
+}
+hstub {
+  // malloc is a primitive in Cyclone so we don't need this declaration
+  //  extern "C" void *malloc(size_t);
+
+  // These functions aren't supported in Cyclone
+  //  extern "C" void *calloc(size_t, size_t);
+  //  extern "C" void *realloc(void *, size_t);
+
+  // This group of functions is not yet supported in Cyclone
+  //  extern "C" long a64l(const char *);
+  //  extern "C" void *bsearch(const void *, const void *, size_t, size_t, int (*)(const void *, const void *));
+  //  extern "C" char *ecvt(double, int, int *restrict, int *restrict); (LEGACY)
+  //                                                                      extern "C" char *fcvt(double, int, int *restrict, int *restrict); // (LEGACY)
+  //  extern "C" char *gcvt(double, int, char *); // (LEGACY)
+  //  extern "C" int getsubopt(char **, char *const *, char **);
+  //  extern "C" char *initstate(unsigned, char *, size_t);
+  //  extern "C" char *l64a(long);
+  //  extern "C" int mblen(const char *, size_t);
+  //  extern "C" size_t mbstowcs(wchar_t *restrict, const char *restrict, size_t);
+  //  extern "C" int mbtowc(wchar_t *restrict, const char *restrict, size_t);
+  //  extern "C" char *mktemp(char *); // (LEGACY)
+  //  extern "C" int posix_memalign(void **, size_t, size_t);
+  //  extern "C" int posix_openpt(int);
+  //  extern "C" char *ptsname(int);
+  //  extern "C" char *realpath(const char *restrict, char *restrict);
+  //  extern "C" int setenv(const char *, const char *, int);
+  //  extern "C" void setkey(const char *);
+  //  extern "C" char *setstate(const char *);
+  //  extern "C" float strtof(const char *restrict, char **restrict);
+  //  extern "C" long double strtold(const char *restrict, char **restrict);
+  //  extern "C" long long strtoll(const char *restrict, char **restrict, int);
+  //  extern "C" unsigned long long strtoull(const char *restrict, char **restrict, int);
+  //  extern "C" int unsetenv(const char *);
+  //  extern "C" size_t wcstombs(char *restrict, const wchar_t *restrict, size_t);
+  //  extern "C" int wctomb(char *, wchar_t);
+
+}
+hstub _Exit {
+  extern "C" void _Exit(int);
+}
+hstub abort {
+  // This is the type of abort according to Posix, but we have a
+  // conflicting type for abort in core.h.
+  //  extern "C" void abort(void);
+
+  // core.h version duplicated here
+  extern "C" `a abort() __attribute__((noreturn));
+}
+hstub abs {
+  extern "C" int abs(int);
+}
+hstub atexit {
+  // FIX: this might not be safe.  The posix docs say that if
+  // a function registered with atexit uses longjmp when called
+  // by exit(), the results are undefined.  Since we use longjmp
+  // for exceptions, we should look into this.  We may end up
+  // having to write our own exit() function.
+  extern "C" int atexit(void (@)(void));
+}
+hstub atof {
+  extern "C" double atof(const char @);
+}
+hstub atoi {
+  extern "C" int atoi(const char @);
+}
+hstub atol {
+  extern "C" long atol(const char @);
+}
+hstub atoll {
+  extern long long atoll(const char @);
+}
+hstub div {
+  extern "C" div_t div(int, int);
+}
+hstub drand48 {
+  extern "C" double drand48(void);
+}
+hstub erand48 {
+  extern "C" double erand48(unsigned short @{3});
+}
+hstub exit {
+  // duplicates version in core.h
+  extern "C" void exit(int) __attribute__((noreturn)) ;
+}
+hstub free {
+  extern void free(`a::A ?);
+}
+cycstub free {
+  void free(`a::A ?ptr) {}
+}
+hstub getenv {
+  // FIX: should this be const?  Seems like we want these things
+  //   immutable
+  extern "C" char * getenv(const char @);
+}
+hstub grantpt {
+  extern "C" int grantpt(int);
+}
+hstub jrand48 {
+  extern "C" long jrand48(unsigned short @{3});
+}
+hstub labs {
+  // This is the correct type according to Posix but it produces
+  // an error under Linux.  It looks like we are translating long
+  // to int; not sure if this is the problem.
+  //  extern "C" long labs(long);
+}
+hstub lcong48 {
+  extern "C" void lcong48(unsigned short @{7});
+}
+hstub ldiv {
+  extern "C" ldiv_t ldiv(long, long);
+}
+hstub llabs {
+  extern "C" long long llabs(long long);
+}
+hstub lldiv {
+  extern "C" lldiv_t lldiv(long long, long long);
+}
+hstub lrand48 {
+  extern "C" long lrand48(void);
+}
+hstub mkstemp {
+  // must be at least 6 chars long, with the last 6 ending in XXXXXX.
+  // The C code checks this, so we can use a more liberal Cyclone type.
+  extern "C" int mkstemp(char @);
+}
+hstub mrand48 {
+  extern "C" long mrand48(void);
+}
+hstub nrand48 {
+  extern "C" long nrand48(unsigned short @{3});
+}
+hstub putenv {
+  extern "C" int putenv(const char @);
+}
+hstub {
+  extern void qsort(`a::A ?, size_t, tag_t<valueof_t(sizeof(`a))>,
+                    int (@)(const `a @, const `a @));
+}
+cycstub {
+  namespace Cstdlib {
+    extern "C" void qsort(`a::A @, size_t, size_t,
+                          int (@)(const `a @, const `a @));
+  }
+  static datatype exn.Failure __qsort_failure_1 =
+    Failure("qsort called with NULL");
+  static datatype exn.Failure __qsort_failure_2 =
+    Failure("qsort called with insufficient array size");
+  void qsort(`a::A ? tab, size_t nmemb, tag_t<valueof_t(sizeof(`a))> szmemb,
+             int (@compar)(const `a @, const `a @)) {
+    if (!tab) throw &__qsort_failure_1;
+    if (numelts(tab) < nmemb) throw &__qsort_failure_2;
+    Cstdlib::qsort((_@)tab,nmemb,(size_t)szmemb,compar);
+  }
+}
+hstub rand {
+  extern "C" int rand(void);
+}
+hstub rand_r {
+  extern "C" int rand_r(unsigned @);
+}
+hstub random {
+  extern "C" long random(void);
+}
+hstub seed48 {
+  extern "C" unsigned short seed48(unsigned short @{3});
+}
+hstub srand {
+  extern "C" void srand(unsigned);
+}
+hstub srand48 {
+  extern "C" void srand48(long);
+}
+hstub srandom {
+  extern "C" void srandom(unsigned);
+}
+hstub strtod {
+  // FIX: should be const?
+  extern "C" double strtod(char @`r, char @`r *);
+}
+hstub strtol {
+  // FIX: should be const?
+  extern "C" long strtol(char @`r, char @`r *, int);
+}
+hstub strtoul {
+  // FIX: should be const?
+  extern "C" unsigned long strtoul(char @`r, char @`r *, int);
+}
+hstub system {
+  extern "C" int system(const char @);
+}
+hstub unlockpt {
+  extern "C" int unlockpt(int);
+}
+;
+
+// We do this all in Cyclone
+string.h:
+hstub {
+#include "cyclone/library/std/string.h"
+}
+;
+
+// We do this all in Cyclone
+strings.h:
+hstub {
+#include "cyclone/library/std/strings.h"
+}
+;
+
+sys/dir.h:
+hstub {
+  #include <dirent.h>
+}
+;
+
+sys/file.h:
+include {
+  L_SET
+  L_CURR
+  L_INCR
+  L_XTND
+  F_OK
+  X_OK
+  W_OK
+  R_OK
+}
+hstub {
+  #include <fcntl.h>
+}
+;
+
+sys/ioctl.h:
+cpp {
+/* Cygwin doesn't define the ioctl constants in ioctl.h */
+#if defined(__CYGWIN32__) || defined(__CYGWIN__)
+#include <sys/socket.h>
+#endif
+}
+include {
+  FIONREAD
+  FIONBIO
+}
+hstub ioctl {
+  // ioctl normally takes a void * as its arg, but
+  //   for the moment we forbid it to taking only ints.
+  //   Ultimately should change to use datatypes as
+  //   socket commands do
+  extern "C" int ioctl(int fd, int cmd, int @arg);
+}
+;
+
+sys/ipc.h:
+include {
+  ipc_perm
+  uid_t
+  gid_t
+  mode_t
+  key_t
+  IPC_CREAT
+  IPC_EXCL
+  IPC_NOWAIT
+  IPC_PRIVATE
+  IPC_RMID
+  IPC_SET
+  IPC_STAT
+}
+hstub ftok {
+  extern "C" key_t ftok(const char @, int);
+}
+;
+
+sys/mman.h:
+cpp {
+  #include <sys/types.h>  // For size_t on OS X
+}
+include {
+  size_t
+  off_t
+  PROT_READ
+  PROT_WRITE
+  PROT_EXEC
+  PROT_NONE
+  MAP_SHARED
+  MAP_PRIVATE
+  MAP_FIXED
+  MAP_GROWSDOWN
+  MAP_ANONYMOUS
+  MAP_ANON
+}
+hstub {
+  // We leave out some of the functions/flags, including mapping
+  // in executable content, or fixing the address of the mapped memory
+
+  // So that we can properly return a char ? pointer, we define
+  // MAP_FAILED as NULL
+  #define MAP_FAILED NULL
+
+  // The traditional first arg to mmap should be 0 anyway, so don't
+  // even bother to pass it to us.
+  extern char ? @nozeroterm mmap(char ? @nozeroterm, size_t length,
+	                         int prot, int flags,
+		                 int fd, off_t offset);
+
+  extern int munmap(const char ? @nozeroterm start, size_t length);
+}
+cycstub mmap {
+  namespace Cmman {
+    // refers to our Cyclone stub that deals with MMAP_FAILED
+    extern "C" char *{valueof(`i)} @nozeroterm
+      __stub_mmap(char * @nozeroterm start, tag_t<`i> length, int prot,
+                  int flags, int fd, off_t offset);
+    extern "C" int munmap(const char * @nozeroterm start, size_t length);
+  }
+  static datatype exn.Failure __mmap_failure =
+    Failure("mmap called with illegal start/prot/flags");
+  char ? @nozeroterm mmap(char ? @nozeroterm ignored,
+			  size_t length, int prot,
+		          int flags, int fd, off_t offset) {
+    if (prot == PROT_EXEC ||
+        ((flags & MAP_PRIVATE) && (flags & MAP_SHARED))
+#if defined(__linux__)
+    || (flags & MAP_GROWSDOWN)
+#endif
+	)
+      throw &__mmap_failure;
+    else if (flags & MAP_FIXED) // don't support mapping to fixed addresses
+      return NULL;
+    else {
+      let l<`i> = length;
+      let buf = Cmman::__stub_mmap(NULL, l, prot, flags, fd, offset);
+      return Core::mkfat(buf,sizeof(char),l);
+    }
+  }
+  // Is it unsafe to ask the user for the size?  I'd like to take it
+  // from the char? type, but that could have been cast around...
+  // We might also consider nulling out the pointer.
+  int munmap(const char ? @nozeroterm start, size_t length) {
+    // We definitely do NOT want to copy the "string"
+    return Cmman::munmap((const char * @nozeroterm)start, length);
+  }
+}
+cstub mmap {
+  #include <sys/types.h>
+  #include <sys/mman.h>
+  #ifndef MMAP_FAILED
+  #define MMAP_FAILED NULL
+  #endif
+  char *__stub_mmap(char *start, size_t length, int prot,
+                    int flags, int fd, off_t offset) {
+    char *retval;
+    retval = mmap(start,length,prot,flags,fd,offset);
+    if (retval == MMAP_FAILED) return NULL;
+    else return retval;
+  }
+}
+;
+
+sys/msg.h:
+hstub {
+  // We don't support this yet
+}
+;
+
+sys/resource.h:
+cpp {
+  // This is needed on OS X to get struct timeval
+  #include <sys/time.h>
+}
+include {
+  PRIO_PROCESS
+  PRIO_PGRP
+  PRIO_USER
+  rlim_t
+  RLIM_INFINITY
+  RLIM_SAVED_MAX
+  RLIM_SAVED_CUR
+  RUSAGE_SELF
+  RUSAGE_CHILDREN
+  RLIMIT_CORE
+  RLIMIT_CPU
+  RLIMIT_DATA
+  RLIMIT_FSIZE
+  RLIMIT_NOFILE
+  RLIMIT_STACK
+  RLIMIT_AS
+  rlimit
+  rusage
+  timeval
+  id_t
+}
+hstub getpriority {
+  /* OS X doesn't define id_t */
+  #ifndef _id_t_def_
+  #define _id_t_def_
+  typedef int id_t;
+  #endif
+  extern "C" int getpriority(int, id_t);
+}
+hstub getrlimit {
+  extern "C" int getrlimit(int, struct rlimit @);
+}
+hstub getrusage {
+  extern "C" int getrusage(int, struct rusage @);
+}
+hstub setpriority {
+  extern "C" int setpriority(int, id_t, int);
+}
+hstub setrlimit {
+  extern "C" int setrlimit(int, const struct rlimit @);
+}
+;
+
+// Semaphores -- not supported yet
+sys/sem.h:
+cpp {
+  #include <sys/types.h>  // For ushort on OS X
+}
+;
+
+sys/select.h:
+cpp {
+  #include <sys/types.h>  // For fd_set on OS X
+  #include <sys/time.h>   // For struct timeval on OS X
+  #include <unistd.h> // For select on OS X
+}
+include {
+  time_t
+  suseconds_t
+  timeval
+  sigset_t
+  timespec
+  fd_set
+  FD_SETSIZE
+}
+hstub {
+  /* FIX: Cygwin defines a struct _types_fd_set and then a typedef with the
+     same name.  Our current scheme for omitting repeated declarations does
+     not use separate namespaces for structs and typedefs, so the typedef
+     is omitted by mistake.  This ugly hack fixes it in Cygwin for now. */
+  /* JGM:  had to comment this out for now
+  #ifdef __types_fd_set_def_
+  #ifndef __cygwin_fd_set_hack
+  #define __cygwin_fd_set_hack
+  typedef struct _types_fd_set _types_fd_set;
+  #endif
+  #endif
+  */
+}
+hstub {
+  /* FIX: *BSD and Solaris define a struct fd_set and then a typedef
+     with the same name.  Our current scheme for omitting repeated
+     declarations does not use separate namespaces for structs and
+     typedefs, so the typedef is omitted by mistake.  This ugly hack
+     fixes it for now. */
+  /* JGM: we now support defining a struct fd_set and a typedef with
+     the same name, so I'm commenting these out for now.
+  #ifndef __fd_set_hack
+  #define __fd_set_hack
+  #ifdef __OpenBSD__
+  typedef struct fd_set fd_set;
+  #endif
+  #ifdef __FreeBSD__
+  typedef struct fd_set fd_set;
+  #endif
+  #ifdef __sparc__
+  typedef struct fd_set fd_set;
+  #endif
+  #endif
+  */
+}
+hstub pselect {
+  extern int pselect(int a, fd_set *b, fd_set *c, fd_set *d,
+                     const struct timespec *e, const sigset_t *f);
+}
+cycstub pselect {
+  namespace Csysselect {
+    extern "C" int pselect(int, fd_set *, fd_set *, fd_set *,
+                           const struct timespec *, const sigset_t *);
+  }
+  #include <errno.h>
+  extern int pselect(int a, fd_set *b, fd_set *c, fd_set *d,
+                     const struct timespec *e, const sigset_t *f) {
+    /* C probably doesn't check for fd_set overflow, so we do */
+    if (a<0 || a>FD_SETSIZE) {
+      errno = EINVAL;
+      return -1;
+    }
+    return Csysselect::pselect(a,b,c,d,e,f);
+  }
+
+}
+hstub select {
+  extern int select(int a, fd_set *b, fd_set *c, fd_set *d,
+                    struct timeval *e);
+}
+cycstub select {
+  namespace Csysselect {
+    extern "C" int select(int, fd_set *, fd_set *, fd_set *, struct timeval *);
+  }
+  #include <errno.h>
+  extern int select(int a, fd_set *b, fd_set *c, fd_set *d,
+                    struct timeval *e) {
+    /* C probably doesn't check for fd_set overflow, so we do */
+    if (a<0 || a>FD_SETSIZE) {
+      errno = EINVAL;
+      return -1;
+    }
+    return Csysselect::select(a,b,c,d,e);
+  }
+}
+hstub {
+  /* Posix says these can be macros or functions.  Typically they are
+     macros but in Linux at least they use asm, which we don't support
+     in Cyclone.  So, we make them functions. */
+  extern void FD_CLR(int, fd_set @);
+  extern int FD_ISSET(int, fd_set @);
+  extern void FD_SET(int, fd_set @);
+  extern void FD_ZERO(fd_set @);
+}
+cycstub {
+  namespace Csysselect {
+    extern "C" void __stub_FD_CLR(int, fd_set @);
+    extern "C" int __stub_FD_ISSET(int, fd_set @);
+    extern "C" void __stub_FD_SET(int, fd_set @);
+    extern "C" void __stub_FD_ZERO(fd_set @);
+  }
+  void FD_CLR(int a, fd_set @b) {
+    if (a<0 || a>FD_SETSIZE) return; /* force fd_set overflow check */
+    return Csysselect::__stub_FD_CLR(a,b);
+  }
+  int FD_ISSET(int a, fd_set @b) {
+    if (a<0 || a>FD_SETSIZE) return 0; /* force fd_set overflow check */
+    return Csysselect::__stub_FD_ISSET(a,b);
+  }
+  void FD_SET(int a, fd_set @b) {
+    if (a<0 || a>FD_SETSIZE) return; /* force fd_set overflow check */
+    return Csysselect::__stub_FD_SET(a,b);
+  }
+  void FD_ZERO(fd_set @a) {
+    return Csysselect::__stub_FD_ZERO(a);
+  }
+}
+cstub {
+  #include <sys/select.h>
+  void __stub_FD_CLR(int a, fd_set *b) {
+    FD_CLR(a,b);
+  }
+  int __stub_FD_ISSET(int a, fd_set *b) {
+    return FD_ISSET(a,b);
+  }
+  void __stub_FD_SET(int a, fd_set *b) {
+    FD_SET(a,b);
+  }
+  void __stub_FD_ZERO(fd_set *a) {
+    FD_ZERO(a);
+  }
+}
+;
+
+// Shared memory stuff
+// Not supported yet
+sys/shm.h:
+;
+
+sys/socket.h:
+cpp {
+  #include <sys/types.h>  // For u_char on OS X
+}
+include {
+  sockaddr
+  socklen_t
+  sa_family_t
+  cmsghdr
+  SCM_RIGHTS
+  CMSG_DATA
+  linger
+  SOCK_DGRAM
+  SOCK_RAW
+  SOCK_SEQPACKET
+  SOCK_STREAM
+  SOL_SOCKET
+  SO_ACCEPTCONN
+  SO_BROADCAST
+  SO_DEBUG
+  SO_DONTROUTE
+  SO_ERROR
+  SO_KEEPALIVE
+  SO_LINGER
+  SO_OOBINLINE
+  SO_RCVBUF
+  SO_RCVLOWAT
+  SO_RCVTIMEO
+  SO_REUSEADDR
+  SO_SNDBUF
+  SO_SNDLOWAT
+  SO_SNDTIMEO
+  SO_TYPE
+  SOMAXCONN
+  MSG_CTRUNC
+  MSG_DONTROUTE
+  MSG_EOR
+  MSG_OOB
+  MSG_PEEK
+  MSG_TRUNC
+  MSG_WAITALL
+  AF_INET
+  AF_INET6
+  AF_UNIX
+  AF_UNSPEC
+  SHUT_RD
+  SHUT_RDWR
+  SHUT_WR
+  ssize_t
+  timeval
+}
+hstub {
+  /* JGM: mini_httpd needs sockaddr, so I've added it back in:
+       We omit struct sockaddr because we don't use it in Cyclone */
+  /* We omit struct sockaddr_storage because we don't use it in Cyclone */
+  /* We omit struct msghdr because it contains a void * field */
+  /* We omit CMSG_NXTHDR and CMSG_FIRSTHDR because they pull in msghdr */
+  /* We omit struct iovec because it contains a void * field */
+
+  /* We omit these because they rely on msghdr */
+  /*
+    extern ssize_t sendmsg(int fd, const struct msghdr *message, int flags);
+    extern ssize_t recvmsg(int fd, struct msghdr *message, int flags);
+  */
+}
+hstub {
+  /* Many architectures don't define this :-( */
+  #ifndef _socklen_t_def_
+  #define _socklen_t_def_
+  #ifndef socklen_t
+  /* Cygwin #defines socklen_t */
+  typedef int socklen_t;
+  #endif
+  #endif
+  /* Not defined in OS X */
+  #ifndef _sa_family_t_def_
+  #define _sa_family_t_def_
+  typedef unsigned char sa_family_t;
+  #endif
+}
+hstub {
+  extern datatype SockAddr<`r::E> {
+    SA_sockaddr_in(struct sockaddr_in @`r);
+    /* We will add other cases as necessary, e.g., SockAddr_In6 */
+
+    /* The remaining cases are for the argument following the type-varying
+       argument; they could be eliminated if we had per-arg injection. */
+    /* NOTE: ORDER MATTERS! on these inject things */
+    SA_socklenptr(socklen_t @`r); // accept, getpeername, getsockname, recvfrom
+    SA_socklen(socklen_t); // bind, connect, sendto
+  };
+  typedef datatype SockAddr<`r> @`r SA<`r>;
+}
+hstub {
+  extern datatype SockOpt<`r::E> {
+    SO_int(int @`r);
+    SO_timeval(struct timeval @`r);
+    SO_linger(struct linger@`r);
+    /* The remaining cases are for the argument following the type-varying
+       argument; they could be eliminated if we had per-arg injection. */
+    SO_socklenptr(socklen_t @`r); // getsockopt
+    SO_socklen(socklen_t);        // setsockopt
+  };
+  typedef datatype SockOpt<`r> @`r SO<`r>;
+}
+hstub accept {
+  extern int accept(int fd, ... inject SA);
+}
+hstub {
+  datatype exn { extern SocketError };
+}
+cycstub {
+  // MWH: for sockaddr_in
+  #include <netinet/in.h>
+  datatype exn { SocketError };
+  datatype exn.SocketError SocketError_val = SocketError;
+}
+cstub {
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+}
+cycstub accept {
+  namespace Csocket {
+    extern "C" int accept_in(int, const struct sockaddr_in @, socklen_t @);
+  }
+  int accept(int fd, ... inject SA ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SA_sockaddr_in(x),&SA_socklenptr(y)):
+      return Csocket::accept_in(fd,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub accept {
+  int accept_in(int a, const struct sockaddr_in *b, socklen_t *c) {
+    return accept(a,(struct sockaddr *)b,c);
+  }
+}
+hstub bind {
+  extern int bind(int fd, ... inject SA);
+}
+cycstub bind {
+  namespace Csocket {
+    extern "C" int bind_in(int, const struct sockaddr_in @, socklen_t);
+  }
+  int bind(int fd, ... inject SA ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SA_sockaddr_in(x),&SA_socklen(y)):
+      return Csocket::bind_in(fd,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub bind {
+  int bind_in(int a, const struct sockaddr_in *b, socklen_t c) {
+    return bind(a,(struct sockaddr *)b,c);
+  }
+}
+hstub connect {
+  extern int connect(int fd, ... inject SA);
+}
+cycstub connect {
+  namespace Csocket {
+    extern "C" int connect_in(int, const struct sockaddr_in @, socklen_t);
+  }
+  int connect(int fd, ... inject SA ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SA_sockaddr_in(x),&SA_socklen(y)):
+      return Csocket::connect_in(fd,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub connect {
+  int connect_in(int a, const struct sockaddr_in *b, socklen_t c) {
+    return connect(a,(struct sockaddr *)b,c);
+  }
+}
+hstub getpeername {
+  extern int getpeername(int fd, ... inject SA);
+}
+cycstub getpeername {
+  namespace Csocket {
+    extern "C" int getpeername_in(int, const struct sockaddr_in @, socklen_t @);
+  }
+  int getpeername(int fd, ... inject SA ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SA_sockaddr_in(x),&SA_socklenptr(y)):
+      return Csocket::getpeername_in(fd,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub getpeername {
+  int getpeername_in(int a, const struct sockaddr_in *b, socklen_t *c) {
+    return getpeername(a,(struct sockaddr *)b,c);
+  }
+}
+hstub getsockname {
+  extern int getsockname(int fd, ... inject SA);
+}
+cycstub getsockname {
+  namespace Csocket {
+    extern "C" int getsockname_in(int, const struct sockaddr_in @, socklen_t @);
+  }
+  int getsockname(int fd, ... inject SA ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SA_sockaddr_in(x),&SA_socklenptr(y)):
+      return Csocket::getsockname_in(fd,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub getsockname {
+  int getsockname_in(int a, const struct sockaddr_in *b, socklen_t *c) {
+    return getsockname(a,(struct sockaddr *)b,c);
+  }
+}
+hstub getsockopt {
+  extern int getsockopt(int fd, int level, int optname, ... inject SO);
+}
+cycstub getsockopt {
+  namespace Csocket {
+    extern "C" int getsockopt_int(int, int, int, int @, socklen_t @);
+    extern "C" int getsockopt_timeval(int, int, int, struct timeval @, socklen_t @);
+  }
+  int getsockopt(int fd, int level, int optname, ... inject SO ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SO_int(x),&SO_socklenptr(y)):
+      return Csocket::getsockopt_int(fd,level,optname,x,y);
+    case $(&SO_int(x),&SO_int(y)): // FIX: inject problem b/c socklen_t=int
+      return Csocket::getsockopt_int(fd,level,optname,x,(socklen_t @)y);
+    case $(&SO_timeval(x),&SO_socklenptr(y)):
+      return Csocket::getsockopt_timeval(fd,level,optname,x,y);
+    case $(&SO_timeval(x),&SO_int(y)): // FIX: inject problem b/c socklen_t=int
+      return Csocket::getsockopt_timeval(fd,level,optname,x,(socklen_t @)y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub getsockopt {
+  /* sys/time.h is needed on some systems (OS X) for struct timeval */
+  #include <sys/time.h>
+  int getsockopt_int(int a, int b, int c, int *d, socklen_t *e) {
+    return getsockopt(a,b,c,d,e);
+  }
+  int getsockopt_timeval(int a, int b, int c, struct timeval *d, socklen_t *e) {
+    return getsockopt(a,b,c,d,e);
+  }
+}
+hstub listen {
+  extern "C" int listen(int fd, int n);
+}
+hstub recv {
+  extern ssize_t recv(int fd, char ? @nozeroterm buf, size_t n, int flags);
+}
+cycstub recv {
+  namespace Csocket {
+    extern "C" ssize_t recv_wrapped(int, char ? @nozeroterm, size_t, int);
+  }
+  // FIX: kill the extra level of indirection?  That is, rename the
+  //   C function to be Cyc__recv and call it directly ...
+  ssize_t recv(int fd, char ? @nozeroterm buf, size_t n, int flags) {
+    return Csocket::recv_wrapped(fd,buf,n,flags);
+  }
+}
+cstub recv {
+  ssize_t recv_wrapped(int a, struct _fat_ptr b, size_t c, int d) {
+    // JGM: -- it's okay to pass in NULL if c == 0
+    unsigned char *p = b.curr; // _check_fat_subscript(b,1,0);
+    unsigned n = _get_fat_size(b,1);
+    if (n<c) _throw_arraybounds();
+    return recv(a,p,c,d);
+  }
+}
+hstub recvfrom {
+  extern ssize_t recvfrom(int fd, char ? @nozeroterm buf, size_t n, int flags,
+                          ... inject SA);
+}
+cycstub recvfrom {
+  namespace Csocket {
+    extern "C" ssize_t recvfrom_in(int, char ? @nozeroterm, size_t, int,
+                                   const struct sockaddr_in @, socklen_t @);
+  }
+  ssize_t recvfrom(int fd, char ? @nozeroterm buf, size_t n, int flags,
+		   ... inject SA ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SA_sockaddr_in(x),&SA_socklenptr(y)):
+      return Csocket::recvfrom_in(fd,buf,n,flags,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub recvfrom {
+  ssize_t recvfrom_in(int a, struct _fat_ptr b, size_t c, int d,
+                      const struct sockaddr_in *e, socklen_t *f) {
+    // JGM: -- it's okay to pass in NULL if c == 0
+    unsigned char *p = b.curr; // _check_fat_subscript(b,1,0);
+    unsigned n = _get_fat_size(b,1);
+    if (n<c) _throw_arraybounds();
+    return recvfrom(a,p,c,d,(struct sockaddr *)e,f);
+  }
+}
+hstub send {
+  extern ssize_t send(int fd, const char ? @nozeroterm buf, size_t n, int flags);
+}
+cycstub send {
+  namespace Csocket {
+    extern "C" ssize_t send_wrapped(int, const char ? @nozeroterm, size_t, int);
+  }
+  ssize_t send(int fd, const char ? @nozeroterm buf, size_t n, int flags) {
+    return Csocket::send_wrapped(fd,buf,n,flags);
+  }
+}
+cstub send {
+  ssize_t send_wrapped(int a, struct _fat_ptr b, size_t c, int d) {
+    // JGM: -- it's okay to pass in NULL if c == 0
+    unsigned char *p = b.curr; // _check_fat_subscript(b,1,0);
+    unsigned n = _get_fat_size(b,1);
+    if (n<c) _throw_arraybounds();
+    return send(a,p,c,d);
+  }
+}
+hstub sendto {
+  extern ssize_t sendto(int fd, const char ? @nozeroterm buf, size_t n, int flags,
+                        ... inject SA);
+}
+cycstub sendto {
+  namespace Csocket {
+    extern "C" ssize_t sendto_in(int, const char ? @nozeroterm, size_t, int,
+                                 const struct sockaddr_in @, socklen_t);
+  }
+  ssize_t sendto(int fd, const char ? @nozeroterm buf, size_t n, int flags,
+                 ... inject SA ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SA_sockaddr_in(x),&SA_socklen(y)):
+      return Csocket::sendto_in(fd,buf,n,flags,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub sendto {
+  ssize_t sendto_in(int a, struct _fat_ptr b, size_t c, int d,
+                    const struct sockaddr_in *e, socklen_t f) {
+    // JGM: -- it's okay to pass in NULL if c == 0
+    unsigned char *p = b.curr; // _check_fat_subscript(b,1,0);
+    unsigned n = _get_fat_size(b,1);
+    if (n<c) _throw_arraybounds();
+    return sendto(a,p,c,d,(struct sockaddr *)e,f);
+  }
+}
+hstub setsockopt {
+  extern int setsockopt(int fd, int level, int optname, ... inject SO);
+}
+cycstub setsockopt {
+  namespace Csocket {
+    extern "C" int setsockopt_int(int, int, int, const int @, socklen_t);
+    extern "C" int setsockopt_timeval(int, int, int, const struct timeval @, socklen_t);
+    extern "C" int setsockopt_linger(int, int, int, const struct linger @, socklen_t);
+  }
+  int setsockopt(int fd, int level, int optname, ... inject SO ap) {
+    if (numelts(ap) != 2) throw &SocketError_val;
+    switch ($(ap[0],ap[1])) {
+    case $(&SO_int(x),&SO_socklen(y)):
+      return Csocket::setsockopt_int(fd,level,optname,x,y);
+    case $(&SO_timeval(x),&SO_socklen(y)):
+      return Csocket::setsockopt_timeval(fd,level,optname,x,y);
+    case $(&SO_linger(x),&SO_socklen(y)):
+      return Csocket::setsockopt_linger(fd,level,optname,x,y);
+    default: throw &SocketError_val;
+    }
+  }
+}
+cstub setsockopt {
+  int setsockopt_int(int a, int b, int c, const int *d, socklen_t e) {
+    return setsockopt(a,b,c,d,e);
+  }
+  int setsockopt_timeval(int a, int b, int c, const struct timeval *d, socklen_t e) {
+    return setsockopt(a,b,c,d,e);
+  }
+  int setsockopt_linger(int a, int b, int c, const struct linger *d, socklen_t e) {
+    return setsockopt(a,b,c,d,e);
+  }
+}
+hstub shutdown {
+  extern "C" int shutdown(int fd, int how);
+}
+hstub sockatmark {
+  extern "C" int sockatmark(int);
+}
+hstub socket {
+  extern "C" int socket(int domain, int type, int protocol);
+}
+hstub socketpair {
+  extern "C" int socketpair(int domain, int type, int protocol, int @{2} fds);
+}
+;
+
+sys/stat.h:
+cpp {
+
+#ifdef __linux__
+/* Linux does not define blkcnt_t dev_t ino_t mode_t nlink_t uid_t gid_t off_t time_t here, they are in sys/types.h */
+#include <sys/types.h>
+#endif
+
+}
+include {
+  stat
+  blkcnt_t
+  blksize_t
+  dev_t
+  ino_t
+  mode_t
+  nlink_t
+  uid_t
+  gid_t
+  off_t
+  time_t
+  st_atime
+  st_mtime
+  st_ctime
+  S_IFMT
+  S_IFBLK
+  S_IFCHR
+  S_IFIFO
+  S_IFREG
+  S_IFDIR
+  S_IFLNK
+  S_IFSOCK
+  S_IRWXU
+  S_IRUSR
+  S_IWUSR
+  S_IXUSR
+  S_IRWXG
+  S_IRGRP
+  S_IWGRP
+  S_IXGRP
+  S_IRWXO
+  S_IROTH
+  S_IWOTH
+  S_IXOTH
+  S_ISUID
+  S_ISGID
+  S_ISVTX
+  S_ISBLK
+  S_ISCHR
+  S_ISDIR
+  S_ISFIFO
+  S_ISREG
+  S_ISLNK
+  S_ISSOCK
+  S_TYPEISMQ
+  S_TYPEISSEM
+  S_TYPEISSHM
+  S_TYPEISTMO
+}
+hstub {
+  // EXTREMELY irritating: under Linux this is not defined
+  // in sys/stat.h, CONTRARY to the posix spec.  Instead __blksize_t
+  // is defined.
+  #if defined(___blksize_t_def_) && !defined(_blksize_t_def_)
+  #define _blksize_t_def_
+  typedef __blksize_t blksize_t;
+  #endif
+  /* JGM: no longer seems to be a problem for Cygwin so I'm getting
+  *  rid of this. */
+  /* Cygwin needs these definitions to smooth out the interface */
+  //#if defined(__CYGWIN32__) || defined(__CYGWIN__)
+  //#ifdef __CYGWIN_USE_BIG_TYPES__
+  //#define st_uid  __st_uid32
+  //#define st_gid  __st_gid32
+  //#define st_size __st_size64
+  //#else
+  //#define st_uid  __st_uid16
+  //#define st_gid  __st_gid16
+  //#define st_size __st_size32
+  //#endif /* __CYGWIN_USE_BIG_TYPES__ */
+  //#endif /* defined(__CYGWIN32__) || defined(__CYGWIN__) */
+}
+hstub chmod {
+  extern "C" int chmod(const char @, mode_t);
+}
+hstub fchmod {
+  extern "C" int fchmod(int, mode_t);
+}
+hstub fstat {
+  extern "C" int fstat(int fd, struct stat @buf);
+}
+hstub lstat {
+  extern "C" int lstat(const char @ filename, struct stat @buf);
+}
+hstub mkdir {
+  extern "C" int mkdir(const char @ pathname, mode_t mode);
+}
+hstub mkfifo {
+  extern "C" int mkfifo(const char @ pathname, mode_t mode);
+}
+hstub mknod {
+  extern "C" int mknod(const char @ pathname, mode_t mode, dev_t);
+}
+hstub stat {
+  extern "C" int stat(const char @, struct stat @);
+}
+hstub umask {
+  extern "C" mode_t umask(mode_t mask);
+}
+;
+
+// Our parser gets a parse error on this file in Linux
+sys/statvfs.h:
+;
+
+// This seems to work but produces plenty of warnings so I'm waiting
+tgmath.h:
+;
+
+sys/time.h:
+include {
+  timeval
+  itimerval
+  time_t
+  suseconds_t
+  ITIMER_REAL
+  ITIMER_VIRTUAL
+  ITIMER_PROF
+  timezone
+  fd_set
+  FD_SETSIZE
+}
+hstub {
+  /* FIX: Cygwin defines a struct _types_fd_set and then a typedef with the
+     same name.  Our current scheme for omitting repeated declarations does
+     not use separate namespaces for structs and typedefs, so the typedef
+     is omitted by mistake.  This ugly hack fixes it in Cygwin for now. */
+  /* JGM: had to comment this out for now
+  #ifdef __types_fd_set_def_
+  #ifndef __cygwin_fd_set_hack
+  #define __cygwin_fd_set_hack
+  typedef struct _types_fd_set _types_fd_set;
+  #endif
+  #endif
+  */
+}
+hstub {
+  /* FIX: OpenBSD defines a struct fd_set and then a typedef
+     with the same name.  Our current scheme for omitting repeated
+     declarations does not use separate namespaces for structs and
+     typedefs, so the typedef is omitted by mistake.  This ugly hack
+     fixes it for now. */
+  #ifndef __fd_set_hack
+  #define __fd_set_hack
+  #ifdef __OpenBSD__
+  typedef struct fd_set fd_set;
+  #endif
+  #endif
+}
+hstub getitimer {
+  extern "C" int getitimer(int, struct itimerval @);
+}
+hstub gettimeofday {
+  /* The second arg here looks like it is a legacy feature.  The POSIX
+     docs say that if it is non-NULL, then the behavior is undefined.
+     Therefore, we have a stub that forces the argument to be NULL. */
+  extern int gettimeofday(struct timeval @, struct timezone *);
+}
+cycstub gettimeofday {
+  namespace Csystime {
+    extern "C" int gettimeofday(struct timeval @, struct timezone *);
+  }
+  int gettimeofday(struct timeval @a, struct timezone *b) {
+    return Csystime::gettimeofday(a,NULL);
+  }
+}
+hstub select {
+  /* Stubs for these are defined by sys/select.h */
+  extern int select(int, fd_set *, fd_set *, fd_set *, struct timeval *);
+  extern void FD_CLR(int, fd_set @);
+  extern int FD_ISSET(int, fd_set @);
+  extern void FD_SET(int, fd_set @);
+  extern void FD_ZERO(fd_set @);
+}
+hstub setitimer {
+  extern "C" int setitimer(int, const struct itimerval @, struct itimerval *);
+}
+hstub utimes {
+  extern "C" int utimes(const char @, const struct timeval *{2}); // LEGACY
+}
+;
+
+sys/timeb.h:
+include {
+  time_t
+  timeb
+}
+hstub ftime {
+  extern "C" int ftime(struct timeb @); // (LEGACY)
+}
+;
+
+sys/times.h:
+include {
+  clock_t
+  tms
+}
+hstub times {
+  extern "C" clock_t times(struct tms @);
+}
+;
+
+sys/types.h:
+include {
+  blkcnt_t
+  blksize_t
+  clock_t
+  clockid_t
+  dev_t
+  fsblkcnt_t
+  fsfilcnt_t
+  gid_t
+  id_t
+  ino_t
+  key_t
+  mode_t
+  nlink_t
+  off_t
+  pid_t
+  size_t
+  ssize_t
+  suseconds_t
+  time_t
+  timer_t
+  uid_t
+  useconds_t
+  u_char
+  u_short
+  u_int
+  u_long
+}
+hstub {
+/* The pthread types are omitted for now since we don't support
+   threads */
+/* The trace types are also omitted */
+}
+;
+
+// Defines a struct containing a void *, not supported.
+sys/uio.h:
+cpp {
+  #include <sys/types.h>  // For size_t and ssize_t on OS X
+}
+;
+
+sys/utsname.h:
+include {
+  utsname
+}
+hstub uname {
+  extern "C" int uname(struct utsname @);
+}
+;
+
+sys/wait.h:
+cpp {
+#ifdef __linux__
+/* Linux does not define pid_t in sys/wait.h, it is in sys/types.h */
+#include <sys/types.h>
+#endif
+}
+include {
+  WNOHANG
+  WUNTRACED
+  WEXITSTATUS
+  WIFCONTINUED
+  WIFEXITED
+  WIFSIGNALED
+  WIFSTOPPED
+  WSTOPSIG
+  WTERMSIG
+  WEXITED
+  WSTOPPED
+  WCONTINUED
+  WNOHANG
+  WNOWAIT
+  idtype_t
+  id_t
+  pid_t
+  rusage
+}
+hstub {
+  /* siginfo_t is omitted because it contains a pointer */
+  /* waitid is omitted because it needs siginfo_t */
+  /*
+    extern "C" int waitid(idtype_t, id_t, siginfo_t @, int);
+  */
+  //__extension__ and __typeof are not supported by Cyclone
+#undef __WAIT_INT
+#ifndef __WAIT_INT
+#define __WAIT_INT(status) (({ union { typeof(status) __in; int __i; } __u; __u.__in = (status); __u.__i; }))
+#endif
+
+}
+hstub wait {
+  extern "C" pid_t wait(int *);
+}
+hstub waitpid {
+  #define HAVE_WAITPID
+  extern "C" pid_t waitpid(pid_t, int *, int);
+}
+;
+
+sys/syslog.h:
+include {
+  LOG_EMERG
+  LOG_ALERT
+  LOG_CRIT
+  LOG_ERR
+  LOG_WARNING
+  LOG_NOTICE
+  LOG_INFO
+  LOG_DEBUG
+  LOG_PRIMASK
+  LOG_PRI
+  LOG_MAKEPRI
+  LOG_KERN
+  LOG_USER
+  LOG_MAIL
+  LOG_DAEMON
+  LOG_AUTH
+  LOG_SYSLOG
+  LOG_LPR
+  LOG_NEWS
+  LOG_UUCP
+  LOG_CRON
+  LOG_AUTHPRIV
+  LOG_FTP
+  LOG_LOCAL0
+  LOG_LOCAL1
+  LOG_LOCAL2
+  LOG_LOCAL3
+  LOG_LOCAL4
+  LOG_LOCAL5
+  LOG_LOCAL6
+  LOG_LOCAL7
+  LOG_NFACILITIES
+  LOG_FACMASK
+  LOG_FAC
+  LOG_MASK
+  LOG_UPTO
+  LOG_PID
+  LOG_CONS
+  LOG_ODELAY
+  LOG_NDELAY
+  LOG_NOWAIT
+  LOG_PERROR
+}
+hstub closelog {
+extern "C" void closelog (void);
+}
+hstub setlogmask {
+extern "C" int setlogmask (int);
+}
+hstub openlog {
+extern "C" void openlog(const char @, int, int);
+}
+hstub syslog {
+  #include <stdio.h>
+  extern void syslog(int, const char ?,... inject parg_t)
+    __attribute__((format(printf,2,3)));
+  extern void vsyslog(int, const char ?, parg_t ? ap)
+    __attribute__((format(printf,2,0)));
+}
+cstub syslog {
+  #include <syslog.h>
+  void __syslog_str(int x, const char *y) {
+    syslog(x, "%s", y);
+  }
+}
+cycstub syslog {
+  namespace Csyslog {
+    extern "C" void __syslog_str(int, const char @);
+  }
+  /* TODO: this does not handle %m */
+  void syslog(int x,const char ?y, ... inject parg_t z)
+    __attribute__((format(printf, 2, 3))) {
+    region r;
+    let m = vrprintf(r,y,z);
+    Csyslog::__syslog_str(x,m);
+  }
+  void vsyslog(int x,const char ?y, parg_t ? z)
+    __attribute__((format(printf,2,0))) {
+    region r;
+    let m = vrprintf(r,y,z);
+    Csyslog::__syslog_str(x,m);
+  }
+}
+;
+
+tar.h:
+include {
+  TMAGIC
+  TMAGLEN
+  TVERSION
+  TVERSLEN
+  REGTYPE
+  AREGTYPE
+  LNKTYPE
+  SYMTYPE
+  CHRTYPE
+  BLKTYPE
+  DIRTYPE
+  FIFOTYPE
+  CONTTYPE
+  TSUID
+  TSGID
+  TSVTX
+  TUREAD
+  TUWRITE
+  TUEXEC
+  TGREAD
+  TGWRITE
+  TGEXEC
+  TOREAD
+  TOWRITE
+  TOEXEC
+}
+;
+
+// Terminal I/O interface
+// Not supported yet
+termios.h:
+;
+
+time.h:
+include {
+  tm
+  CLOCKS_PER_SEC
+  CLOCK_PROCESS_CPUTIME_ID
+  CLOCK_THREAD_CPUTIME_ID
+  timespec
+  itimerspec
+  CLOCK_REALTIME
+  TIMER_ABSTIME
+  CLOCK_MONOTONIC
+  clock_t
+  size_t
+  time_t
+  clockid_t
+  timer_t
+  pid_t
+}
+hstub {
+  /* Missing declarations for
+     strptime
+     tzname;
+  */
+
+  /* We'd like to
+     include {tm}
+     but in Linux tm is a struct containing a pointer
+          no biggie---just treat it as if it only has one character;
+	  don't always use it anyway.
+  */
+
+  // We'd like to
+  // include { sigevent }
+  // but in Linux this pulls in structures that contain void *'s.
+
+}
+// FIX: should these be null-terminated?
+hstub asctime {
+  extern "C" char @{26} asctime(const struct tm @);
+}
+hstub asctime_r {
+  extern "C" char @{26}`r asctime_r(const struct tm @, char @{26}`r);
+}
+hstub clock {
+  extern "C" clock_t clock(void);
+}
+hstub clock_getcpuclockid {
+  extern "C" int clock_getcpuclockid(pid_t, clockid_t @);
+}
+hstub clock_getres {
+  // Note, posix says the second arg of clock_getres can be NULL
+  extern "C" int clock_getres(clockid_t, struct timespec *);
+}
+hstub clock_gettime {
+  extern "C" int clock_gettime(clockid_t, struct timespec @);
+}
+hstub clock_nanosleep {
+  extern "C" int clock_nanosleep(clockid_t, int, const struct timespec @,
+                                 struct timespec @);
+}
+hstub clock_settime {
+  extern "C" int clock_settime(clockid_t, const struct timespec @);
+}
+hstub ctime {
+  extern "C" char @{26} ctime(const time_t @);
+}
+hstub ctime_r {
+  extern "C" char @{26}`r ctime_r(const time_t @, char @{26}`r);
+}
+hstub difftime {
+  extern "C" double difftime(time_t,time_t);
+}
+hstub getdate {
+  extern struct tm *getdate(const char @);
+}
+hstub getdate {
+extern "C" int __CYCLONE_GETDATE_ERR();
+#define getdate_err (__CYCLONE_GETDATE_ERR())
+}
+cstub getdate {
+  // We do this because getdate_err is probably a C macro
+  #include <time.h>
+  int __CYCLONE_GETDATE_ERR() {
+    return getdate_err;
+  }
+}
+hstub gmtime {
+  extern "C" struct tm @gmtime(const time_t @);
+}
+hstub gmtime_r {
+  extern "C" struct tm @`r gmtime_r(const time_t @, struct tm @`r);
+}
+hstub localtime {
+  extern "C" struct tm @localtime(const time_t @);
+}
+hstub localtime_r {
+  extern "C" struct tm @`r localtime_r(const time_t @, struct tm @`r);
+}
+hstub mktime {
+  extern "C" time_t mktime(const struct tm @);
+}
+hstub nanosleep {
+  // Note, posix says the second arg of nanosleep may be NULL
+  //  extern "C" int nanosleep(const struct timespec @, struct timespec *);
+}
+hstub strftime {
+  extern size_t strftime(char ?, size_t, const char ?, const struct tm @);
+}
+cycstub strftime {
+  namespace Ctime {
+    extern "C" size_t strftime(char *, size_t, const char *,
+                               const struct tm @);
+  }
+  static datatype exn.Failure __strftime_failure =
+    Failure("fgets: buffer insufficient");
+  size_t strftime(char ?s, size_t maxsize, const char ?fmt,
+                  const struct tm @t) {
+    if (maxsize > numelts(s)) throw &__strftime_failure;
+    return Ctime::strftime(s,maxsize,fmt,t);
+  }
+}
+hstub strptime {
+  // Not supported for now, needs a stub to be written
+  //  extern char ?`r strptime(const char ?`r, const char ?, struct tm @);
+}
+hstub time {
+  extern "C" time_t time(time_t *);
+}
+hstub timer_create {
+  // Omitted because of the sigevent problem
+  // Note, posix says the second arg of timer_create may be NULL
+  //  extern "C" int timer_create(clockid_t, struct sigevent *, timer_t @);
+}
+hstub timer_delete {
+  extern "C" int timer_delete(timer_t);
+}
+hstub timer_getoverrun {
+  extern "C" int timer_getoverrun(timer_t);
+}
+hstub timer_gettime {
+  extern "C" int timer_gettime(timer_t, struct itimerspec @);
+}
+hstub timer_settime {
+  // Note, posix says the third arg of timer_settime may be NULL
+  extern "C" int timer_settime(timer_t, int, const struct itimerspec @,
+                               struct itimerspec *);
+}
+hstub tzset {
+  extern "C" void tzset(void);
+}
+hstub timezone {
+  extern "C" long timezone;
+}
+hstub daylight {
+  extern "C" int daylight;
+}
+;
+
+// User context
+// Defines a pointer-containing struct, not supported yet
+ucontext.h:
+cpp {
+  #include <sys/types.h>  // For fd_set on OS X
+  #include <sys/time.h>   // For struct timeval on OS X
+  #include <unistd.h> // For select on OS X
+  #include <sys/select.h>  // For sigset_t on OS X
+}
+;
+
+// Defines a vararg function, needs a stub to be written
+// Not supported yet
+ulimit.h:
+;
+
+unistd.h:
+cpp {
+#ifdef __linux__
+/* Linux does not define uid_t, gid_t, off_t, pid_t here, they are in sys/types.h */
+#include <sys/types.h>
+#endif
+}
+include {
+  _POSIX_VERSION
+  _POSIX2_VERSION
+  _XOPEN_VERSION
+  _POSIX_ADVISORY_INFO
+  _POSIX_ASYNCHRONOUS_IO
+  _POSIX_BARRIERS
+  _POSIX_CHOWN_RESTRICTED
+  _POSIX_CLOCK_SELECTION
+  _POSIX_CPUTIME
+  _POSIX_FSYNC
+  _POSIX_JOB_CONTROL
+  _POSIX_MAPPED_FILES
+  _POSIX_MEMLOCK
+  _POSIX_MEMLOCK_RANGE
+  _POSIX_MEMORY_PROTECTION
+  _POSIX_MESSAGE_PASSING
+  _POSIX_MONOTONIC_CLOCK
+  _POSIX_NO_TRUNC
+  _POSIX_PRIORITIZED_IO
+  _POSIX_PRIORITY_SCHEDULING
+  _POSIX_RAW_SOCKETS
+  _POSIX_READER_WRITER_LOCKS
+  _POSIX_REALTIME_SIGNALS
+  _POSIX_REGEXP
+  _POSIX_SAVED_IDS
+  _POSIX_SEMAPHORES
+  _POSIX_SHARED_MEMORY_OBJECTS
+  _POSIX_SHELL
+  _POSIX_SPAWN
+  _POSIX_SPIN_LOCKS
+  _POSIX_SPORADIC_SERVER
+  _POSIX_SYNCHRONIZED_IO
+  _POSIX_THREAD_ATTR_STACKADDR
+  _POSIX_THREAD_ATTR_STACKSIZE
+  _POSIX_THREAD_CPUTIME
+  _POSIX_THREAD_PRIO_INHERIT
+  _POSIX_THREAD_PRIO_PROTECT
+  _POSIX_THREAD_PRIORITY_SCHEDULING
+  _POSIX_THREAD_PROCESS_SHARED
+  _POSIX_THREAD_SAFE_FUNCTIONS
+  _POSIX_THREAD_SPORADIC_SERVER
+  _POSIX_THREADS
+  _POSIX_TIMEOUTS
+  _POSIX_TIMERS
+  _POSIX_TRACE
+  _POSIX_TRACE_EVENT_FILTER
+  _POSIX_TRACE_INHERIT
+  _POSIX_TRACE_LOG
+  _POSIX_TYPED_MEMORY_OBJECTS
+  _POSIX_VDISABLE
+  _POSIX2_C_BIND
+  _POSIX2_C_DEV
+  _POSIX2_CHAR_TERM
+  _POSIX2_FORT_DEV
+  _POSIX2_FORT_RUN
+  _POSIX2_LOCALEDEF
+  _POSIX2_PBS
+  _POSIX2_PBS_ACCOUNTING
+  _POSIX2_PBS_CHECKPOINT
+  _POSIX2_PBS_LOCATE
+  _POSIX2_PBS_MESSAGE
+  _POSIX2_PBS_TRACK
+  _POSIX2_SW_DEV
+  _POSIX2_UPE
+  _V6_ILP32_OFF32
+  _V6_ILP32_OFFBIG
+  _V6_LP64_OFF64
+  _V6_LPBIG_OFFBIG
+  _XBS5_ILP32_OFF32
+  _XBS5_ILP32_OFFBIG
+  _XBS5_LP64_OFF64
+  _XBS5_LPBIG_OFFBIG
+  _XOPEN_CRYPT
+  _XOPEN_ENH_I18N
+  _XOPEN_LEGACY
+  _XOPEN_REALTIME
+  _XOPEN_REALTIME_THREADS
+  _XOPEN_SHM
+  _XOPEN_STREAMS
+  _XOPEN_UNIX
+  _POSIX_ASYNC_IO
+  _POSIX_PRIO_IO
+  _POSIX_SYNC_IO
+  F_OK
+  R_OK
+  W_OK
+  X_OK
+  _CS_PATH
+  _CS_POSIX_V6_ILP32_OFF32_CFLAGS
+  _CS_POSIX_V6_ILP32_OFF32_LDFLAGS
+  _CS_POSIX_V6_ILP32_OFF32_LIBS
+  _CS_POSIX_V6_ILP32_OFFBIG_CFLAGS
+  _CS_POSIX_V6_ILP32_OFFBIG_LDFLAGS
+  _CS_POSIX_V6_ILP32_OFFBIG_LIBS
+  _CS_POSIX_V6_LP64_OFF64_CFLAGS
+  _CS_POSIX_V6_LP64_OFF64_LDFLAGS
+  _CS_POSIX_V6_LP64_OFF64_LIBS
+  _CS_POSIX_V6_LPBIG_OFFBIG_CFLAGS
+  _CS_POSIX_V6_LPBIG_OFFBIG_LDFLAGS
+  _CS_POSIX_V6_LPBIG_OFFBIG_LIBS
+  _CS_POSIX_V6_WIDTH_RESTRICTED_ENVS
+  SEEK_CUR
+  SEEK_END
+  SEEK_SET
+  F_LOCK
+  F_TEST
+  F_TLOCK
+  F_ULOCK
+  _PC_ALLOC_SIZE_MIN
+  _PC_ASYNC_IO
+  _PC_CHOWN_RESTRICTED
+  _PC_FILESIZEBITS
+  _PC_LINK_MAX
+  _PC_MAX_CANON
+  _PC_MAX_INPUT
+  _PC_NAME_MAX
+  _PC_NO_TRUNC
+  _PC_PATH_MAX
+  _PC_PIPE_BUF
+  _PC_PRIO_IO
+  _PC_REC_INCR_XFER_SIZE
+  _PC_REC_MAX_XFER_SIZE
+  _PC_REC_MIN_XFER_SIZE
+  _PC_REC_XFER_ALIGN
+  _PC_SYNC_IO
+  _PC_VDISABLE
+  STDERR_FILENO
+  STDIN_FILENO
+  STDOUT_FILENO
+  size_t
+  ssize_t
+  uid_t
+  gid_t
+  off_t
+  pid_t
+  __useconds_t
+  useconds_t
+}
+hstub {
+  // EXTREMELY irritating: under Linux, useconds_t is not defined
+  // in sys/wait.h, CONTRARY to the posix spec.  Instead __useconds_t
+  // is defined.  So we include __useconds_t above and do the following:
+  #if defined(___useconds_t_def_) && !defined(_useconds_t_def_)
+  #define _useconds_t_def_
+  typedef __useconds_t useconds_t;
+  #endif
+}
+hstub {
+  /* Cygwin does not define this type so we take a guess :-( */
+  /* FIX: make this specific to cygwin ?? */
+  #ifndef _useconds_t_def_
+  #define _useconds_t_def_
+  typedef unsigned int useconds_t;
+  #endif
+}
+hstub {
+  // We'd like to do
+  // include {
+  // _SC_2_C_BIND
+  // _SC_2_C_DEV
+  // _SC_2_C_VERSION
+  // _SC_2_CHAR_TERM
+  // _SC_2_FORT_DEV
+  // _SC_2_FORT_RUN
+  // _SC_2_LOCALEDEF
+  // _SC_2_PBS
+  // _SC_2_PBS_ACCOUNTING
+  // _SC_2_PBS_CHECKPOINT
+  // _SC_2_PBS_LOCATE
+  // _SC_2_PBS_MESSAGE
+  // _SC_2_PBS_TRACK
+  // _SC_2_SW_DEV
+  // _SC_2_UPE
+  // _SC_2_VERSION
+  // _SC_ADVISORY_INFO
+  // _SC_ARG_MAX
+  // _SC_AIO_LISTIO_MAX
+  // _SC_AIO_MAX
+  // _SC_AIO_PRIO_DELTA_MAX
+  // _SC_ASYNCHRONOUS_IO
+  // _SC_ATEXIT_MAX
+  // _SC_BARRIERS
+  // _SC_BC_BASE_MAX
+  // _SC_BC_DIM_MAX
+  // _SC_BC_SCALE_MAX
+  // _SC_BC_STRING_MAX
+  // _SC_CHILD_MAX
+  // _SC_CLK_TCK
+  // _SC_CLOCK_SELECTION
+  // _SC_COLL_WEIGHTS_MAX
+  // _SC_CPUTIME
+  // _SC_DELAYTIMER_MAX
+  // _SC_EXPR_NEST_MAX
+  // _SC_FILE_LOCKING
+  // _SC_FSYNC
+  // _SC_GETGR_R_SIZE_MAX
+  // _SC_GETPW_R_SIZE_MAX
+  // _SC_HOST_NAME_MAX
+  // _SC_IOV_MAX
+  // _SC_JOB_CONTROL
+  // _SC_LINE_MAX
+  // _SC_LOGIN_NAME_MAX
+  // _SC_MAPPED_FILES
+  // _SC_MEMLOCK
+  // _SC_MEMLOCK_RANGE
+  // _SC_MEMORY_PROTECTION
+  // _SC_MESSAGE_PASSING
+  // _SC_MONOTONIC_CLOCK
+  // _SC_MQ_OPEN_MAX
+  // _SC_MQ_PRIO_MAX
+  // _SC_NGROUPS_MAX
+  // _SC_OPEN_MAX
+  // _SC_PAGE_SIZE
+  // _SC_PAGESIZE
+  // _SC_PRIORITIZED_IO
+  // _SC_PRIORITY_SCHEDULING
+  // _SC_RE_DUP_MAX
+  // _SC_READER_WRITER_LOCKS
+  // _SC_REALTIME_SIGNALS
+  // _SC_REGEXP
+  // _SC_RTSIG_MAX
+  // _SC_SAVED_IDS
+  // _SC_SEMAPHORES
+  // _SC_SEM_NSEMS_MAX
+  // _SC_SEM_VALUE_MAX
+  // _SC_SHARED_MEMORY_OBJECTS
+  // _SC_SHELL
+  // _SC_SIGQUEUE_MAX
+  // _SC_SPAWN
+  // _SC_SPIN_LOCKS
+  // _SC_SPORADIC_SERVER
+  // _SC_STREAM_MAX
+  // _SC_SYNCHRONIZED_IO
+  // _SC_THREAD_ATTR_STACKADDR
+  // _SC_THREAD_ATTR_STACKSIZE
+  // _SC_THREAD_CPUTIME
+  // _SC_THREAD_DESTRUCTOR_ITERATIONS
+  // _SC_THREAD_KEYS_MAX
+  // _SC_THREAD_PRIO_INHERIT
+  // _SC_THREAD_PRIO_PROTECT
+  // _SC_THREAD_PRIORITY_SCHEDULING
+  // _SC_THREAD_PROCESS_SHARED
+  // _SC_THREAD_SAFE_FUNCTIONS
+  // _SC_THREAD_SPORADIC_SERVER
+  // _SC_THREAD_STACK_MIN
+  // _SC_THREAD_THREADS_MAX
+  // _SC_TIMEOUTS
+  // _SC_THREADS
+  // _SC_TIMER_MAX
+  // _SC_TIMERS
+  // _SC_TRACE
+  // _SC_TRACE_EVENT_FILTER
+  // _SC_TRACE_INHERIT
+  // _SC_TRACE_LOG
+  // _SC_TTY_NAME_MAX
+  // _SC_TYPED_MEMORY_OBJECTS
+  // _SC_TZNAME_MAX
+  // _SC_V6_ILP32_OFF32
+  // _SC_V6_ILP32_OFFBIG
+  // _SC_V6_LP64_OFF64
+  // _SC_V6_LPBIG_OFFBIG
+  // _SC_VERSION
+  // _SC_XBS5_ILP32_OFF32
+  // _SC_XBS5_ILP32_OFFBIG
+  // _SC_XBS5_LP64_OFF64
+  // _SC_XBS5_LPBIG_OFFBIG
+  // _SC_XOPEN_CRYPT
+  // _SC_XOPEN_ENH_I18N
+  // _SC_XOPEN_LEGACY
+  // _SC_XOPEN_REALTIME
+  // _SC_XOPEN_REALTIME_THREADS
+  // _SC_XOPEN_SHM
+  // _SC_XOPEN_STREAMS
+  // _SC_XOPEN_UNIX
+  // _SC_XOPEN_VERSION
+  // _SC_XOPEN_XCU_VERSION
+  // }
+  // but we can't because under linux this pulls in some code like
+  //   enum { foo, bar = foo };
+  // and cyclone complains that the expression (foo) of field bar is not
+  // a constant.
+}
+hstub {
+// Need to #include our getopt.h file to grab getopt and friends
+  #include "cyclone/library/std/getopt.h"
+}
+hstub {
+// Under Linux, crypt doesn't always get included here for some reason
+  // Hmmmm... same for Cygwin
+#if defined(__linux__) || defined(__CYGWIN32__) || defined(__CYGWIN__)
+  extern "C" char *crypt (const char @__key, const char @__salt);
+#endif
+}
+hstub access {
+  extern "C" int access(const char @,int);
+}
+hstub alarm {
+  extern "C" unsigned alarm(unsigned);
+}
+hstub chdir {
+  extern "C" int chdir(const char @);
+}
+hstub chown {
+  extern "C" int chown(const char @,uid_t,gid_t);
+}
+hstub chroot {
+  extern "C" int chroot(const char @);
+}
+hstub close {
+  extern "C" int close(int);
+}
+hstub confstr {
+  // Not supported yet
+  // extern size_t confstr(int, char *, size_t);
+}
+hstub crypt {
+  extern "C" char * crypt(const char @ key, const char @ salt);
+}
+hstub ctermid {
+  // Not supported yet
+  // extern char *ctermid(char *);
+}
+hstub dup {
+  extern "C" int dup(int);
+}
+hstub dup2 {
+  extern "C" int dup2(int, int);
+}
+hstub encrypt {
+  // FIX: should this be null-terminated or not?
+  extern "C" void encrypt(char @{64}, int);
+}
+hstub execl {
+  //  extern int execl(const char ?, const char ?, ... const char ?);
+}
+cycstub execl {
+  // This is untested; I'd be surprised if it actually works
+  //  int execl(const char ? path, const char ? arg0, ... const char ? argv) {
+  //    if (argv[numelts(argv) - 1] != NULL)
+  //      throw new Failure("execl: arg list must be NULL-terminated");
+  //
+  //    // We allocate 1+numelts(argv) because we need to prepend arg0
+  //    char * ?newargs = new {for i < 1 + numelts(argv) : NULL};
+  //    newargs[0] = string_to_char *(arg0);
+  //    for (int i = 0; i < numelts(argv); i++)
+  //      newargs[i+1] = string_to_char *(argv[i]);
+  //    return Cunistd::execv(string_to_char *(path), (char **) newargs);
+  //  }
+}
+hstub execle {
+  // Not supported yet
+  // extern int execle(const char *, const char *, ...);
+}
+hstub execlp {
+  extern int execlp(const char @, const char @`r, ... const char *`r);
+}
+cycstub execlp {
+  static datatype exn.Failure __execlp_failure =
+    Failure("execlp arg list not NULL-terminated");
+  int execlp(const char @ path, const char @`r arg0, ... const char *`r argv) {
+    if (argv[numelts(argv) - 1] != NULL) throw &__execlp_failure;
+    // We allocate 1+numelts(argv) because we need to prepend arg0
+    { region r2;
+      const char *`r ? @zeroterm newargs =
+        rnew(r2) {for i < numelts(argv) : (const char *`r)NULL};
+      newargs[0] = arg0;
+      for (int i = 0; i < numelts(argv)-1; i++)
+        newargs[i+1] = argv[i];
+      return execvp(path, newargs);
+    }
+  }
+}
+hstub execv {
+  // Not supported yet
+  // extern int execv(const char *, char *const []);
+}
+cycstub execv {
+  //  namespace Cunistd {
+  //    extern "C" int execv(char * path, char * *argv);
+  //  }
+}
+hstub execve {
+  // FIX: what did I lose by removing the const from this spec?
+  //  extern int execve(const char ?, const char ? const ?, const char ? const ?);
+    extern "C" int execve(const char @ path,
+			  char *@aqual(`q\T) `r::E* @zeroterm argv, char *@aqual(`q2\T) `r2::E* @zeroterm envp);
+    //    extern int execve(const char ?, char ? const ?, char ? const ?);
+}
+cycstub execve {
+//    namespace Cunistd {
+//      extern "C" int execve(char * path, char @ *argv, char @ *envp);
+//    }
+//    static datatype exn.Failure __execve_failure =
+//      Failure("execve: arg list must be NULL-terminated");
+//    int execve(const char ? filename, char ? const ?argv, char ? const ?envp) {
+//      if (argv[numelts(argv) - 1] != NULL)
+//        throw &__execve_failure;
+
+//      char * ?newargs = new {for i < numelts(argv) : NULL};
+//      for (int i = 0; i < numelts(argv); i++)
+//        newargs[i] = string_to_char *(argv[i]);
+
+//      char * ?newenvp = new {for i < numelts(envp) : NULL};
+//      for (int i = 0; i < numelts(envp); i++)
+//        newenvp[i] = string_to_char *(envp[i]);
+
+//      return Cunistd::execve(string_to_char *(filename),
+//                             (char **) newargs, (char **) newenvp);
+//    }
+}
+hstub execvp {
+  extern "C" int execvp(const char @ file, const char ** @zeroterm argv);
+}
+hstub _exit {
+  extern "C" void _exit(int);
+}
+hstub fchown {
+  extern "C" int fchown(int, uid_t, gid_t);
+}
+hstub fchdir {
+  extern "C" int fchdir(int);
+}
+hstub fdatasync {
+  extern "C" int fdatasync(int);
+}
+hstub fork {
+  extern "C" pid_t fork(void);
+}
+hstub fpathconf {
+  extern "C" long fpathconf(int, int);
+}
+hstub fsync {
+  extern "C" int fsync(int);
+}
+hstub ftruncate {
+  extern "C" int ftruncate(int, off_t);
+}
+hstub getcwd {
+  extern char ?`r getcwd(char ?`r buf, size_t size);
+}
+cycstub getcwd {
+  // FIX: this should really use a buffer, rather than a string, but
+  //   I can't get it to work otherwise
+  namespace Cunistd {
+    extern "C" char *`r getcwd(char *`r buf, size_t size);
+  }
+  static datatype exn.Failure __getcwd_failure =
+    Failure("getcwd: invalid buf argument");
+  char ?`r getcwd(char ?`r buf, size_t size) {
+    if (numelts(buf) < size) throw &__getcwd_failure;
+    let response = Cunistd::getcwd((char *)buf, size);
+    return response ? buf : NULL;
+  }
+}
+hstub getegid {
+  extern "C" gid_t getegid(void);
+}
+hstub geteuid {
+  extern "C" uid_t geteuid(void);
+}
+hstub getgid {
+  extern "C" gid_t getgid(void);
+}
+hstub getgroups {
+  // Not supported yet
+  // extern int getgroups(int, gid_t []);
+}
+hstub gethostid {
+  extern "C" long gethostid(void);
+}
+hstub gethostname {
+  extern int gethostname(char ? @nozeroterm, size_t);
+}
+cycstub gethostname {
+  namespace Cunistd {
+    extern "C" int gethostname(char @ @nozeroterm,size_t);
+  }
+  static datatype exn.Failure __gethostname_failure_1 =
+    Failure("gethostname: called with NULL buf");
+  static datatype exn.Failure __gethostname_failure_2 =
+    Failure("gethostname: called with count > numelts(buf)");
+  int gethostname(char ? @nozeroterm buf, size_t count) {
+    if (!buf) throw &__gethostname_failure_1;
+    else {
+      if (count > numelts(buf)) throw &__gethostname_failure_2;
+      return Cunistd::gethostname((char @ @nozeroterm)buf, count);
+    }
+  }
+}
+hstub getlogin {
+  // Not supported yet
+  // extern char *getlogin(void);
+}
+hstub getlogin_r {
+  // Not supported yet
+  // extern int getlogin_r(char *, size_t);
+}
+hstub getopt {
+  // Not supported yet
+  // extern int getopt(int, char * const [], const char *);
+}
+hstub getpass {
+  /* Note, getpass is not required by POSIX */
+  extern "C" char * getpass(const char @);
+}
+hstub getpgid {
+  extern "C" pid_t getpgid(pid_t);
+}
+hstub getpgrp {
+  extern "C" pid_t getpgrp(void);
+}
+hstub getpid {
+  extern "C" pid_t getpid(void);
+}
+hstub getppid {
+  extern "C" pid_t getppid(void);
+}
+hstub getsid {
+  extern "C" pid_t getsid(pid_t);
+}
+hstub getuid {
+  extern "C" uid_t getuid(void);
+}
+hstub getwd {
+  // Not supported yet
+  // extern char *getwd(char *); (LEGACY)
+}
+hstub isatty {
+  extern "C" int isatty(int);
+}
+hstub lchown {
+  // Not supported yet
+  // extern int lchown(const char *, uid_t, gid_t);
+}
+hstub link {
+  extern "C" int link(const char @,const char @);
+}
+hstub lockf {
+  extern "C" int lockf(int, int, off_t);
+}
+hstub lseek {
+  extern "C" off_t lseek(int, off_t, int);
+}
+hstub nice {
+  extern "C" int nice(int);
+}
+hstub pathconf {
+  // Not supported yet
+  // extern long pathconf(const char *, int);
+}
+hstub pause {
+  extern "C" int pause(void);
+}
+hstub pipe {
+  extern "C" int pipe(int @{2});
+}
+hstub pread {
+  // Not supported yet
+  // extern ssize_t pread(int, void *, size_t, off_t);
+}
+hstub pwrite {
+  // Not supported yet
+  // extern ssize_t pwrite(int, const void *, size_t, off_t);
+}
+hstub read {
+  extern ssize_t read(int, char ? @nozeroterm, size_t);
+}
+cycstub read {
+  namespace Cunistd {
+    extern "C" ssize_t read(int fd, char * @nozeroterm buf, size_t count);
+  }
+  static datatype exn.Failure __read_failure =
+    Failure("read: called with count > numelts(buf)");
+  ssize_t read(int fd, char ? @nozeroterm buf, size_t count) {
+    if (count > numelts(buf)) throw &__read_failure;
+    return Cunistd::read(fd, (char * @nozeroterm)buf, count);
+  }
+}
+hstub readlink {
+  // Not supported yet
+  // extern ssize_t readlink(const char *restrict, char *restrict, size_t);
+}
+hstub rmdir {
+  extern "C" int rmdir(const char @);
+}
+hstub setegid {
+  extern "C" int setegid(gid_t);
+}
+hstub seteuid {
+  extern "C" int seteuid(uid_t);
+}
+hstub setgid {
+  extern "C" int setgid(gid_t);
+}
+hstub setpgid {
+  extern "C" int setpgid(pid_t, pid_t);
+}
+hstub setpgrp {
+  extern "C" pid_t setpgrp(void);
+}
+hstub setregid {
+  extern "C" int setregid(gid_t, gid_t);
+}
+hstub setreuid {
+  extern "C" int setreuid(uid_t, uid_t);
+}
+hstub setsid {
+  extern "C" pid_t setsid(void);
+}
+hstub setuid {
+  extern "C" int setuid(uid_t);
+}
+hstub sleep {
+  extern "C" unsigned sleep(unsigned);
+}
+hstub swab {
+  // Not supported yet
+  // extern void swab(const void *restrict, void *restrict, ssize_t);
+}
+hstub symlink {
+  extern "C" int symlink(const char @ path1, const char @ path2);
+}
+hstub sync {
+  extern "C" void sync(void);
+}
+hstub sysconf {
+  extern "C" long sysconf(int);
+}
+hstub tcgetpgrp {
+  extern "C" pid_t tcgetpgrp(int);
+}
+hstub tcsetpgrp {
+  extern "C" int tcsetpgrp(int, pid_t);
+}
+hstub truncate {
+  extern int truncate(const char @, off_t);
+}
+hstub ttyname {
+  // Not supported yet
+  // extern char *ttyname(int);
+}
+hstub ttyname_r {
+  // Not supported yet
+  // extern int ttyname_r(int, char *, size_t);
+}
+hstub ualarm {
+  extern "C" useconds_t ualarm(useconds_t, useconds_t);
+}
+hstub unlink {
+  extern "C" int unlink(const char @ pathname);
+}
+hstub usleep {
+  extern "C" int usleep(useconds_t);
+}
+hstub vfork {
+  extern "C" pid_t vfork(void);
+}
+hstub write {
+  extern ssize_t write(int, const char ? @nozeroterm, size_t);
+}
+cycstub write {
+  namespace Cunistd {
+    extern "C" ssize_t write(int fd, const char @ @nozeroterm buf, size_t count);
+  }
+  static datatype exn.Failure __write_failure =
+    Failure("write: called with count > numelts(buf)");
+  ssize_t write(int fd, const char ? @nozeroterm buf, size_t count) {
+    if (count > numelts(buf)) throw &__write_failure;
+    return Cunistd::write(fd, (const char @ @nozeroterm)buf, count);
+  }
+}
+hstub {
+  /* intptr_t is omitted */
+  /* optarg is omitted */
+}
+hstub optind {
+// Conflict with hand-coded getopt.h so not supported yet
+//  extern "C" int optind;
+}
+hstub opterr {
+// Conflict with hand-coded getopt.h so not supported yet
+//  extern "C" int opterr;
+}
+hstub optopt {
+// Conflict with hand-coded getopt.h so not supported yet
+//  extern "C" int optopt;
+}
+;
+
+utime.h:
+include {
+  utimbuf
+  time_t
+}
+hstub {
+  // Note, posix says the second arg of utime may be NULL
+  extern "C" int utime(const char @, const struct utimbuf *);
+}
+;
+
+// User accounting database definitions
+// Not supported yet
+utmpx.h:
+;
+
+// This gives a parse error in Cygwin because their wchar.h
+// contains an actual parse error: they don't define size_t
+wchar.h:
+;
+
+// Wide characters are not supported yet in Cyclone
+wctype.h:
+;
+
+// Word expansions
+// Not supported yet
+wordexp.h:
+;

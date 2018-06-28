@@ -1,0 +1,14 @@
+#include <stdio.h>
+
+#include "cyclone/library/std/core.h"
+
+using Core;
+
+int main(int argc, string_t ?args) {
+  // The first string is the name of the program.
+  if (argc <= 1)
+    throw new Failure("missing name!");
+  else
+    printf("Hello, %s.\n", args[1]);
+  return 0;
+}

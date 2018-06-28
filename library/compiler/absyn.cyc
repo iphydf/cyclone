@@ -1,0 +1,1981 @@
+/* Abstract syntax.
+   Copyright (C) 2001 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+// we define ABSYN_CYC to avoid redeclaring the abstract syntax -- see absyn.h
+#define ABSYN_CYC
+#include "absyn.h"
+
+#include "bansheeif.h"
+#include "evexp.h"
+#include "kinds.h"
+#include "warn.h"
+
+#include <string.h>
+#include "cyclone/library/std/hashtable.h"
+#include "cyclone/library/std/xarray.h"
+
+using Core;
+using List;
+
+namespace Absyn;
+
+static int mystrcmp(string_t s1, string_t s2) {
+  const char *p1opt = (const char *)s1;
+  const char *p2opt = (const char *)s2;
+  if (p1opt == p2opt)
+    return 0;
+
+  const char @p1 = (const char @)p1opt;
+  const char @p2 = (const char @)p2opt;
+  while (true) {
+    char c1  = *p1;
+    char c2  = *p2;
+    int diff = c1 - c2;
+    if (diff != 0)
+      return diff;
+    if (c1 == 0)
+      return 0;
+    ++p1;
+    ++p2;
+  }
+}
+
+// return a negative, zero, or positive int according to whether the
+// first string list is less than, equal to, or greater than the second
+static int strlist_cmp(list_t<stringptr_t> ss1, list_t<stringptr_t> ss2) {
+  if ((int)ss1 == (int)ss2)
+    return 0;
+
+  for (; ss1 != NULL && ss2 != NULL; ss1 = ss1->tl, ss2 = ss2->tl) {
+    int i = mystrcmp(*ss1->hd, *ss2->hd);
+    if (i != 0)
+      return i;
+  }
+
+  if (ss1 != NULL)
+    return 1;
+  if (ss2 != NULL)
+    return -1;
+
+  return 0;
+}
+
+int varlist_cmp(list_t<var_t> vs1, list_t<var_t> vs2) {
+  if ((int)vs1 == (int)vs2)
+    return 0;
+  return strlist_cmp(vs1, vs2);
+}
+
+int qvar_cmp(qvar_t q1, qvar_t q2) {
+  if (q1 == q2)
+    return 0;
+
+  let &$(n1, v1) = q1;
+  let &$(n2, v2) = q2;
+
+  int i = mystrcmp(*v1, *v2);
+  if (i != 0)
+    return i;
+
+  switch ($(n1, n2)) {
+    case $({.Loc_n = _}, {.Loc_n = _}):
+      return 0;
+    case $({.Rel_n = x1}, {.Rel_n = x2}):
+      return strlist_cmp(x1, x2);
+    case $({.Abs_n = x1}, {.Abs_n = x2}):
+      return strlist_cmp(x1, x2);
+    case $({.C_n = x1}, {.C_n = x2}):
+      return strlist_cmp(x1, x2);
+
+    // we arbitrarily decide that Loc_n < Rel_n < Abs_n < C_n
+    case $({.Loc_n = _}, _):
+      return -1;
+    case $(_, {.Loc_n = _}):
+      return 1;
+    case $({.Rel_n = _}, _):
+      return -1;
+    case $(_, {.Rel_n = _}):
+      return 1;
+    case $({.Abs_n = _}, _):
+      return -1;
+    case $(_, {.Abs_n = _}):
+      return 1;
+  }
+}
+
+int hash_qvar(qvar_t q) { return Hashtable::hash_string(*(*q)[1]); }
+
+// WARNING: Ignores the kinds.
+int tvar_cmp(tvar_t tv1, tvar_t tv2) {
+  int i = strptrcmp(tv1->name, tv2->name);
+  return i != 0 ? i : tv1->identity - tv2->identity;
+}
+
+int tvar_id(tvar_t tv) { return tv->identity; }
+
+nmspace_t Loc_n() { return Nmspace{.Loc_n = 0}; }
+
+nmspace_t Abs_n(list_t<var_t, `H> x, bool C_scope) {
+  return C_scope ? Nmspace{.C_n = x} : Nmspace{.Abs_n = x};
+}
+
+nmspace_t Rel_n(list_t<var_t, `H> x) { return Nmspace{.Rel_n = x}; }
+
+nmspace_t rel_ns_null() { return Nmspace{.Rel_n = NULL}; }
+
+bool is_qvar_qualified(qvar_t qv) {
+  switch ((*qv)[0]) {
+    case {.Rel_n = NULL}:
+    case {.Abs_n = NULL}:
+    case {.Loc_n = _}:
+      return false;
+    default:
+      return true;
+  }
+}
+
+type_t new_evar(opt_t<kind_t, `H> k, opt_t<list_t<tvar_t, `H>, `H> env) {
+  static int new_type_counter = 0;
+  return new Evar(k, NULL, new_type_counter++, env);
+}
+
+type_t wildtyp(opt_t<list_t<tvar_t, `H>, `H> tenv) { return new_evar(&Kinds::mko, tenv); }
+
+tqual_t empty_tqual(seg_t loc) { return Tqual(false, false, false, false, loc); }
+tqual_t const_tqual(seg_t loc) { return Tqual(true, false, false, true, loc); }
+
+tqual_t combine_tqual(tqual_t x, tqual_t y) {
+  return Tqual(x.print_const || y.print_const, x.q_volatile || y.q_volatile,
+               x.q_restrict || y.q_restrict, x.real_const || y.real_const,
+               Position::segment_join(x.loc, y.loc));
+}
+bool equal_tqual(tqual_t tq1, tqual_t tq2) {
+  return tq1.real_const == tq2.real_const && tq1.q_volatile == tq2.q_volatile &&
+         tq1.q_restrict == tq2.q_restrict;
+}
+
+datacon(AbsynAnnot, EmptyAnnot);
+
+union DatatypeInfo UnknownDatatype(struct UnknownDatatypeInfo udi) {
+  return DatatypeInfo{.UnknownDatatype = udi};
+}
+
+union DatatypeInfo KnownDatatype(datatypedecl_t @`H d) {
+  return DatatypeInfo{.KnownDatatype = d};
+}
+
+union DatatypeFieldInfo UnknownDatatypefield(struct UnknownDatatypeFieldInfo s) {
+  return DatatypeFieldInfo{.UnknownDatatypefield = s};
+}
+
+union DatatypeFieldInfo KnownDatatypefield(datatypedecl_t dd, datatypefield_t df) {
+  return DatatypeFieldInfo{.KnownDatatypefield = $(dd, df)};
+}
+
+union AggrInfo UnknownAggr(aggr_kind_t ak, typedef_name_t n, opt_t<bool, `H> tagged) {
+  return AggrInfo{.UnknownAggr = $(ak, n, tagged)};
+}
+
+union AggrInfo KnownAggr(aggrdecl_t @`H ad) {
+  return AggrInfo{.KnownAggr = ad};
+}
+
+//////////////////////////////////////////////////////////////////
+//////////////////////////// Types ///////////////////////////////
+//////////////////////////////////////////////////////////////////
+
+type_t app_type(tycon_t c, ... type_t args) { return new AppType(c, from_array(args)); }
+
+type_t valueof_type(exp_t e) { return new ValueofType(e); }
+
+#define MAKE_ALIAS_QUAL(TN, E)                                             \
+  static datatype TyCon.AqualConstCon TN##_tyc = AqualConstCon(E);         \
+  static datatype Type.AppType TN##_gval       = AppType(&TN##_tyc, NULL); \
+  aqualtype_t TN                               = &TN##_gval
+
+MAKE_ALIAS_QUAL(al_qual_type, Aliasable_qual);
+MAKE_ALIAS_QUAL(un_qual_type, Unique_qual);
+MAKE_ALIAS_QUAL(rc_qual_type, Refcnt_qual);
+MAKE_ALIAS_QUAL(rtd_qual_type, Restricted_qual);
+
+// static datatype TyCon.AccessCon access_con_cval = AccessCon;
+// static List<type_t> l = List{heap_rgn_inner_type, NULL};
+// static datatype Type.AppType heap_rgn_type_tval = AppType(&access_con_cval,
+// &l); type_t heap_rgn_type = &heap_rgn_type_tval;
+#define MAKE_UNARY_TYPE(N, TC, A)                                        \
+  static datatype TyCon.TC N##_cval     = TC;                            \
+  static List<type_t> N##_argl          = List{A, NULL};                 \
+  static datatype Type.AppType N##_tval = AppType(&N##_cval, &N##_argl); \
+  type_t N                              = &N##_tval
+
+// e.g., MAKE_NULLARY_TYPE (void_type, VoidCon) becomes
+// static datatype TyCon.VoidCon void_type_cval = VoidCon;
+// static datatype Type.AppType  void_type_tval = AppType (&void_type_cval,
+// NULL); type_t void_type = &void_type_tval
+#define MAKE_TYPE(N, F, C)                                          \
+  static datatype TyCon.F N##_cval      = C;                        \
+  static datatype Type.AppType N##_tval = AppType(&N##_cval, NULL); \
+  type_t N                              = &N##_tval
+
+#define MAKE_NULLARY_TYPE(N, C) MAKE_TYPE(N, C, C)
+#define MAKE_INT_TYPE(N, SIGN, SIZE) MAKE_TYPE(N, IntCon, IntCon(SIGN, SIZE))
+#define MAKE_FLOAT_TYPE(N, NUM) MAKE_TYPE(N, FloatCon, FloatCon(NUM))
+
+MAKE_NULLARY_TYPE(void_type, VoidCon);
+MAKE_NULLARY_TYPE(heap_rgn_type, HeapCon);
+MAKE_NULLARY_TYPE(unique_rgn_shorthand_type, UniqueHeapCon);
+MAKE_NULLARY_TYPE(refcnt_rgn_shorthand_type, RefCntHeapCon);
+MAKE_NULLARY_TYPE(true_type, TrueCon);
+MAKE_NULLARY_TYPE(false_type, FalseCon);
+MAKE_NULLARY_TYPE(fat_bound_type, FatCon);
+
+MAKE_INT_TYPE(schar_type, Signed, Char_sz);
+MAKE_INT_TYPE(uchar_type, Unsigned, Char_sz);
+MAKE_INT_TYPE(char_type, None, Char_sz);
+MAKE_INT_TYPE(sshort_type, Signed, Short_sz);
+MAKE_INT_TYPE(ushort_type, Unsigned, Short_sz);
+MAKE_INT_TYPE(nshort_type, None, Short_sz);
+MAKE_INT_TYPE(sint_type, Signed, Int_sz);
+MAKE_INT_TYPE(uint_type, Unsigned, Int_sz);
+MAKE_INT_TYPE(nint_type, None, Int_sz);
+MAKE_INT_TYPE(slong_type, Signed, Long_sz);
+MAKE_INT_TYPE(ulong_type, Unsigned, Long_sz);
+MAKE_INT_TYPE(nlong_type, None, Long_sz);
+MAKE_INT_TYPE(slonglong_type, Signed, LongLong_sz);
+MAKE_INT_TYPE(ulonglong_type, Unsigned, LongLong_sz);
+MAKE_INT_TYPE(nlonglong_type, None, LongLong_sz);
+MAKE_INT_TYPE(sint128_type, Signed, Int128_sz);
+MAKE_INT_TYPE(uint128_type, Unsigned, Int128_sz);
+MAKE_INT_TYPE(nint128_type, None, Int128_sz);
+
+MAKE_FLOAT_TYPE(float_type, 0);
+MAKE_FLOAT_TYPE(double_type, 1);
+MAKE_FLOAT_TYPE(long_double_type, 2);
+MAKE_FLOAT_TYPE(float128_type, 3);
+
+MAKE_NULLARY_TYPE(empty_effect, JoinCon);  // see kludge in join_eff below
+
+static datacon(TyCon, RgnHandleCon);
+static datacon(TyCon, AqualHandleCon);
+static datacon(TyCon, AqualVarCon);
+static datacon(TyCon, TagCon);
+#if 0
+static datacon (TyCon, AccessCon);
+#endif
+static datacon(TyCon, RgnsCon);
+static datacon(TyCon, ThinCon);
+static datacon(TyCon, JoinCon);
+static datacon(TyCon, AqualsCon);
+
+static int cvar_index = 3;
+
+cvartype_t cvar_type(opt_t<kind_t, `H> ok) {
+  return new Cvar(ok, NULL, -(cvar_index++), NULL, NULL, NULL, false);
+}
+
+cvartype_t cvar_type_name(opt_t<kind_t, `H> ok, string_t<`H> a) {
+  return new Cvar(ok, NULL, cvar_index++, NULL, (const char *)a, NULL, false);
+}
+
+cvartype_t fatconst() {
+  static type_opt_t _fatconst = NULL;
+  if (_fatconst)
+    return _fatconst;
+  _fatconst = new Cvar(&Kinds::ptrbko, fat_bound_type, 1, NULL, "fatconst", "constant", true);
+  BansheeIf::add_constant("fat", _fatconst);
+  return (cvartype_t)_fatconst;
+}
+
+cvartype_t thinconst() {
+  static type_opt_t _thinconst = NULL;
+  if (_thinconst)
+    return _thinconst;
+  _thinconst = new Cvar(&Kinds::ptrbko, bounds_one(), 2, NULL, "thinconst", "constant", false);
+  BansheeIf::add_constant("thin", _thinconst);
+  return (cvartype_t)_thinconst;
+}
+
+type_t aqual_constant(alias_qual_val_t v) {
+  switch (v) {
+    case Aliasable_qual:
+      return al_qual_type;
+    case Unique_qual:
+      return un_qual_type;
+    case Refcnt_qual:
+      return rc_qual_type;
+    case Restricted_qual:
+      return rtd_qual_type;
+    default:
+      Warn::impos2("Impossible alias qualifier constant");
+  }
+}
+
+type_t rgn_handle_type(rgntype_t r) { return app_type(&RgnHandleCon_val, r); }
+type_t aqual_handle_type(type_t aq) { return app_type(&AqualHandleCon_val, aq); }
+type_t aqual_var_type(type_t tv, type_t bnd) { return app_type(&AqualVarCon_val, tv, bnd); }
+
+type_t tag_type(type_t t) { return app_type(&TagCon_val, t); }
+#if 0
+type_t access_eff      (type_t    r) { return app_type (&AccessCon_val,    r);  }
+#endif
+type_t regionsof_eff(type_t t) { return app_type(&RgnsCon_val, t); }
+type_t thin_bounds_type(type_t t) { return app_type(&ThinCon_val, t); }
+type_t join_eff(types_t ts) { return new AppType(&empty_effect_cval, ts); }
+
+type_t enum_type(typedef_name_t n, struct Enumdecl *`H d) { return app_type(new EnumCon(n, d)); }
+
+type_t anon_enum_type(list_t<enumfield_t, `H> fs) { return app_type(new AnonEnumCon(fs)); }
+
+type_t builtin_type(string_t<`H> s, kind_t k) { return app_type(new BuiltinCon(s, k)); }
+
+type_t datatype_type(union DatatypeInfo di, types_t args) {
+  return new AppType(new DatatypeCon(di), args);
+}
+
+type_t datatype_field_type(union DatatypeFieldInfo di, types_t args) {
+  return new AppType(new DatatypeFieldCon(di), args);
+}
+
+type_t aggr_type(union AggrInfo ai, types_t args) { return new AppType(new AggrCon(ai), args); }
+
+type_t var_type(tvar_t x) { return new VarType(x); }
+
+// type for aquals(`a::B)::Q
+type_t aqualsof_type(type_t tv) { return app_type(&AqualsCon_val, tv); }
+
+type_t gen_float_type(unsigned i) {
+  switch (i) {
+    case 0:
+      return float_type;
+    case 1:
+      return double_type;
+    case 2:
+      return long_double_type;
+    case 3:
+      return float128_type;
+    default:
+      Warn::impos2("gen_float_type(", i, ")");
+  }
+}
+
+type_t int_type(sign_t sn, size_of_t sz) {
+  switch (sn) {
+    case Signed:
+      switch (sz) {
+        case Char_sz:
+          return schar_type;
+        case Short_sz:
+          return sshort_type;
+        case Int_sz:
+          return sint_type;
+        case Long_sz:
+          return slong_type;
+        case LongLong_sz:
+          return slonglong_type;
+        case Int128_sz:
+          return sint128_type;
+        default:
+          return slonglong_type;
+      }
+
+    case Unsigned:
+      switch (sz) {
+        case Char_sz:
+          return uchar_type;
+        case Short_sz:
+          return ushort_type;
+        case Int_sz:
+          return uint_type;
+        case Long_sz:
+          return ulong_type;
+        case LongLong_sz:
+          return ulonglong_type;
+        case Int128_sz:
+          return uint128_type;
+        default:
+          return ulonglong_type;
+      }
+
+    case None:
+    default:
+      switch (sz) {
+        case Char_sz:
+          return char_type;
+        case Short_sz:
+          return nshort_type;
+        case Int_sz:
+          return nint_type;
+        case Long_sz:
+          return nlong_type;
+        case LongLong_sz:
+          return nlonglong_type;
+        case Int128_sz:
+          return nint128_type;
+        default:
+          return nlonglong_type;
+      }
+  }
+}
+
+type_t complex_type(type_t t) {
+  // check that this is in fact either an integral
+  // or floating-point type.
+  switch (compress(t)) {
+    case &AppType(&IntCon(...), _):
+    case &AppType(&FloatCon(...), _):
+      return new AppType(new ComplexCon, list(t));
+    default:
+      Warn::impos2("bad complex type ", t);
+  }
+}
+
+type_t thin_bounds_exp(exp_t e) { return thin_bounds_type(valueof_type(e)); }
+
+type_t thin_bounds_int(unsigned int i) {
+  exp_t e = uint_exp(i, 0);
+  e->topt = uint_type;
+  return thin_bounds_exp(e);
+}
+
+type_t bounds_one() {
+  static type_opt_t bone = NULL;
+  if (bone == NULL)
+    bone = thin_bounds_int(1);
+  return bone;
+}
+
+// wide characters
+// from config.c
+extern "C" {
+extern int Wchar_t_unsigned;
+extern int Sizeof_wchar_t;
+}
+type_t wchar_type() {
+  switch (Sizeof_wchar_t) {
+    case 1:
+      /* This is a problem case.  If wchar_t is declared to be
+         char instead of unsigned char or signed char in the
+         header files, then
+           wchar_t x[] = L"abc";
+         won't typecheck, because wchar_t will be filled in by
+         just char and the type of the initializer will be
+         signed or unsigned char.  Since we have a sign None
+         as well as Signed and Unsigned, this won't work. */
+      return Wchar_t_unsigned ? uchar_type : schar_type;
+    case 2:
+      return Wchar_t_unsigned ? ushort_type : sshort_type;
+    case 4:
+      return Wchar_t_unsigned ? uint_type : sint_type;
+    case 8:
+      return Wchar_t_unsigned ? ulonglong_type : slonglong_type;
+    case 16:
+      return Wchar_t_unsigned ? uint128_type : sint128_type;
+    default:
+      Warn::impos2("Unexpected wchar_t size: ", Sizeof_wchar_t);
+  }
+}
+
+// exceptions
+static string_t exn_str               = "exn";
+static $(nmspace_t, var_t) exn_name_v = $(Nmspace{.Abs_n = NULL}, &exn_str);
+qvar_t exn_name                       = &exn_name_v;
+
+datatypedecl_t exn_tud() {
+  static string_t builtin_exns[] = {
+      "Null_Exception", "Array_bounds", "Match_Exception", "Bad_alloc", "Assert",
+  };
+
+  static struct Datatypedecl *tud_opt = NULL;
+
+  if (tud_opt == NULL) {
+    list_t<datatypefield_t> tufs = NULL;
+
+    for (int i = 0; i < numelts(builtin_exns); ++i)
+      tufs = new List(
+          new Datatypefield(new $(Nmspace{.Abs_n = NULL}, new builtin_exns[i]), NULL, 0, Extern),
+          tufs);
+
+    tud_opt = new Datatypedecl(Extern, exn_name, NULL, new Opt(tufs), true);
+  }
+
+  return tud_opt;
+}
+
+type_t exn_type() {
+  static type_opt_t exn_typ = NULL;
+  static type_opt_t eopt    = NULL;
+
+  if (exn_typ == NULL) {
+    eopt = datatype_type(DatatypeInfo{.KnownDatatype = new exn_tud()}, NULL);
+    exn_typ =
+        at_type((type_t)eopt, heap_rgn_type, al_qual_type, empty_tqual(0), false_type, false_type);
+  }
+
+  return exn_typ;
+}
+
+qvar_t datatype_print_arg_qvar() {
+  static qvar_opt_t q = NULL;
+  if (q == NULL)
+    q = new $(Abs_n(NULL, false), new "PrintArg");
+  return q;
+}
+
+qvar_t datatype_scanf_arg_qvar() {
+  static qvar_opt_t q = NULL;
+  if (q == NULL)
+    q = new $(Abs_n(NULL, false), new "ScanfArg");
+  return (qvar_t)q;
+}
+
+// unique region qvar.  We need this so that code generation properly
+// attributes an allocation to the unique region.  This way, when
+// doing dynamic region profiling we correctly tally the stuff stored
+// in the unique region
+// FIX: must correspond with def in core.h; should have just one def
+qvar_t uniqueaqual_qvar() {
+  static qvar_opt_t q = NULL;
+  if (q == NULL)
+    q = new $(Abs_n(new List(new "Core", NULL), false), new "unique_qual");
+  return (qvar_t)q;
+}
+
+exp_t uniqueaqual_exp() {
+  let t  = aqual_handle_type(un_qual_type);
+  let vd = new_vardecl(0, uniqueaqual_qvar(), t, NULL, NULL);
+  vd->sc = Extern;
+  return new Exp{.topt = t, .loc = 0, .annot = &EmptyAnnot_val, .r = new Var_e(new Global_b(vd))};
+}
+
+// pointers
+type_t pointer_type(struct PtrInfo s) { return new PointerType(s); }
+
+type_t fatptr_type(type_t t, type_t r, aqualtype_t aq, tqual_t tq, booltype_t zt, booltype_t rel) {
+  return pointer_type(PtrInfo{.elt_type = t,
+                              .elt_tq   = tq,
+                              .ptr_atts = PtrAtts{.eff          = r,
+                                                  .nullable     = true_type,
+                                                  .bounds       = fat_bound_type,
+                                                  .zero_term    = zt,
+                                                  .ptrloc       = NULL,
+                                                  .autoreleased = rel,
+                                                  .aqual        = aq}});
+}
+
+type_t starb_type(type_t t, type_t r, aqualtype_t aq, tqual_t tq, ptrbound_t b, booltype_t zt,
+                  booltype_t rel) {
+  return pointer_type(PtrInfo{.elt_type = t,
+                              .elt_tq   = tq,
+                              .ptr_atts = PtrAtts{.eff          = r,
+                                                  .nullable     = true_type,
+                                                  .bounds       = b,
+                                                  .zero_term    = zt,
+                                                  .ptrloc       = NULL,
+                                                  .autoreleased = rel,
+                                                  .aqual        = aq}});
+}
+
+type_t atb_type(type_t t, type_t r, aqualtype_t aq, tqual_t tq, ptrbound_t b, booltype_t zt,
+                booltype_t rel) {
+  return pointer_type(PtrInfo{.elt_type = t,
+                              .elt_tq   = tq,
+                              .ptr_atts = PtrAtts{.eff          = r,
+                                                  .nullable     = false_type,
+                                                  .bounds       = b,
+                                                  .zero_term    = zt,
+                                                  .ptrloc       = NULL,
+                                                  .autoreleased = rel,
+                                                  .aqual        = aq}});
+}
+
+type_t star_type(type_t t, type_t r, type_t aq, tqual_t tq, booltype_t zeroterm, booltype_t rel) {
+  return starb_type(t, r, aq, tq, bounds_one(), zeroterm, rel);
+}
+
+type_t cstar_type(type_t t, tqual_t tq) {
+  return star_type(t, heap_rgn_type, al_qual_type, tq, false_type, false_type);
+}
+
+type_t at_type(type_t t, type_t r, aqualtype_t aq, tqual_t tq, booltype_t zeroterm,
+               booltype_t rel) {
+  return atb_type(t, r, aq, tq, bounds_one(), zeroterm, rel);
+}
+
+type_t string_type(type_t rgn, aqualtype_t aq) {
+  return starb_type(char_type, rgn, aq, empty_tqual(0), fat_bound_type, true_type, false_type);
+}
+
+type_t const_string_type(type_t rgn, aqualtype_t aq) {
+  return starb_type(char_type, rgn, aq, const_tqual(0), fat_bound_type, true_type, false_type);
+}
+
+type_t array_type(type_t elt_type, tqual_t tq, exp_opt_t num_elts, booltype_t zero_term,
+                  seg_t ztloc) {
+  return new ArrayType(ArrayInfo{elt_type, tq, num_elts, zero_term, ztloc});
+}
+
+type_t typeof_type(exp_t e) { return new TypeofType(e); }
+
+// typedefs
+type_t typedef_type(typedef_name_t n, types_t args, struct Typedefdecl *`H d, type_opt_t defn) {
+  return new TypedefType(n, args, d, defn);
+}
+
+// structs and unions
+// WARNING: currently only Toc calls these, so we don't need to set
+//          the aggrdecl field.  Beware using them anywhere else!
+// (Probably we should require setting the third field even in Toc.)
+static type_t aggregate_type(aggr_kind_t k, var_t name) {
+  return new AppType(new AggrCon(UnknownAggr(k, new $(rel_ns_null(), name), NULL)), NULL);
+}
+
+type_t strct(var_t name) { return aggregate_type(StructA, name); }
+type_t union_typ(var_t name) { return aggregate_type(UnionA, name); }
+
+type_t strctq(qvar_t name) { return aggr_type(UnknownAggr(StructA, name, NULL), NULL); }
+type_t unionq_type(qvar_t name) { return aggr_type(UnknownAggr(UnionA, name, NULL), NULL); }
+
+// compress out any evars or typedefs or type declarations
+type_t compress(type_t t) {
+  switch (t) {
+    case &Evar(_, NULL, _, _):
+    case &TypedefType(_, _, _, NULL):
+      return t;
+
+    case &Cvar(_, *t2, _, bv, ...):
+      if (bv)
+        BansheeIf::resolve(t);
+      if (!*t2)
+        return t;
+      fallthru(t2);
+    case &TypedefType(_, _, _, *topt_ref):
+      fallthru(topt_ref);
+    case &Evar(_, *t2opt_ref, _, _):  // TRICKY
+      type_t ta = (type_t)(*t2opt_ref);
+      type_t t2 = compress(ta);
+      if (t2 != ta)
+        *t2opt_ref = t2;
+      return t2;
+
+    case &ValueofType(e):
+      // reduce the expression
+      Evexp::eval_const_uint_exp(e);
+
+      // get rid of any unnecessary casts
+      while (true)
+        switch (e->r) {
+          case &Valueof_e(t2):
+            return compress(t2);
+          case &Cast_e(t2, e2, _, _):
+            switch (compress(t2)) {
+              case &AppType(&IntCon(Unsigned, Int_sz), _):
+              case &AppType(&IntCon(Unsigned, Long_sz), _):
+                switch (e2->r) {
+                  case &Valueof_e(_):
+                    e = e2;
+                    // more casts
+                    continue;
+                  default:
+                    return t;
+                }
+              default:
+                return t;
+            }
+          default:
+            return t;
+        }
+
+    case &TypeofType(e):
+      let t2 = e->topt;
+      return (t2 != NULL) ? t2 : t;
+
+    case &TypeDeclType(_, &t):
+      return compress(t);
+
+    case &AppType(&AqualsCon, &List(tv, _)):
+      let ctv = compress(tv);
+      if (ctv == tv)
+        return t;
+      switch (ctv) {
+        case &PointerType(PtrInfo{_, _, PtrAtts {.aqual = aq, ... }}):
+          return compress(aq);
+
+        case &VarType(...):
+        case &Evar(...):
+          break;
+
+        default:  // non pointers of boxed kind are aliasable
+          return al_qual_type;
+      }
+      return aqualsof_type(ctv);
+
+    case &AppType(&AqualVarCon, tv_bnd):
+      let comp = compress(tv_bnd->hd);
+      switch (comp) {
+        case &AppType(&AqualConstCon(aqv), _):
+          return comp;
+        case &VarType(_):
+        case &Evar(...):
+        case &AppType(&AqualsCon, _):
+          if (comp == tv_bnd->hd)  // no point in compressing the bound here
+            return t;
+          return aqual_var_type(comp, compress(tv_bnd->tl->hd));
+        case &AppType(&AqualVarCon, tvb2):
+          return compress(comp);
+        default:
+          Warn::impos2("Unexpected type within AqualVar: ", comp);
+      }
+
+    default:
+      return t;
+  }
+}
+
+///////////////////////////////////////////////////////////////////
+///////////////////////// Constants //////////////////////////////
+///////////////////////////////////////////////////////////////////
+
+cnst_t Char_c(sign_t sn, char c) { return Cnst{.Char_c = $(sn, c)}; }
+cnst_t Wchar_c(string_t<`H> s) { return Cnst{.Wchar_c = s}; }
+cnst_t Short_c(sign_t sn, short s) { return Cnst{.Short_c = $(sn, s)}; }
+cnst_t Int_c(sign_t sn, int i) { return Cnst{.Int_c = $(sn, i)}; }
+cnst_t LongLong_c(sign_t sn, long long l) { return Cnst{.LongLong_c = $(sn, l)}; }
+cnst_t Float_c(string_t<`H> s, int i) { return Cnst{.Float_c = $(s, i)}; }
+cnst_t String_c(string_t<`H> s) { return Cnst{.String_c = s}; }
+cnst_t Wstring_c(string_t<`H> s) { return Cnst{.Wstring_c = s}; }
+
+///////////////////////////////////////////////////////////////////
+///////////////////////// Expressions //////////////////////////////
+///////////////////////////////////////////////////////////////////
+
+exp_t new_exp(raw_exp_t r, seg_t loc) {
+  return new Exp{.topt = NULL, .r = r, .loc = loc, .annot = &EmptyAnnot_val};
+}
+
+exp_t New_exp(exp_opt_t rgn_handle, exp_t e, exp_opt_t qual_hdl, seg_t loc) {
+  return new_exp(new New_e(rgn_handle, e, qual_hdl), loc);
+}
+
+exp_t copy_exp(exp_t e) { return new *e; }
+
+exp_t const_exp(cnst_t c, seg_t loc) { return new_exp(new Const_e(c), loc); }
+
+exp_t null_exp(seg_t loc) {
+  static datatype Raw_exp.Const_e null_const = Const_e(Cnst{.Null_c = 0});
+  return new_exp(&null_const, loc);
+}
+
+exp_t int_exp(sign_t s, int i, seg_t seg) { return const_exp(Int_c(s, i), seg); }
+
+exp_t signed_int_exp(int i, seg_t loc) {
+  static datatype Raw_exp.Const_e szero = Const_e(Cnst{.Int_c = $(Signed, 0)});
+  static datatype Raw_exp.Const_e sone  = Const_e(Cnst{.Int_c = $(Signed, 1)});
+
+  if (i == 0)
+    return new_exp(&szero, loc);
+  if (i == 1)
+    return new_exp(&sone, loc);
+
+  return int_exp(Signed, i, loc);
+}
+
+exp_t uint_exp(unsigned int i, seg_t loc) {
+  static datatype Raw_exp.Const_e uzero = Const_e(Cnst{.Int_c = $(Unsigned, 0)});
+  static datatype Raw_exp.Const_e uone  = Const_e(Cnst{.Int_c = $(Unsigned, 1)});
+
+  if (i == 0)
+    return new_exp(&uzero, loc);
+  if (i == 1)
+    return new_exp(&uone, loc);
+
+  return int_exp(Unsigned, i, loc);
+}
+
+exp_t bool_exp(bool b, seg_t loc) { return signed_int_exp(b ? 1 : 0, loc); }
+exp_t true_exp(seg_t loc) { return bool_exp(true, loc); }
+exp_t false_exp(seg_t loc) { return bool_exp(false, loc); }
+
+exp_t char_exp(char c, seg_t loc) { return const_exp(Char_c(None, c), loc); }
+
+exp_t float_exp(string_t<`H> f, int i, seg_t loc) { return const_exp(Float_c(f, i), loc); }
+
+static exp_t str2exp(cnst_t(@f)(string_t<`H>), string_t<`H> s, seg_t loc) {
+  return const_exp(f(s), loc);
+}
+
+exp_t wchar_exp(string_t<`H> s, seg_t loc) { return str2exp(Wchar_c, s, loc); }
+exp_t string_exp(string_t<`H> s, seg_t loc) { return str2exp(String_c, s, loc); }
+exp_t wstring_exp(string_t<`H> s, seg_t loc) { return str2exp(Wstring_c, s, loc); }
+
+exp_t var_exp(qvar_t q, seg_t loc) { return new_exp(new Var_e(new Unresolved_b(q)), loc); }
+
+exp_t varb_exp(binding_t b, seg_t loc) { return new_exp(new Var_e(b), loc); }
+
+// same as var_exp now
+exp_t unknownid_exp(qvar_t q, seg_t loc) { return var_exp(q, loc); }
+
+exp_t pragma_exp(string_t<`H> s, seg_t loc) { return new_exp(new Pragma_e(s), loc); }
+
+exp_t primop_exp(primop_t p, list_t<exp_t, `H> es, seg_t loc) {
+  return new_exp(new Primop_e(p, es), loc);
+}
+
+exp_t prim1_exp(primop_t p, exp_t e, seg_t loc) { return primop_exp(p, new List(e, NULL), loc); }
+
+exp_t prim2_exp(primop_t p, exp_t e1, exp_t e2, seg_t loc) {
+  return primop_exp(p, new List(e1, new List(e2, NULL)), loc);
+}
+
+exp_t tagof_exp(exp_t e, seg_t loc) { return prim1_exp(Tagof, e, loc); }
+
+exp_t swap_exp(exp_t e1, exp_t e2, seg_t loc) { return new_exp(new Swap_e(e1, e2), loc); }
+
+#define BINOP(NAME, OP) \
+  exp_t NAME##_exp(exp_t e1, exp_t e2, seg_t loc) { return prim2_exp(OP, e1, e2, loc); }
+
+BINOP(add, Plus)
+BINOP(times, Times)
+BINOP(divide, Div)
+BINOP(udivide, UDiv)
+BINOP(eq, Eq)
+BINOP(neq, Neq)
+BINOP(gt, Gt)
+BINOP(lt, Lt)
+BINOP(gte, Gte)
+BINOP(lte, Lte)
+BINOP(ugt, UGt)
+BINOP(ult, ULt)
+BINOP(ugte, UGte)
+BINOP(ulte, ULte)
+
+#undef BINOP
+
+exp_t assignop_exp(exp_t e1, primop_opt_t popt, exp_t e2, seg_t loc) {
+  return new_exp(new AssignOp_e(e1, popt, e2), loc);
+}
+
+exp_t assign_exp(exp_t e1, exp_t e2, seg_t loc) { return assignop_exp(e1, NULL, e2, loc); }
+
+exp_t increment_exp(exp_t e, incrementor_t i, seg_t loc) {
+  return new_exp(new Increment_e(e, i), loc);
+}
+
+exp_t conditional_exp(exp_t e1, exp_t e2, exp_t e3, seg_t loc) {
+  return new_exp(new Conditional_e(e1, e2, e3), loc);
+}
+
+exp_t and_exp(exp_t e1, exp_t e2, seg_t loc) { return new_exp(new And_e(e1, e2), loc); }
+
+exp_t or_exp(exp_t e1, exp_t e2, seg_t loc) { return new_exp(new Or_e(e1, e2), loc); }
+
+exp_t seq_exp(exp_t e1, exp_t e2, seg_t loc) { return new_exp(new SeqExp_e(e1, e2), loc); }
+
+exp_t unknowncall_exp(exp_t e, list_t<exp_t, `H> es, seg_t loc) {
+  return new_exp(new FnCall_e(e, es, NULL, false), loc);
+}
+
+exp_t fncall_exp(exp_t e, list_t<exp_t, `H> es, seg_t loc) {
+  return new_exp(new FnCall_e(e, es, NULL, true), loc);
+}
+
+exp_t noinstantiate_exp(exp_t e, seg_t loc) { return new_exp(new NoInstantiate_e(e), loc); }
+
+exp_t instantiate_exp(exp_t e, types_t ts, seg_t loc) {
+  return new_exp(new Instantiate_e(e, ts), loc);
+}
+
+exp_t cast_exp(type_t t, exp_t e, bool user_cast, coercion_t c, seg_t loc) {
+  return new_exp(new Cast_e(t, e, user_cast, c), loc);
+}
+
+exp_t throw_exp(exp_t e, seg_t loc) { return new_exp(new Throw_e(e, false), loc); }
+
+exp_t rethrow_exp(exp_t e, seg_t loc) { return new_exp(new Throw_e(e, true), loc); }
+
+exp_t address_exp(exp_t e, seg_t loc) { return new_exp(new Address_e(e), loc); }
+
+exp_t sizeoftype_exp(type_t t, seg_t loc) { return new_exp(new Sizeoftype_e(t), loc); }
+
+exp_t sizeofexp_exp(exp_t e, seg_t loc) { return new_exp(new Sizeofexp_e(e), loc); }
+
+exp_t offsetof_exp(type_t t, list_t<offsetof_field_t, `H> ofs, seg_t loc) {
+  return new_exp(new Offsetof_e(t, ofs), loc);
+}
+
+exp_t deref_exp(exp_t e, seg_t loc) { return new_exp(new Deref_e(e), loc); }
+
+exp_t aggrmember_exp(exp_t e, field_name_t n, seg_t loc) {
+  return new_exp(new AggrMember_e(e, n, false, false), loc);
+}
+
+exp_t aggrarrow_exp(exp_t e, field_name_t n, seg_t loc) {
+  return new_exp(new AggrArrow_e(e, n, false, false), loc);
+}
+
+exp_t subscript_exp(exp_t e1, exp_t e2, seg_t loc) { return new_exp(new Subscript_e(e1, e2), loc); }
+
+datatype Designator.FieldName @tuple_field_designator(int i) {
+  static struct Xarray::Xarray<datatype Designator.FieldName @> *names = NULL;
+
+  Xarray::xarray_t x = names == NULL ? names = Xarray::create_empty() : names;
+
+  while (i >= Xarray::length(x)) {
+    string_t s = aprintf("f%d", i);
+    var_t n    = new s;
+    Xarray::add_ind(x, new FieldName(n));
+  }
+
+  return Xarray::get(x, i);
+}
+
+exp_t tuple_exp(list_t<exp_t, `H> es, seg_t loc) {
+  list_t<$(list_t<designator_t>, exp_t) @> dles = NULL;
+
+  for (unsigned i = 0; es != NULL; es = es->tl, ++i) {
+    let dle = new $(new List{(designator_t)tuple_field_designator(i), NULL}, es->hd);
+    dles    = new List{dle, dles};
+  }
+
+  dles = List::imp_rev(dles);
+  return new_exp(new AnonStruct_e(NULL, true, dles), loc);
+}
+
+type_t tuple_type(list_t<$(tqual_t, type_t) @`H, `H> tqts) {
+  list_t<aggrfield_t> fs = NULL;
+
+  for (int i = 0; tqts != NULL; tqts = tqts->tl, ++i) {
+    let &$(tq, t)     = tqts->hd;
+    let &FieldName(n) = tuple_field_designator(i);
+    let af            = new Aggrfield{n, tq, t, NULL, NULL, NULL};
+    fs                = new List{af, fs};
+  }
+
+  return new AnonAggrType(StructA, true, List::imp_rev(fs));
+}
+
+exp_t stmt_exp(stmt_t s, seg_t loc) { return new_exp(new StmtExp_e(s), loc); }
+
+exp_t valueof_exp(type_t t, seg_t loc) { return new_exp(new Valueof_e(t), loc); }
+
+exp_t asm_exp(bool volatile_kw, string_t<`H> tmpl, list_t<$(string_t<`H>, exp_t) @`H, `H> outs,
+              list_t<$(string_t<`H>, exp_t) @`H, `H> ins, list_t<string_t<`H> @`H, `H> clobs,
+              seg_t loc) {
+  return new_exp(new Asm_e(volatile_kw, tmpl, outs, ins, clobs), loc);
+}
+
+exp_t extension_exp(exp_t e, seg_t loc) { return new_exp(new Extension_e(e), loc); }
+
+exp_t assert_exp(exp_t e, bool static_only, seg_t loc) {
+  return new_exp(new Assert_e(e, static_only, !static_only), loc);
+}
+
+exp_t assert_false_exp(exp_t e, seg_t loc) { return new_exp(new Assert_false_e(e), loc); }
+
+exp_t array_exp(list_t<exp_t, `H> es, seg_t loc) {
+  let dles = NULL;
+  for (; es != NULL; es = es->tl)
+    dles = new List(new $(NULL, es->hd), dles);
+
+  return new_exp(new Array_e(imp_rev(dles)), loc);
+}
+
+exp_t unresolvedmem_exp(opt_t<typedef_name_t, `H> n,
+                        list_t<$(list_t<designator_t, `H>, exp_t) @`H, `H> dles, seg_t loc) {
+  return new_exp(new UnresolvedMem_e(n, dles), loc);
+}
+
+// used to put types on various expressions that we build
+exp_t set_type(exp_t e, type_t t) {
+  e->topt = t;
+  return e;
+}
+
+///////////////////////////////////////////////////////////////////
+///////////////////////// Statements ///////////////////////////////
+///////////////////////////////////////////////////////////////////
+
+stmt_t new_stmt(raw_stmt_t s, seg_t loc) {
+  return new Stmt{.r = s, .loc = loc, .annot = &EmptyAnnot_val};
+}
+
+datatype Raw_stmt.Skip_s Skip_s_val                = Skip_s;
+static datatype Raw_stmt.Break_s Break_s_val       = Break_s;
+static datatype Raw_stmt.Continue_s Continue_s_val = Continue_s;
+
+stmt_t skip_stmt(seg_t loc) { return new_stmt(&Skip_s_val, loc); }
+stmt_t break_stmt(seg_t loc) { return new_stmt(&Break_s_val, loc); }
+stmt_t continue_stmt(seg_t loc) { return new_stmt(&Continue_s_val, loc); }
+
+stmt_t exp_stmt(exp_t e, seg_t loc) { return new_stmt(new Exp_s(e), loc); }
+
+stmt_t return_stmt(exp_opt_t e, seg_t loc) { return new_stmt(new Return_s(e), loc); }
+
+stmt_t seq_stmts(list_t<stmt_t> ss, seg_t loc) {
+  if (ss == NULL)
+    return skip_stmt(loc);
+  if (ss->tl == NULL)
+    return ss->hd;
+  return seq_stmt(ss->hd, seq_stmts(ss->tl, loc), loc);
+}
+
+stmt_t seq_stmt(stmt_t s1, stmt_t s2, seg_t loc) {
+  switch ($(s1->r, s2->r)) {
+    case $(&Skip_s, _):
+      return s2;
+    case $(_, &Skip_s):
+      return s1;
+    default:
+      return new_stmt(new Seq_s(s1, s2), loc);
+  }
+}
+
+stmt_t ifthenelse_stmt(exp_t e, stmt_t s1, stmt_t s2, seg_t loc) {
+  return new_stmt(new IfThenElse_s(e, s1, s2), loc);
+}
+
+stmt_t while_stmt(exp_t e, stmt_t s, seg_t loc) {
+  // vcgen need to make sure that break is
+  // always a forward jump statement
+  // but a sole switch inside while, break
+  // would be backward pointing to the
+  // beginning of while unless we add
+  // a dummy after switch.
+  s = seq_stmt(s, exp_stmt(uint_exp(1, s->loc), s->loc), s->loc);
+  return new_stmt(new While_s($(e, skip_stmt(e->loc)), s), loc);
+}
+
+stmt_t for_stmt(exp_t e1, exp_t e2, exp_t e3, stmt_t s, seg_t loc) {
+  return new_stmt(new For_s(e1, $(e2, skip_stmt(e3->loc)), $(e3, skip_stmt(e3->loc)), s), loc);
+}
+
+stmt_t do_stmt(stmt_t s, exp_t e, seg_t loc) {
+  // vcgen need to make sure that break is
+  // always a forward jump statement
+  // but a sole switch inside while, break
+  // would be pointing to the
+  // while(...) unless we add
+  // a dummy after switch.
+  s = seq_stmt(s, exp_stmt(uint_exp(1, s->loc), s->loc), s->loc);
+  return new_stmt(new Do_s(s, $(e, skip_stmt(e->loc))), loc);
+}
+
+stmt_t switch_stmt(exp_t e, list_t<switch_clause_t, `H> scs, seg_t loc) {
+  return new_stmt(new Switch_s(e, scs, NULL), loc);
+}
+
+stmt_t trycatch_stmt(stmt_t s, list_t<switch_clause_t, `H> scs, seg_t loc) {
+  return new_stmt(new TryCatch_s(s, scs, NULL), loc);
+}
+
+stmt_t fallthru_stmt(list_t<exp_t, `H> el, seg_t loc) {
+  return new_stmt(new Fallthru_s(el, NULL), loc);
+}
+
+stmt_t goto_stmt(var_t lab, seg_t loc) { return new_stmt(new Goto_s(lab), loc); }
+
+stmt_t label_stmt(var_t v, stmt_t s, seg_t loc) { return new_stmt(new Label_s(v, s), loc); }
+
+stmt_t decl_stmt(decl_t d, stmt_t s, seg_t loc) { return new_stmt(new Decl_s(d, s), loc); }
+
+stmt_t declare_stmt(qvar_t x, type_t t, exp_opt_t init, stmt_t s, seg_t loc) {
+  decl_t d = new_decl(new Var_d(new_vardecl(0, x, t, init, NULL)), loc);
+  return new_stmt(new Decl_s(d, s), loc);
+}
+
+stmt_t assign_stmt(exp_t e1, exp_t e2, seg_t loc) { return exp_stmt(assign_exp(e1, e2, loc), loc); }
+
+///////////////////////////////////////////////////////////////////
+/////////////////////////// Patterns //////////////////////////////
+///////////////////////////////////////////////////////////////////
+
+pat_t new_pat(raw_pat_t p, seg_t s) { return new Pat(p, NULL, s); }
+
+pat_t exp_pat(exp_t e) { return new_pat(new Exp_p(e), e->loc); }
+
+datatype Raw_pat.Wild_p Wild_p_val = Wild_p;
+datatype Raw_pat.Null_p Null_p_val = Null_p;
+
+///////////////////////////////////////////////////////////////////
+////////////////////////// Declarations ///////////////////////////
+///////////////////////////////////////////////////////////////////
+
+decl_t new_decl(raw_decl_t r, seg_t loc) { return new Decl{.r = r, .loc = loc}; }
+
+decl_t let_decl(pat_t p, exp_t e, seg_t loc) { return new_decl(new Let_d(p, NULL, e, NULL), loc); }
+
+decl_t letv_decl(list_t<vardecl_t, `H> vds, seg_t loc) { return new_decl(new Letv_d(vds), loc); }
+
+decl_t region_decl(tvar_t tv, vardecl_t vd, exp_opt_t open_exp, seg_t loc) {
+  return new_decl(new Region_d(tv, vd, open_exp), loc);
+}
+
+decl_t alias_decl(tvar_t tv, vardecl_t vd, exp_t e, seg_t loc) {
+  // assumes the variable's initializer is NULL
+  return new_decl(new Let_d(new_pat(new AliasVar_p(tv, vd), loc), NULL, e, NULL), loc);
+}
+
+vardecl_t new_vardecl(seg_t varloc, qvar_t x, type_t t, exp_opt_t init, exp_opt_t rename) {
+  return new Vardecl{.sc          = Public,
+                     .name        = x,
+                     .varloc      = varloc,
+                     .tq          = empty_tqual(0),
+                     .type        = t,
+                     .initializer = init,
+                     .rgn         = NULL,
+                     .attributes  = NULL,
+                     .escapes     = false,
+                     .is_proto    = false,
+                     .rename      = rename};
+}
+
+vardecl_t static_vardecl(qvar_t x, type_t t, exp_opt_t init) {
+  let ans = new_vardecl(0, x, t, init, NULL);
+  ans->sc = Static;
+  return ans;
+}
+
+struct AggrdeclImpl @aggrdecl_impl(list_t<tvar_t, `H> exists
+#if 0
+              , list_t<$(type_t, type_t) @`H, `H> po
+#endif
+                                   ,
+                                   list_t<effconstr_t, `H> ec, list_t<$(type_t, type_t) @`H, `H> qb,
+                                   list_t<aggrfield_t, `H> fs, bool tagged) {
+  return new AggrdeclImpl{
+      .exist_vars = exists, .qual_bnd = qb, .fields = fs, .tagged = tagged, .effconstr = ec};
+}
+
+decl_t aggr_decl(aggr_kind_t k, scope_t s, typedef_name_t n, list_t<tvar_t, `H> ts,
+                 struct AggrdeclImpl *`H i, attributes_t atts, seg_t loc) {
+  return new_decl(new Aggr_d(new Aggrdecl{.kind              = k,
+                                          .sc                = s,
+                                          .name              = n,
+                                          .tvs               = ts,
+                                          .impl              = i,
+                                          .attributes        = atts,
+                                          .expected_mem_kind = false}),
+                  loc);
+}
+
+type_decl_t aggr_tdecl(aggr_kind_t k, scope_t s, typedef_name_t n, list_t<tvar_t, `H> ts,
+                       struct AggrdeclImpl *`H i, attributes_t atts, seg_t loc) {
+  return new TypeDecl(new Aggr_td(new Aggrdecl{.kind              = k,
+                                               .sc                = s,
+                                               .name              = n,
+                                               .tvs               = ts,
+                                               .impl              = i,
+                                               .attributes        = atts,
+                                               .expected_mem_kind = false}),
+                      loc);
+}
+
+decl_t struct_decl(scope_t s, typedef_name_t n, list_t<tvar_t, `H> ts, struct AggrdeclImpl *`H i,
+                   attributes_t atts, seg_t loc) {
+  return aggr_decl(StructA, s, n, ts, i, atts, loc);
+}
+
+decl_t union_decl(scope_t s, typedef_name_t n, list_t<tvar_t, `H> ts, struct AggrdeclImpl *`H i,
+                  attributes_t atts, seg_t loc) {
+  return aggr_decl(UnionA, s, n, ts, i, atts, loc);
+}
+
+decl_t datatype_decl(scope_t s, typedef_name_t n, list_t<tvar_t, `H> ts,
+                     opt_t<list_t<datatypefield_t, `H>, `H> fs, bool is_extensible, seg_t loc) {
+  return new_decl(new Datatype_d(new Datatypedecl(s, n, ts, fs, is_extensible)), loc);
+}
+
+type_decl_t datatype_tdecl(scope_t s, typedef_name_t n, list_t<tvar_t, `H> ts,
+                           opt_t<list_t<datatypefield_t, `H>, `H> fs, bool is_extensible,
+                           seg_t loc) {
+  return new TypeDecl(new Datatype_td(new Datatypedecl(s, n, ts, fs, is_extensible)), loc);
+}
+
+// We treat function types in argument or return position as an
+// abbreviation for a non-nullable pointer to a function, that is,
+//   int f(void g())(float)
+// is the same as
+//   int (@f(void (@g)()))(float)
+// We do this in the parser by constructing every function type using
+// function_type, rather than mucking with the typechecker/unifier/etc.
+type_t function_type(list_t<tvar_t, `H> tvs, type_opt_t eff_type, tqual_t ret_tqual,
+                     type_t ret_type, list_t<$(var_opt_t, tqual_t, type_t) @`H, `H> args,
+                     bool c_varargs, vararg_info_t *`H cyc_varargs, list_t<effconstr_t, `H> effc,
+                     list_t<$(type_t, type_t) @`H, `H> qb, attributes_t atts, exp_opt_t chks,
+                     exp_opt_t req, exp_opt_t ens, exp_opt_t thrws) {
+  for (let args2 = args; args2 != NULL; args2 = args2->tl)
+    (*args2->hd)[2] = pointer_expand((*args2->hd)[2], true);
+  return new FnType(FnInfo {
+    .tvars = tvs, .ret_tqual = ret_tqual, .ret_type = pointer_expand(ret_type, false),
+    .effect = eff_type, .args = args, .c_varargs = c_varargs, .cyc_varargs = cyc_varargs,
+#if 0
+    .rgn_po = NULL,
+#endif
+    .qual_bnd = qb, .attributes = atts, .checks_clause = chks, .checks_assn = NULL,
+    .requires_clause = req, .requires_assn = NULL, .ensures_clause = ens, .ensures_assn = NULL,
+    .throws_clause = thrws, .throws_assn = NULL, .arg_vardecls = NULL, .return_value = NULL,
+    .effconstr = effc
+  });
+}
+
+// MWH: use RgnKind here rather than TopRgnKind for fresh evars;
+//   function pointers can't be unique at the moment
+// NKS: same requirement translates to al_qual_type
+type_t pointer_expand(type_t t, bool fresh_evar) {
+  switch (compress(t)) {
+    case &FnType(_):
+      let rtyp = fresh_evar ? new_evar(new Opt(&Kinds::ek), NULL) : heap_rgn_type;
+      return at_type(t, rtyp, al_qual_type, empty_tqual(0), false_type, false_type);
+
+    default:
+      return t;
+  }
+}
+
+// These are the lvalues of C:
+//    exp      where
+//    ---------------------------
+//    name     name is a variable -- and not a function name or array
+//    e[k]
+//    e.name   e is an lvalue
+//    e->name
+//    *e
+
+// must be called after the expression is type-checked.
+bool is_lvalue(exp_t e) {
+  switch (e->r) {
+    case &Var_e(&Funname_b(_)):
+      return false;
+
+    case &Var_e(&Global_b(vd)):
+      fallthru(vd);
+    case &Var_e(&Local_b(vd)):
+      switch (compress(vd->type)) {
+        case &ArrayType(_):
+          return false;
+        default:
+          return true;
+      }
+
+    case &Var_e(...):
+    case &AggrArrow_e(...):
+    case &Deref_e(...):
+    case &Subscript_e(...):
+      return true;
+
+    case &AggrMember_e(e1, ...):
+      return is_lvalue(e1);
+    case &Instantiate_e(e1, ...):
+      return is_lvalue(e1);
+    case &NoInstantiate_e(e1):
+      return is_lvalue(e1);
+
+    default:
+      return false;
+  }
+}
+
+struct Aggrfield *lookup_field(list_t<aggrfield_t> fields, var_t v) {
+  for (let fs = fields; fs != NULL; fs = fs->tl)
+    if (strptrcmp(fs->hd->name, v) == 0)
+      return fs->hd;
+  return NULL;
+}
+
+struct Aggrfield *lookup_decl_field(aggrdecl_t ad, var_t v) {
+  return ad->impl == NULL ? NULL : lookup_field(ad->impl->fields, v);
+}
+
+$(tqual_t, type_t) * lookup_tuple_field(list_t<$(tqual_t, type_t) @`H> ts, int i) {
+  for (; i != 0 && ts != NULL; --i, ts = ts->tl)
+    ;  // skip
+  return ts == NULL ? NULL : ts->hd;
+}
+
+string_t<`H> *decl_name(decl_t decl) {
+  switch (decl->r) {
+    case &Aggr_d(x):
+      return (*x->name)[1];
+    case &Enum_d(x):
+      return (*x->name)[1];
+    case &Typedef_d(x):
+      return (*x->name)[1];
+    case &Var_d(x):
+      return (*x->name)[1];
+    case &Fn_d(x):
+      return (*x->name)[1];
+
+    case &Porton_d:
+    case &Portoff_d:
+    case &Tempeston_d:
+    case &Tempestoff_d:
+    case &Let_d(...):
+    case &Datatype_d(_):
+    case &Letv_d(_):
+    case &Namespace_d(_, _):
+    case &Using_d(_, _):
+    case &ExternC_d(...):
+    case &ExternCinclude_d(...):
+    case &Region_d(...):
+      return NULL;
+  }
+}
+
+// returns the decl from the list having the given name
+struct Decl *lookup_decl(list_t<decl_t> decls, stringptr_t<`H> name) {
+  for (; decls != NULL; decls = decls->tl) {
+    let dname = decl_name(decls->hd);
+    if (dname && !strptrcmp(dname, name))
+      return decls->hd;
+  }
+  return NULL;
+}
+
+stringptr_t fieldname(int i) {
+  // cache strings used for field names f0,f1,f2,...
+  static string_t f0                  = "f0";
+  static stringptr_t field_names_v[1] = {&f0};
+  static stringptr_t ? field_names    = field_names_v;
+
+  unsigned int fsz = numelts(field_names);
+  if (i >= fsz)
+    field_names = new {
+      for
+        j < i + 1 : j < fsz ? field_names[j] : new (string_t) aprintf("f%d", j)
+    };
+  return field_names[i];
+}
+
+$(aggr_kind_t, qvar_t)
+aggr_kinded_name(union AggrInfo info) {
+  switch (info) {
+    case {.UnknownAggr = $(ak, n, _)}:
+      return $(ak, n);
+    case {.KnownAggr = &&Aggrdecl(k, _, n, ...)}:
+      return $(k, n);
+  }
+}
+
+aggrdecl_t get_known_aggrdecl(union AggrInfo info) {
+  switch (info) {
+    case {.UnknownAggr = _}:
+      Warn::impos2("unchecked aggrdecl");
+    case {.KnownAggr = &ad}:
+      return ad;
+  }
+}
+
+bool is_nontagged_nonrequire_union_type(type_t t) {
+  switch (compress(t)) {
+    case &AnonAggrType(UnionA, _, fs):
+      return fs == NULL || fs->hd->requires_clause == NULL;
+
+    case &AppType(&AggrCon(info), _):
+      switch (info) {
+        case {.KnownAggr = &ad}:
+          if (ad->kind != UnionA)
+            return false;
+
+          let impl = ad->impl;
+          if (impl->tagged)
+            return false;
+
+          let fields = impl->fields;
+          return fields == NULL || fields->hd->requires_clause == NULL;
+
+        case {.UnknownAggr = $(k, _, NULL)}:
+          return k == UnionA;
+        case {.UnknownAggr = $(k, _, &Opt(b))}:
+          return k == UnionA && !b;
+      }
+
+    default:
+      return false;
+  }
+}
+
+bool is_require_union_type(type_t t) {
+  switch (compress(t)) {
+    case &AnonAggrType(UnionA, _, fs):
+      return fs != NULL && fs->hd->requires_clause != NULL;
+    case &AppType(&AggrCon(info), _):
+      switch (info) {
+        case {.KnownAggr = &ad}:
+          if (ad->kind != UnionA)
+            return false;
+
+          let impl = ad->impl;
+          if (impl->tagged)
+            return false;
+
+          let fields = impl->fields;
+          return fields != NULL && fields->hd->requires_clause != NULL;
+
+        case {.UnknownAggr = $(k, ...)}:
+          return false;
+      }
+    default:
+      return false;
+  }
+}
+
+qvar_t binding2qvar(binding_t b) {
+  switch (b) {
+    case &Unresolved_b(qv):
+      return qv;
+    case &Global_b(vd):
+      fallthru(vd);
+    case &Param_b(vd):
+      fallthru(vd);
+    case &Local_b(vd):
+      fallthru(vd);
+    case &Pat_b(vd):
+      return vd->name;
+    case &Funname_b(fd):
+      return fd->name;
+  }
+}
+
+var_t designatorlist_to_fieldname(list_t<designator_t> ds) {
+  if (ds == NULL || ds->tl != NULL)
+    Warn::impos2("designator list not of length 1");
+
+  switch (ds->hd) {
+    case &FieldName(f):
+      return f;
+    case &ArrayElement(_):
+      Warn::impos2("array designator in struct");
+  }
+}
+
+bool type2bool(bool def, type_t t) {
+  switch (compress(t)) {
+    case &AppType(&TrueCon, _):
+      return true;
+    case &AppType(&FalseCon, _):
+      return false;
+    default:
+      return def;
+  }
+}
+
+/*****************************************************************************
+ * Visit expressions and statements.
+ */
+
+// clients can short-circuit by throwing an exception
+// and they return false to say "do not recur";
+// they put their own result in env
+void visit_exp(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
+           `a env, exp_t e) {
+  do {
+    if (!f1(env, e))
+      break;
+
+    switch (e->r) {
+      case &Const_e(...):
+      case &Var_e(...):
+      case &Pragma_e(...):
+      case &Enum_e(...):
+      case &AnonEnum_e(...):
+      case &Valueof_e(...):
+      case &Offsetof_e(...):
+      case &Sizeoftype_e(...):
+        break;
+
+      case &Extension_e(e1):
+        fallthru(e1);
+      case &Assert_e(e1, _, _):
+        fallthru(e1);
+      case &Assert_false_e(e1):
+        fallthru(e1);
+      case &Increment_e(e1, _):
+        fallthru(e1);
+      case &Throw_e(e1, _):
+        fallthru(e1);
+      case &NoInstantiate_e(e1):
+        fallthru(e1);
+      case &Instantiate_e(e1, _):
+        fallthru(e1);
+      case &Cast_e(_, e1, _, _):
+        fallthru(e1);
+      case &Address_e(e1):
+        fallthru(e1);
+      case &Deref_e(e1):
+        fallthru(e1);
+      case &AggrMember_e(e1, ...):
+        fallthru(e1);
+      case &ComprehensionNoinit_e(e1, _, _):
+        fallthru(e1);
+      case &Tagcheck_e(e1, _):
+        fallthru(e1);
+      case &Sizeofexp_e(e1):
+        fallthru(e1);
+      case &AggrArrow_e(e1, ...):
+        e = e1;
+        continue;
+
+      case &AssignOp_e(e1, _, e2):
+        fallthru(e1, e2);
+      case &And_e(e1, e2):
+        fallthru(e1, e2);
+      case &Or_e(e1, e2):
+        fallthru(e1, e2);
+      case &SeqExp_e(e1, e2):
+        fallthru(e1, e2);
+      case &Subscript_e(e1, e2):
+        fallthru(e1, e2);
+      case &Swap_e(e1, e2):
+        fallthru(e1, e2);
+      case &Comprehension_e(_, e1, e2, _):
+        visit_exp(f1, f2, env, e1);
+        e = e2;
+        continue;
+
+      case &Conditional_e(e1, e2, e3):
+        visit_exp(f1, f2, env, e1);
+        visit_exp(f1, f2, env, e2);
+        e = e3;
+        continue;
+
+      case &FnCall_e(e1, lexp, ...):
+        for (; lexp != NULL; lexp = lexp->tl)
+          visit_exp(f1, f2, env, lexp->hd);
+        e = e1;
+        continue;
+
+      case &Array_e(ldt):
+        fallthru(ldt);
+      case &CompoundLit_e(_, ldt):
+        fallthru(ldt);
+      case &UnresolvedMem_e(_, ldt):
+        fallthru(ldt);
+      case &Aggregate_e(_, _, ldt, _):
+        fallthru(ldt);
+      case &AnonStruct_e(_, _, ldt):
+        for (; ldt != NULL; ldt = ldt->tl)
+          visit_exp(f1, f2, env, (*ldt->hd)[1]);
+        break;
+
+      case &Primop_e(_, lexp):
+        fallthru(lexp);
+      case &Datatype_e(lexp, _, _):
+        for (; lexp != NULL; lexp = lexp->tl)
+          visit_exp(f1, f2, env, lexp->hd);
+        break;
+
+      case &Malloc_e(MallocInfo{.rgn = e1o, .num_elts = e2, .aqual = e3o, ...}):
+        fallthru(e1o, e2, e3o);
+      case &New_e(e1, e2, e3):
+        // first expression is region -- null is heap
+        // e3 is qualifier literal -- null is ALIASABLE
+        if (e1 != NULL)
+          visit_exp(f1, f2, env, e1);
+        if (e3 != NULL)
+          visit_exp(f1, f2, env, e3);
+        e = e2;
+        continue;
+
+      case &StmtExp_e(s):
+        visit_stmt(f1, f2, env, s);
+        break;
+
+      case &Asm_e(_, _, sl1, sl2, _):
+        for (; sl1 != NULL; sl1 = sl1->tl)
+          visit_exp(f1, f2, env, (*sl1->hd)[1]);
+        for (; sl2 != NULL; sl2 = sl2->tl)
+          visit_exp(f1, f2, env, (*sl2->hd)[1]);
+        break;
+    }
+  } while (false);
+}
+
+static void visit_scs(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
+           `a env, list_t<switch_clause_t> scs) {
+  for (; scs != NULL; scs = scs->tl) {
+    if (scs->hd->where_clause != NULL)
+      visit_exp(f1, f2, env, scs->hd->where_clause);
+    visit_stmt(f1, f2, env, scs->hd->body);
+  }
+}
+
+// JGM: rewrote to use an explicit stack so that this doesn't consume as
+// much stack space when we have a deeply nested statement.
+void visit_stmt(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
+            `a env, stmt_t s) {
+  list_t<stmt_t> stack = NULL;
+  while (true) {
+    if (f2(env, s)) {
+      switch (s->r) {
+        case &Skip_s:
+        case &Break_s:
+        case &Continue_s:
+        case &Goto_s(_):
+        case &Return_s(NULL):
+          break;
+
+        case &Return_s(e):
+          fallthru(e);
+        case &Exp_s(e):
+          visit_exp(f1, f2, env, e);
+          break;
+
+        case &IfThenElse_s(e1, s1, s2):
+          visit_exp(f1, f2, env, e1);
+          fallthru(s1, s2);
+        case &Seq_s(s1, s2):
+          stack = new List{s2, stack};
+          s     = s1;
+          continue;
+
+        case &While_s($(e, _), s1):
+          fallthru(s1, e);
+        case &Do_s(s1, $(e, _)):
+          visit_exp(f1, f2, env, e);
+          s = s1;
+          continue;
+
+        case &For_s(e1, $(e2, _), $(e3, _), s1):
+          visit_exp(f1, f2, env, e1);
+          visit_exp(f1, f2, env, e2);
+          visit_exp(f1, f2, env, e3);
+          s = s1;
+          continue;
+
+        case &Fallthru_s(es, _):
+          for (; es != NULL; es = es->tl)
+            visit_exp(f1, f2, env, es->hd);
+          break;
+
+        case &Decl_s(d, s1):
+          switch (d->r) {
+            case &Var_d(vd):
+              if (vd->initializer != NULL)
+                visit_exp(f1, f2, env, (exp_t)vd->initializer);
+              break;
+            case &Fn_d(fd):
+              visit_stmt(f1, f2, env, fd->body);
+              break;
+            case &Let_d(_, _, e, _):
+              visit_exp(f1, f2, env, e);
+              break;
+            case &Region_d(_, _, eo):
+              if (eo)
+                visit_exp(f1, f2, env, eo);
+              break;
+            default:
+              break;
+          }
+          s = s1;
+          continue;
+
+        case &Label_s(_, s1):
+          s = s1;
+          continue;
+
+        case &Switch_s(e, scs, _):
+          visit_exp(f1, f2, env, e);
+          visit_scs(f1, f2, env, scs);
+          break;
+
+        case &TryCatch_s(s1, scs, _):
+          visit_stmt(f1, f2, env, s1);
+          visit_scs(f1, f2, env, scs);
+          break;
+      }
+    }
+
+    if (stack == NULL)
+      return;
+    s     = stack->hd;
+    stack = stack->tl;
+  }
+}
+
+/*****************************************************************************
+ * Visit type.
+ */
+
+static void i_visit_type(bool(@f)(`a, type_t),
+                          `a env, type_t t, Hashtable::table_t<type_t, int>);
+
+static void i_visit_tycon_types(bool(@f)(`a, type_t),
+                     `a env, tycon_t t, Hashtable::table_t<type_t, int> seen) {
+  switch (t) {
+    case &DatatypeFieldCon({.KnownDatatypefield = $(dtd, dtf)}):
+      let ts = dtf->typs;
+      for (; ts; ts = ts->tl) {
+        let &$(_, t) = ts->hd;
+        i_visit_type(f, env, t, seen);
+      }
+      fallthru(dtd);
+    case &DatatypeCon({.KnownDatatype = &dtd}):
+      if (dtd->fields) {
+        let fs = dtd->fields->v;
+        for (; fs; fs = fs->tl) {
+          let ts = fs->hd->typs;
+          for (; ts; ts = ts->tl) {
+            let &$(_, t) = ts->hd;
+            i_visit_type(f, env, t, seen);
+          }
+        }
+      }
+      break;
+    case &AggrCon({.KnownAggr = &ad}):
+      if (ad->impl) {
+        let qbl = ad->impl->qual_bnd;
+        for (; qbl; qbl = qbl->tl) {
+          let &$(t1, t2) = qbl->hd;
+          i_visit_type(f, env, t1, seen);
+          i_visit_type(f, env, t2, seen);
+        }
+        let afl = ad->impl->fields;
+        for (; afl; afl = afl->tl)
+          i_visit_type(f, env, afl->hd->type, seen);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// walk over the structure of a type
+static void i_visit_type(bool(@f)(`a, type_t),
+              `a env, type_t t, Hashtable::table_t<type_t, int> seen) {
+  if (Hashtable::lookup_opt(seen, t))
+    return;
+  Hashtable::insert(seen, t, 1);
+
+  if (!f(env, t))
+    return;
+
+  switch (t) {
+    case &AppType(tc, ts):
+      i_visit_tycon_types(f, env, tc, seen);
+      for (; ts; ts = ts->tl)
+        i_visit_type(f, env, ts->hd, seen);
+      break;
+    case &Cvar(_, to, ...):
+      fallthru(to);
+    case &Evar(_, to, _, _):
+      if (to)
+        i_visit_type(f, env, (type_t)to, seen);
+      break;
+    case &VarType(_):
+      break;
+    case &PointerType(PtrInfo{ta, _, PtrAtts { e, n, b, z, _, r, a }}):
+      i_visit_type(f, env, ta, seen);
+      i_visit_type(f, env, e, seen);
+      i_visit_type(f, env, n, seen);
+      i_visit_type(f, env, b, seen);
+      i_visit_type(f, env, z, seen);
+      i_visit_type(f, env, r, seen);
+      i_visit_type(f, env, a, seen);
+      break;
+    case &ArrayType(ArrayInfo{ta, _, _, z, _}):
+      i_visit_type(f, env, ta, seen);
+      i_visit_type(f, env, z, seen);
+      break;
+    case &FnType(FnInfo{.effect       = e,
+                        .ret_type     = r,
+                        .args         = args,
+                        .cyc_varargs  = va,
+                        .qual_bnd     = qb,
+                        .arg_vardecls = vd,
+                        .effconstr    = fc,
+                        ...}):
+      if (e != NULL)
+        i_visit_type(f, env, (type_t)e, seen);
+      i_visit_type(f, env, r, seen);
+      for (; args; args = args->tl) {
+        let &$(_, _, at) = args->hd;
+        i_visit_type(f, env, at, seen);
+      }
+      if (va)
+        i_visit_type(f, env, va->type, seen);
+      for (; qb; qb = qb->tl) {
+        let &$(t1, t2) = qb->hd;
+        i_visit_type(f, env, t1, seen);
+        i_visit_type(f, env, t2, seen);
+      }
+      for (; vd; vd = vd->tl) {
+        if (vd->hd) {
+          i_visit_type(f, env, vd->hd->type, seen);
+          if (vd->hd->rgn)
+            i_visit_type(f, env, vd->hd->rgn, seen);
+        }
+      }
+      for (; fc; fc = fc->tl) {
+        switch (fc->hd) {
+          case &SingleConstraint(tc):
+            i_visit_type(f, env, tc, seen);
+            break;
+          case &DisjointConstraint(tc1, tc2):
+            fallthru(tc1, tc2);
+          case &SubsetConstraint(tc1, tc2):
+            i_visit_type(f, env, tc1, seen);
+            i_visit_type(f, env, tc2, seen);
+            break;
+        }
+      }
+      break;
+    case &AnonAggrType(_, _, afl):
+      for (; afl; afl = afl->tl)
+        i_visit_type(f, env, afl->hd->type, seen);
+      break;
+    case &TypedefType(_, ts, tdef, to):
+      for (; ts; ts = ts->tl)
+        i_visit_type(f, env, ts->hd, seen);
+      if (tdef && tdef->defn)
+        i_visit_type(f, env, tdef->defn, seen);
+      if (to)
+        i_visit_type(f, env, to, seen);
+      break;
+    case &TypeDeclType(_, tptr):
+      if (tptr && *tptr)
+        i_visit_type(f, env, *tptr, seen);
+      break;
+    case &SubsetType(vd, e, aopt):
+      i_visit_type(f, env, vd->type, seen);
+      break;
+    case &ValueofType(_):
+    case &TypeofType(_):
+      break;
+  }
+}
+
+int cmp_ptr(`a a, `a b) { return (unsigned int)a - (unsigned int)b; }
+
+int hash_ptr(`a a) { return (unsigned int)a; }
+
+void visit_type(bool(@f)(`a, type_t), `a env, type_t t) {
+  region r;
+  Hashtable::table_t<type_t, int> seen = Hashtable::rcreate(r, 20, cmp_ptr, hash_ptr);
+  i_visit_type(f, env, t, seen);
+}
+
+/*****************************************************************************
+ * Test whether an expression has side effects.
+ */
+
+// FIX?: rules out statement expressions
+// FIX?: could use exceptions to short-circuit more
+static bool no_side_effects_f1(bool @env, exp_t e) {
+  switch (e->r) {
+    case &FnCall_e(...):
+    case &AssignOp_e(...):
+    case &Swap_e(...):
+    case &Asm_e(...):
+    case &StmtExp_e(_):
+    case &Increment_e(...):
+      *env = false;
+      return false;
+    case &Sizeofexp_e(...):
+      return false;
+    default:
+      return true;
+  }
+}
+
+static bool no_side_effects_f2(bool @env, stmt_t s) {
+  Warn::impos2("Absyn::no_side_effects looking at a statement");
+}
+
+bool no_side_effects_exp(exp_t e) {
+  bool ans = true;
+  visit_exp(no_side_effects_f1, no_side_effects_f2, &ans, e);
+  return ans;
+}
+
+/*****************************************************************************
+ * Variable may appear in expression?
+ */
+
+static struct VarMapAppearEnv {
+  qvar_t var;
+  bool result;
+};
+
+// FIX?: rules out statement expressions
+// FIX?: could use exceptions to short-circuit more
+static bool var_may_appear_f1(struct VarMapAppearEnv @env, exp_t e) {
+  switch (e->r) {
+    case &Var_e(b):
+      if (qvar_cmp(binding2qvar(b), env->var) == 0)
+        env->result = true;
+      return false;
+    case &Asm_e(...):
+      fallthru;  // conservative
+    case &StmtExp_e(_):
+      env->result = true;
+      return false;
+    case &Comprehension_e(vd, ...):
+      return qvar_cmp(vd->name, env->var) != 0;
+    default:
+      return true;
+  }
+}
+
+static bool var_may_appear_f2(struct VarMapAppearEnv @env, stmt_t e) {
+  Warn::impos2("Absyn::no_side_effects looking at a statement");
+}
+
+bool var_may_appear_exp(qvar_t v, exp_t e) {
+  let env = VarMapAppearEnv(v, false);
+  visit_exp(var_may_appear_f1, var_may_appear_f2, &env, e);
+  return env.result;
+}
+
+/*****************************************************************************
+ * Nested statements.
+ */
+
+static struct NestedStmtEnv<`a, `r> {
+  void(@`r f)(`a, stmt_t);
+  `a env;
+  bool szeof;
+};
+
+static bool do_nested_stmt_f1(struct NestedStmtEnv<`a> @env, exp_t e) {
+  switch (e->r) {
+    case &Sizeofexp_e(_):
+      return env->szeof;
+    default:
+      return true;
+  }
+}
+
+static bool do_nested_stmt_f2(struct NestedStmtEnv<`a> @env, stmt_t s) {
+  // always return false because f is doing its own recurring (for now)
+  env->f(env->env, s);
+  return false;
+}
+
+void do_nested_statement(exp_t e, `a env, void(@f)(`a, stmt_t), bool szeof) {
+  let nested_env = NestedStmtEnv(f, env, szeof);
+  visit_exp(do_nested_stmt_f1, do_nested_stmt_f2, &nested_env, e);
+}
+
+/*****************************************************************************
+ * Datatype constructors.
+ */
+
+datacon(Raw_decl, Porton_d);
+datacon(Raw_decl, Portoff_d);
+datacon(Raw_decl, Tempeston_d);
+datacon(Raw_decl, Tempestoff_d);

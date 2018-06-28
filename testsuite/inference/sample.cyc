@@ -1,0 +1,12 @@
+# 2 "sample.cyc"
+struct Beep {
+  int a;
+};
+
+struct Beep *beep() { return new(Beep {.a = 3}); }
+
+`a foo(`a val) { return val; }
+
+int main(void) {
+  return foo((long)1234l) == 1234l ? 0 : 1;
+}

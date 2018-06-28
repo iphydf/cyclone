@@ -1,0 +1,30 @@
+
+cyclone/testsuite/compiler/testaqualfail.cyc:11:2: c was declared with type int *@aqual(UNIQUE) but initialized with type int *
+  ALIASABLE and UNIQUE are not compatible. ((different alias qualifiers))
+cyclone/testsuite/compiler/testaqualfail.cyc:33:2: returns value of type int * but requires int *@aqual(`q)
+  ALIASABLE and `q are not compatible. 
+	((abstracted type variable doesn't unify with constant))
+cyclone/testsuite/compiler/testaqualfail.cyc:41:2: type mismatch: int *@aqual(UNIQUE) != int *
+  ALIASABLE and UNIQUE are not compatible. ((different alias qualifiers))
+cyclone/testsuite/compiler/testaqualfail.cyc:53:27: returns value of type int * but requires int *@aqual(UNIQUE)
+  ALIASABLE and UNIQUE are not compatible. ((different alias qualifiers))
+cyclone/testsuite/compiler/testaqualfail.cyc:64:2: alias qualifier bounds violated: UNIQUE <> ALIASABLE
+cyclone/testsuite/compiler/testaqualfail.cyc:84:4: returns value of type struct s3c<UNIQUE> but requires struct s3c<ALIASABLE>
+  ALIASABLE and UNIQUE are not compatible. ((different alias qualifiers))
+cyclone/testsuite/compiler/testaqualfail.cyc:92:2: type mismatch: int *@aqual(`r) != int *@aqual(`q)
+  `q and `r are not compatible. ((variable types are not the same))
+cyclone/testsuite/compiler/testaqualfail.cyc:106:2: type mismatch: int *@aqual(`r) != int *@aqual(`q)
+  `q and `r are not compatible. ((variable types are not the same))
+cyclone/testsuite/compiler/testaqualfail.cyc:113:6: alias qualifier bounds violated: `q <> ALIASABLE
+cyclone/testsuite/compiler/testaqualfail.cyc:121:13: alias qualifier bounds violated: `q <> ALIASABLE
+cyclone/testsuite/compiler/testaqualfail.cyc:154:8: cannot alias value of type int *@aqual(UNIQUE)`p to type int *@aqual(REFCNT)`r
+cyclone/testsuite/compiler/testaqualfail.cyc:168:2: alias qualifier bounds violated: UNIQUE <> ALIASABLE
+cyclone/testsuite/compiler/testaqualfail.cyc:169:2: alias qualifier bounds violated: UNIQUE <> ALIASABLE
+cyclone/testsuite/compiler/testaqualfail.cyc:190:10: alias qualifier bounds violated: UNIQUE <> ALIASABLE
+cyclone/testsuite/compiler/testaqualfail.cyc:200:6: pattern for variable elt dereferences an alias-free-pointer from a non-unique path
+
+cyclone/testsuite/compiler/testaqualfail.cyc:204:2: alias bound appears on type variable `a which is not in a function declaration or aggregate field
+
+cyclone/testsuite/compiler/testaqualfail.cyc:219:61: Cannot consume non-unique paths; do swap instead
+
+COMPILATION FAILED!

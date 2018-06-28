@@ -1,0 +1,89 @@
+#include <stdio.h>
+#include "cyclone/library/std/core.h"
+#include "cyclone/library/std/list.h"
+using List;
+using Core;
+
+struct MyContainer {
+  <`r>
+  rcregion_key_t<`r> key;
+  list_t<intptr_t,`r> data;
+};
+
+struct MyContainer *`U global = NULL;
+
+void bar();
+
+int main() {
+  // Create a new dynamic region
+  let k = new_rckey();
+  let NewDynamicRegion{<`r> key} = k;
+//   let key2 = alias_refptr(key);
+
+  // At this point, we refer to the region `r to specify types,
+  // but we cannot actually access `r (i.e. it's not in
+  // our "static capability," a concept explained later)
+  list_t<intptr_t,`r> x = NULL;
+
+  // We can access x by opening the region, which temporarily
+  // consumes the key
+  { region h = open(key);
+    x = rnew(h) List(3,x);
+    //     key = key2;
+    goto L;
+  }
+
+  // Now we can access the key again, but not x.  So we have to
+  // open the region to increment its contents
+  L:{ region h = open(key);
+    intptr_t i = x->hd + 1;
+    x = rnew (h) List(i,x);
+  }
+
+  // Stick the key and data in a global data structure.
+  // We've now lost direct access to the key or x.
+  global = qunew MyContainer{key,x};
+  // But we can regain it by swapping for the container.
+  struct MyContainer *`U p = NULL;
+  global :=: p;
+  let MyContainer{<`r2> key2, data2} = *p;
+  list_t<intptr_t,`r2> d = data2;
+  { region h = open(key2);
+    intptr_t i = d->hd + 1;
+    d = rnew (h) List(i,d);
+
+  for (_ l = d; l != NULL; l = l->tl)
+    printf("%d ",l->hd);
+  }
+  printf("\n");
+  // Finally, destroy the key and the region
+  free_rckey(key2);
+
+  bar();
+
+  return 0;
+}
+
+using Core;
+
+void foo(int *x) {
+  throw &Not_found_val;
+}
+
+// make sure we properly unconsume within a nested region block
+// exited via a break;
+void bar() {
+  let NewDynamicRegion{<`r> key} = new_ukey();
+  bool freeit = false;
+  { region r = open(key);
+    try {
+      foo(rnew(r) 10);
+    } catch { case ex: freeit = true; break; }
+  }
+  if (freeit) { free_ukey(key); return; }
+  printf("oops!\n");
+  { region r2 = open(key);
+    let x = rnew(r2) 10;
+  }
+  free_ukey(key);
+}

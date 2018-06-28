@@ -1,0 +1,837 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 Mike Hicks, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+// String library, base on code from Mike Hicks, modified by T. Jim
+#include "assert.h"
+#include "core.h"
+#include "cycboot.h"  // for size_t
+#include "list.h"
+#include "string.h"
+#include "strings.h"
+// Need to undefine these so that we can refer to their C versions
+#undef bcopy
+#undef memcpy
+#undef memmove
+
+using Core;
+using List;
+
+extern "C" Cstring strerror(int errnum);
+
+///////////////////////// LENGTH
+size_t strlen(buffer_t s) @ensures(return_value <= numelts(s)) {
+  size_t i;
+  unsigned int sz = numelts(s);
+  for (i = 0; @assert__(i <= numelts(s)) && i < sz; ++i)
+    if (s[i] == '\000')
+      return i;
+  return i;
+}
+
+static inline unsigned int umin(unsigned int i, unsigned int j)
+    @ensures(return_value <= i && return_value <= j) {
+  if (i < j)
+    return i;
+  else
+    return j;
+}
+static inline unsigned int umax(unsigned int i, unsigned int j)
+    @ensures(return_value >= i && return_value >= j) {
+  if (i > j)
+    return i;
+  else
+    return j;
+}
+
+///////////////////////// COMPARISONS
+// Compare two strings lexicographically.
+// Return <0, 0, or >0 depending on whether s1<s2, s1==s2, or s1>s2.
+int strcmp(buffer_t s1, buffer_t s2) {
+  if (s1 == s2)
+    return 0;
+  int i          = 0;
+  unsigned sz1   = numelts(s1);
+  unsigned sz2   = numelts(s2);
+  unsigned minsz = umin(sz1, sz2);
+  //  @assert__(minsz <= numelts(s1) && minsz <= numelts(s2));
+  for (; @assert__(minsz <= sz1 && minsz <= sz2 && i <= minsz) && i < minsz; ++i) {
+    char c1 = s1[i];
+    char c2 = s2[i];
+    if (c1 == '\000')
+      return (c2 == '\000') ? 0 : -1;
+    if (c2 == '\000')
+      return 1;
+    int diff = c1 - c2;
+    if (diff != 0)
+      return diff;
+  }
+  if (sz1 == sz2)
+    return 0;
+  if (sz1 < sz2)
+    return (s2[i] == '\000') ? 0 : -1;
+  @assert__(i <= minsz && minsz < sz1);
+  return (s1[i] == '\000') ? 0 : 1;
+}
+
+int strptrcmp(stringptr_t s1, stringptr_t s2) { return strcmp(*s1, *s2); }
+
+static inline int ncmp(buffer_t s1, size_t len1, buffer_t s2, size_t len2, size_t n)
+    @requires(len1 <= numelts(s1) && len2 <= numelts(s2)) {
+  if (n <= 0)
+    return 0;
+
+  size_t min_len = umin(len1, len2);
+  size_t bound   = umin(min_len, n);
+
+  for (unsigned int i = 0; i < bound; i++) {
+    int retc;
+    if ((retc = (s1[i] - s2[i])) != 0)
+      return retc;
+  }
+  if (len1 < n || len2 < n)
+    return ((int)len1) - ((int)len2);
+  return (0);
+}
+
+// Like strcmp but compare no more than n characters.
+// If n<0 return 0 (equal).
+int strncmp(buffer_t s1, buffer_t s2, size_t n) {
+  size_t len1 = strlen(s1);
+  size_t len2 = strlen(s2);
+  @assert__(len1 <= numelts(s1) && len2 <= numelts(s2));
+  return ncmp(s1, len1, s2, len2, n);
+}
+
+// Like strcmp but don't consider zeros (NUL characters) as marking
+// the end of strings.
+// JGM: I'm changing this because we no longer get such strong guarantees
+// about things being the right size.
+int zstrcmp(buffer_t a, buffer_t b) {
+  if (a == b)
+    return 0;
+  size_t as         = numelts(a);
+  size_t bs         = numelts(b);
+  size_t min_length = umin(as, bs);
+  int i             = -1;
+
+  @assert__(min_length <= numelts(a) && min_length <= numelts(b));
+
+  while (++i, i < min_length) {
+    int diff = (int)(a[i]) - (int)(b[i]);
+    if (diff != 0)
+      return diff;
+  }
+  return ((int)as) - ((int)bs);
+}
+// Like zstrcmp but consider at most n characters
+int zstrncmp(buffer_t s1, buffer_t s2, size_t n) {
+  if (n <= 0)
+    return 0;
+
+  size_t s1size   = numelts(s1);
+  size_t s2size   = numelts(s2);
+  size_t min_size = umin(s1size, s2size);
+  size_t bound    = umin(n, min_size);
+
+  @assert__(bound <= numelts(s1) && bound <= numelts(s2));
+
+  for (int i = 0; i < bound; i++) {
+    if (s1[i] < s2[i])
+      return (-1);
+    if (s2[i] < s1[i])
+      return (1);
+  }
+  if (min_size <= bound)
+    return (0);
+  if (s1size < s2size)
+    return (-1);
+  return (1);
+}
+
+// like zstrcmp but operates on pointers -- useful for hashtables
+int zstrptrcmp(stringptr_t a, stringptr_t b) {
+  if ((int)a == (int)b)
+    return 0;
+  return (zstrcmp(*a, *b));
+}
+
+///////////////////////// CONCATENATION
+
+// Internal string concatenation function, parametized by what
+// to throw on bounds error
+static inline mstring_t<`r> int_strcato(mstring_t<`r> dest, buffer_t src) {
+  int i;
+  size_t dsize, slen, dlen, dplen;
+
+  dlen             = strlen(dest);
+  mstring_t<`r> dp = dest + dlen;
+  dplen            = numelts(dp);
+  slen             = strlen(src);
+
+  if (slen <= dplen) {
+    @assert__(slen <= numelts(src) && slen <= numelts(dp));
+    for (i = 0; i < slen; i++) {
+      dp[i] = src[i];
+    }
+    if (i < dplen)
+      dp[i] = '\000';
+  } else
+    throw new Invalid_argument("strcat");
+  return dest;
+}
+
+// Destructive concatenation: the first argument is modified,
+// and returned
+mstring_t<`r> strcat(mstring_t<`r> dest, buffer_t src) { return int_strcato(dest, src); }
+
+// Allocate a new string and fill it with the concatenation of a and b
+mstring_t<`r> rstrconcat(region_t<`r> r, buffer_t a, buffer_t b) {
+  unsigned alen      = strlen(a);
+  unsigned blen      = strlen(b);
+  mstring_t<`r> ans  = rnew_string(r, alen + blen + 1);
+  mstring_t<`r> ansb = ans + alen;
+  unsigned int i, j;
+  if (alen > numelts(ans))
+    throw new Core::Impossible("rstrconcat 1");
+  for (i = 0; i < alen; ++i)
+    ans[i] = a[i];
+  if (blen > numelts(ansb))
+    throw new Core::Impossible("rstrconcat 1");
+  for (j = 0; j < blen; ++j)
+    ansb[j] = b[j];
+  return ans;
+}
+
+mstring_t strconcat(buffer_t a, buffer_t b) { return rstrconcat(heap_region, a, b); }
+
+// Allocate a new string and fill it with the concatenation of strs
+mstring_t<`r> rstrconcat_l(region_t<`r> r, list_t<stringptr_t> strs) {
+  size_t len;            // temp
+  size_t total_len = 0;  // sum of lengths of the strings
+  mstring_t<`r> ans;
+  region temp;
+  {
+    list_t<size_t,`temp> lens = rnew(temp) List((size_t)0,  // save length of each string
+                                                NULL);      // (with junk 0 on front)
+    List_t<size_t,`temp> end  = lens;                       // last cons cell in 'lens'
+    for (_ p = strs; p != NULL; p = p->tl) {
+      len = strlen(*(p->hd));
+      total_len += len;
+      List_t q = rnew(temp) List(len, NULL);
+      end->tl  = q;
+      end      = q;
+    }
+    lens     = lens->tl;  // remove junk/temporary 0
+    ans      = rnew_string(r, total_len + 1);
+    size_t i = 0;
+    while (strs != NULL) {
+      let next = *(strs->hd);
+      len      = lens->hd;
+      strncpy((char ? @nozeroterm)(ans+i),next,len);
+      i += len;
+      strs = strs->tl;
+      lens = lens->tl;
+    }
+  }
+  return ans;
+}
+
+mstring_t strconcat_l(list_t<stringptr_t> strs) { return rstrconcat_l(heap_region, strs); }
+
+// Allocate a new string and fill it with the concatenation of strs,
+// using separator between each element
+mstring_t<`r> rstr_sepstr(region_t<`r> r, list_t<stringptr_t> strs, buffer_t separator) {
+  if (strs == NULL)
+    return rnew_string(r, 0);
+  if (strs->tl == NULL)
+    return rstrdup(r, *(strs->hd));
+  let p = strs;
+  region temp;
+  {
+    list_t lens = rnew(temp) List((size_t)0, NULL);  // see comments in strconcat_l
+    List_t end  = lens;
+    size_t len;
+    size_t total_len = 0;
+    size_t list_len  = 0;
+    for (; p != NULL; p = p->tl) {
+      len = strlen(*(p->hd));
+      total_len += len;
+      List_t q = rnew(temp) List(len, NULL);
+      end->tl  = q;
+      end      = q;
+      ++list_len;
+    }
+    lens          = lens->tl;
+    size_t seplen = strlen(separator);
+    total_len += (list_len - 1) * seplen;
+    mstring_t ans = rnew_string(r, total_len + 1);
+    size_t i      = 0;
+    while (strs->tl != NULL) {
+      let next = *(strs->hd);
+      len      = lens->hd;
+      strncpy((char ? @nozeroterm)(ans+i),next,len);
+      i += len;
+      strncpy((char ? @nozeroterm)(ans+i),separator,seplen);
+      i += seplen;
+      strs = strs->tl;
+      lens = lens->tl;
+    }
+    strncpy((char ? @nozeroterm)(ans+i),*(strs->hd),lens->hd);
+    return ans;
+  }
+}
+
+mstring_t str_sepstr(list_t<stringptr_t> strs, buffer_t separator) {
+  return rstr_sepstr(heap_region, strs, separator);
+}
+///////////////////////// COPYING
+// Destructively copy at most n characters from src into dest
+mbuffer_t<`r> strncpy(mbuffer_t<`r> dest, buffer_t src, size_t n) {
+  unsigned int i;
+  if (n > numelts(src) || n > numelts(dest))
+    throw new Invalid_argument("strncpy");
+  for (i = 0; i < n; i++) {
+    let srcChar = src[i];
+    if (srcChar == '\000')
+      break;
+    dest[i] = srcChar;
+  }
+  for (; i < n; i++)
+    dest[i] = '\000';
+
+  return dest;
+}
+
+// Strncpy that does not pay attention to zero chars
+mbuffer_t<`r> zstrncpy(mbuffer_t<`r> dest, buffer_t src, size_t n) {
+  if (n > numelts(dest) || n > numelts(src))
+    throw new Invalid_argument("zstrncpy");
+  unsigned int i;
+  for (i = 0; i < n; i++)
+    dest[i] = src[i];
+  return dest;
+}
+// Non-allocating string copy: first arg is returned
+mstring_t<`r> strcpy(mstring_t<`r> dest, buffer_t src) {
+  unsigned ssz = numelts(src);
+  unsigned dsz = numelts(dest);
+  if (ssz <= dsz) {
+    unsigned i;
+    for (i = 0; i < ssz; i++) {
+      let srcChar = src[i];
+      dest[i]     = srcChar;
+      if (srcChar == '\000')
+        break;
+    }
+  } else {
+    // it may be that strlen(src) <= dsz
+    size_t len = strlen(src);
+    strncpy((char ? @nozeroterm)dest,src,len);
+    if (len < numelts(dest))
+      dest[len] = '\000';
+  }
+  return dest;
+}
+
+// Allocating functions
+
+// Not an ISO function, but available in gcGc
+mstring_t<`r> rstrdup(region_t<`r::E> r, buffer_t src) {
+  size_t len;
+  mstring_t<`r> temp;
+
+  len  = strlen(src);
+  temp = rnew_string(r, len + 1);
+  { let temp2 = (char ? @nozeroterm`r)temp;
+    let alias<`x> char ? @nozeroterm`x dst = temp2;
+    strncpy(dst, src, len);
+  }
+  return temp;
+}
+
+mstring_t<`r,`q> rqstrdup(region_t<`r::E> r, aqual_t<`q\T> q, buffer_t src) {
+  size_t len = strlen(src);
+  _ temp     = rqnew_string(r, q, len + 1);
+  {
+    let temp2 = (char ? @nozeroterm`r)temp;
+    let alias<`x> char ? @nozeroterm`x dst = temp2;
+    strncpy(dst, src, len);
+  }
+  return temp;
+}
+
+mstring_t strdup(buffer_t src) { return rstrdup(heap_region, src); }
+
+mbuffer_t<`r,`q> rqrealloc(region_t<`r::E> r, aqual_t<`q\T> q, mbuffer_t s, size_t sz) {
+  mbuffer_t temp;
+  size_t slen;
+
+  slen = numelts(s);
+  sz   = (sz > slen) ? sz : slen;
+  temp = qcalloc(r, q, sz, sizeof(char));
+
+  {
+    let alias<`x> char ? @nozeroterm`x dst = temp;
+  strncpy((char ? @nozeroterm)dst,s,slen);
+  }
+
+  return temp;
+}
+
+mbuffer_t<`r> rrealloc(region_t<`r::E> r, mbuffer_t s, size_t sz) {
+  return rqrealloc(r, aliasable_qual, s, sz);
+}
+
+mstring_t<`r> rexpand(region_t<`r::E> r, buffer_t s, size_t sz) {
+  mstring_t temp;
+  size_t slen;
+
+  slen = strlen(s);
+  sz   = (sz > slen) ? sz : slen;
+  temp = rnew_string(r, sz);
+
+  {
+    let alias<`x> char ? @nozeroterm`x dst = temp;
+    strncpy((char ? @nozeroterm)dst,s,slen);
+  }
+
+  if (slen != numelts(s))
+    temp[slen] = '\000';
+
+  return temp;
+}
+
+mstring_t expand(buffer_t s, size_t sz) { return rexpand(heap_region, s, sz); }
+
+mstring_t<`r> cond_rrealloc_str(region_t<`r::E> r, mstring_t<`r> str, size_t sz) {
+  size_t maxsizeP = numelts(str);
+  let res         = NULL;
+
+  if (maxsizeP == 0) {
+    maxsizeP = umax(30, sz); /* arbitrary */
+    res      = rnew_string(r, maxsizeP);
+    res[0]   = '\000';
+  } else if (sz > maxsizeP) {
+    maxsizeP = (maxsizeP * 2 > sz * 5 / 4) ? (maxsizeP * 2) : (sz * 5 / 4);
+    {
+      let alias<`x> char ? @nozeroterm`x dst = str;
+      res                                    = rexpand(r, dst, maxsizeP);
+    }
+  }
+
+  return res;
+}
+
+mstring_t realloc_str(mstring_t<`H> str, size_t sz) {
+  let res = cond_rrealloc_str(heap_region, str, sz);
+  if (res == NULL)
+    return str;
+  else
+    return res;
+}
+
+///////////////////////// TRANSFORMATIONS
+// Return a substring of a string, by allocation.
+// FIX: This adds an extra NUL character at the end of the string.
+// I'd like to remove it but it causes a bug in the lexer on bootstrapping.
+mstring_t<`r> rsubstring(region_t<`r> r, buffer_t s, int start, size_t amt) {
+  // if (start < 0 || amt < 0 || start + ((int)amt) - 1 > (int)(numelts(s)))
+  //  throw new Invalid_argument("substring");
+  mstring_t ans = rnew_string(r, amt + 1);
+  s             = s + start;
+  if (amt > numelts(ans) || amt > numelts(s))
+    throw new Invalid_argument("rsubstring");
+  for (size_t i = 0; i < amt; ++i)
+    ans[i] = s[i];
+  ans[amt] = '\000';
+  return ans;
+}
+
+mstring_t substring(buffer_t s, int start, size_t amt) {
+  return rsubstring(heap_region, s, start, amt);
+}
+
+// replace last with second at end of first
+// raise Invalid_argument if second is not end of first.
+mstring_t<`r> rreplace_suffix(region_t<`r> r, buffer_t src, buffer_t curr_suffix,
+                              buffer_t new_suffix) {
+  size_t m     = numelts(src);
+  size_t n     = numelts(curr_suffix);
+  string_t err = "replace_suffix";
+  if (m < n)
+    throw new Invalid_argument(err);
+  for (size_t i = 1; i <= n; ++i)
+    if (src[m - i] != curr_suffix[n - i])
+      throw new Invalid_argument(err);
+  mstring_t ans = rnew_string(r, m - n + numelts(new_suffix) + 1);
+  strncpy((char ? @nozeroterm)ans,src,m-n);
+  strncpy((char ? @nozeroterm)(ans+(m-n)),new_suffix,numelts(new_suffix));
+  return ans;
+}
+
+mstring_t replace_suffix(buffer_t src, buffer_t curr_suffix, buffer_t new_suffix) {
+  return rreplace_suffix(heap_region, src, curr_suffix, new_suffix);
+}
+////////////////////////// SEARCHING
+
+// Search for any character of accept in s.
+// Return a ? pointer to the first such character, or NULL if none.
+string_t<`r> strpbrk(string_t<`r> s, buffer_t accept) {
+  int len        = numelts(s);
+  unsigned asize = numelts(accept);
+  char c;
+  unsigned i;
+  for (i = 0; i < len && (c = s[i]) != 0; i++) {
+    for (unsigned j = 0; j < asize; j++)
+      if (c == accept[j])
+        return s + i;
+  }
+  return NULL;
+}
+
+mstring_t<`r> mstrpbrk(mstring_t<`r> s, buffer_t accept) {
+  int len        = numelts(s);
+  unsigned asize = numelts(accept);
+  char c;
+  unsigned i;
+  for (i = 0; i < len && (c = s[i]) != 0; i++) {
+    for (unsigned j = 0; j < asize; j++)
+      if (c == accept[j])
+        return s + i;
+  }
+  return NULL;
+}
+
+// Return a pointer to the first occurrence of c in s,
+// or NULL if none.
+mstring_t<`r> mstrchr(mstring_t<`r> s, char c) {
+  int len = numelts(s);
+  char c2;
+  unsigned i;
+
+  for (i = 0; i < len && (c2 = s[i]) != 0; i++) {
+    if (c2 == c)
+      return s + i;
+  }
+  return NULL;
+}
+
+string_t<`r> strchr(string_t<`r> s, char c) {
+  int len = numelts(s);
+  char c2;
+  unsigned i;
+
+  for (i = 0; i < len && (c2 = s[i]) != 0; i++) {
+    if (c2 == c)
+      return s + i;
+  }
+  return NULL;
+}
+
+// Return a pointer to the last occurrence of c in s,
+// or NULL if none.
+string_t<`r> strrchr(string_t<`r> s0, char c) {
+  int len        = strlen(s0);
+  int i          = len - 1;
+  const char ? s = s0;
+  s += i;
+
+  for (; i >= 0; i--, s--) {
+    if (*s == c)
+      return (string_t)s;
+  }
+  return NULL;
+}
+
+mstring_t<`r> mstrrchr(mstring_t<`r> s0, char c) {
+  int len  = strlen(s0);
+  int i    = len - 1;
+  char ? s = s0;
+  s += i;
+
+  for (; i >= 0; i--, s--) {
+    if (*s == c)
+      return (mstring_t)s;
+  }
+  return NULL;
+}
+
+// Return a pointer to the beginning of the substring needle within
+// haystack, or NULL if the substring is not found.
+string_t<`r> strstr(string_t<`r> haystack, string_t needle) {
+  if (!haystack || !needle)
+    throw new Invalid_argument("strstr");
+  if (*needle == '\0')
+    return haystack;
+
+  int len = strlen(needle);
+  for (string_t<`r> start = haystack; (start = strchr(start, *needle)) != NULL;
+       start              = strchr(start + 1, *needle))
+    if (strncmp(start, needle, len) == 0)
+      return start;
+
+  return NULL;
+}
+
+mstring_t<`r> mstrstr(mstring_t<`r> haystack, string_t needle) {
+  if (!haystack || !needle)
+    throw new Invalid_argument("mstrstr");
+  if (*needle == '\0')
+    return haystack;
+
+  int len = strlen(needle);
+  for (mstring_t<`r> start = haystack; (start = mstrchr(start, *needle)) != NULL;
+       start               = mstrchr(start + 1, *needle))
+    if (strncmp(start, needle, len) == 0)
+      return start;
+
+  return NULL;
+}
+
+// Search s for an occurrence of a character not in accept.
+// Return the offset to the first such character, or the length
+// of s if none.
+size_t strspn(string_t s, string_t accept) {
+  buffer_t b     = (buffer_t)s;
+  size_t len     = strlen(b);
+  unsigned asize = numelts(accept);
+  @assert__(len <= numelts(b));
+  for (size_t i = 0; i < len; i++) {
+    int j;
+    for (j = 0; j < asize; j++)
+      if (b[i] == accept[j])
+        break;      /* inner loop */
+    if (j == asize) /* didn't find it */
+      return i;
+  }
+
+  return len;
+}
+
+// Search s for an occurrence of a character in accept.
+// Return the offset to the first such character, or the length
+// of s if none.
+size_t strcspn(string_t s, string_t accept) {
+  buffer_t b     = (buffer_t)s;
+  size_t len     = strlen(b);
+  unsigned asize = numelts(accept);
+
+  @assert__(len <= numelts(b));
+  for (size_t i = 0; i < len; i++) {
+    int j;
+    for (j = 0; j < asize; j++)
+      if (b[i] == accept[j])
+        return i;
+  }
+  return len;
+}
+
+// Return substring from current position to first occurrence of a
+// character in tok.  Modifies s by storing a NULL at that position.
+// Subsequent calls with NULL as the token will start at the end
+// of the previous token.
+mstring_t<`H> strtok(mstring_t<`H> s, string_t delim) {
+  static mstring_t<`H> olds = NULL;
+  mstring_t<`H> token;
+
+  if (s == NULL) {
+    if (olds == NULL)
+      return NULL;
+    s = olds;
+  }
+
+  /* Scan leading delimiters.  */
+  size_t inc = strspn(s, delim);
+  if ((inc >= numelts(s)) || *(s + inc) == '\0') {
+    olds = NULL;
+    return NULL;
+  } else
+    s += inc;
+
+  /* Find the end of the token.  */
+  token = s;
+  s     = mstrpbrk(token, delim);
+  if (s == NULL)
+    /* This token finishes the string.  */
+    olds = NULL;
+  else {
+    /* Terminate the token and make OLDS point past it.  */
+    *s   = '\0';
+    olds = s + 1;
+  }
+  return token;
+}
+
+////////////////////////// CONVERSIONS
+list_t<intptr_t,`r> rexplode(region_t<`r> r, buffer_t s) {
+  list_t result = NULL;
+  for (int i = strlen(s) - 1; i >= 0; i--)
+    result = rnew(r) List((intptr_t)s[i], result);
+  return result;
+}
+
+list_t<intptr_t> explode(buffer_t s) { return rexplode(heap_region, s); }
+
+mstring_t implode(list_t<intptr_t> chars) {
+  mstring_t s = new_string(List::length(chars) + 1);
+  size_t i    = 0;
+  while (chars != NULL) {
+    s[i++] = (char)chars->hd;
+    chars  = chars->tl;
+  }
+  return (s);
+}
+
+// Like strcmp, but case insensitive.
+static inline int casecmp(buffer_t s1, size_t len1, buffer_t s2, size_t len2)
+    @requires(len1 <= numelts(s1) && len2 <= numelts(s2)) {
+  size_t min_length = umin(len1, len2);
+
+  @assert__(min_length <= numelts(s1) && min_length <= numelts(s2));
+
+  int i = -1;
+  while (++i, i < min_length) {
+    int diff = toupper(s1[i]) - toupper(s2[i]);
+    if (diff != 0)
+      return diff;
+  }
+  return ((int)len1) - ((int)len2);
+}
+
+int strcasecmp(buffer_t s1, buffer_t s2) {
+  if (s1 == s2)
+    return 0;
+  size_t len1 = strlen(s1);
+  size_t len2 = strlen(s2);
+  return casecmp(s1, len1, s2, len2);
+}
+
+static inline int caseless_ncmp(buffer_t s1, size_t len1, buffer_t s2, size_t len2, size_t n)
+    @requires(len1 <= numelts(s1) && len2 <= numelts(s2)) {
+  if (n <= 0)
+    return 0;
+
+  size_t min_len = umin(len1, len2);
+  size_t bound   = umin(min_len, n);
+
+  @assert__(bound <= numelts(s1) && bound <= numelts(s2));
+
+  for (int i = 0; i < bound; i++) {
+    int retc;
+    if ((retc = (toupper(s1[i]) - toupper(s2[i]))) != 0)
+      return retc;
+  }
+  if (len1 < n || len2 < n)
+    return ((int)len1) - ((int)len2);
+  return (0);
+}
+
+// Like strncmp, but case insensitive.
+int strncasecmp(buffer_t s1, buffer_t s2, size_t n) {
+  size_t len1 = strlen(s1);
+  size_t len2 = strlen(s2);
+  return caseless_ncmp(s1, len1, s2, len2, n);
+}
+
+namespace Cstr {
+  typedef char * { valueof(`i) }
+  @nozeroterm __cyclone_buf<`i>;
+  extern "C" {
+  `a *`r memcpy(`a::A *`r, const `a *, size_t n);
+  `a *`r memmove(`a::A *`r, const `a *, size_t n);
+  int memcmp(const void *, const void *, size_t n);
+  char *@nozeroterm `r memchr(const char *@nozeroterm `r, int c, size_t n);
+  void *@nozeroterm `r memset(void *@nozeroterm `r, int c, size_t n);
+  void bcopy(const `a::A *src, `a *dest, size_t n);
+  void bzero(`a::A *s, size_t n);
+  __cyclone_buf<`j> GC_realloc_hint(char *@nozeroterm`H, __cyclone_internal_singleton<`i> oldsz,
+                                    __cyclone_internal_singleton<`j> newsz);
+  }
+}  // namespace Cstr
+
+char ? @nozeroterm realloc(char ? @nozeroterm`H s, size_t n) {
+  let oldsz<`i> = numelts(s);
+  let l<`j>     = n;
+  let res       = Cstr::GC_realloc_hint((char *@nozeroterm)s, oldsz, l);
+  return Core::mkfat(res, sizeof(char), l);
+}
+
+`a::A ?`r _memcpy(`a ?`r d, const `a ? s, size_t n, sizeof_t<`a> sz) {
+  if (d == NULL || numelts(d) < n || s == NULL || numelts(s) < n)
+    throw new Invalid_argument("memcpy");
+  Cstr::memcpy((`a *)d, (const `a *)s, n * sz);
+  return d;
+}
+
+`a::A ?`r _memmove(`a ?`r d, const `a ? s, size_t n, sizeof_t<`a> sz) {
+  if (d == NULL || numelts(d) < n || s == NULL || numelts(s) < n)
+    throw new Invalid_argument("memove");
+  Cstr::memmove((`a *)d, (const `a *)s, n * sz);
+  return d;
+}
+
+int memcmp(const char ? @nozeroterm s1, const char ? @nozeroterm s2, size_t n) {
+  if (s1 == NULL || s2 == NULL || numelts(s1) < n || numelts(s2) < n)
+    throw new Invalid_argument("memcmp");
+  return Cstr::memcmp((const void *)s1, (const void *)s2, n);
+}
+
+const char ? @nozeroterm `r memchr(const char ? @nozeroterm `r s, char c, size_t n) {
+  unsigned int sz = numelts(s);
+  if (s == NULL || n > sz)
+    throw new Invalid_argument("memchr");
+  let p = Cstr::memchr((const char *@nozeroterm)s, c, n);
+  if (p == NULL)
+    return NULL;
+  let sval  = (unsigned int)((const char *@nozeroterm)s);
+  let pval  = (unsigned int)(const char *@nozeroterm)p;
+  let delta = pval - sval;
+  return (s + delta);
+}
+
+char ? @nozeroterm`r mmemchr(char ? @nozeroterm`r s, char c, size_t n) {
+  unsigned int sz = numelts(s);
+  if (s == NULL || n > sz)
+    throw new Invalid_argument("mmemchr");
+  let p = Cstr::memchr((const char *@nozeroterm)s, c, n);
+  if (p == NULL)
+    return NULL;
+  let sval  = (unsigned int)((const char *@nozeroterm)s);
+  let pval  = (unsigned int)p;
+  let delta = pval - sval;
+  return (s + delta);
+}
+
+char ? @nozeroterm`r memset(char ? @nozeroterm`r s, char c, size_t n) {
+  if (s == NULL || n > numelts(s))
+    throw new Invalid_argument("memset");
+  Cstr::memset((void *)((char *@nozeroterm)s), c, n);
+  return s;
+}
+
+void bzero(char? @nozeroterm s, size_t n) {
+  if (s == NULL || numelts(s) < n)
+    throw new Invalid_argument("bzero");
+  Cstr::bzero((_ * @nozeroterm) s, n);
+}
+
+void _bcopy(const `a::A? src, `a?`r dst, size_t n, sizeof_t<`a> sz) {
+  if (src == NULL || numelts(src) < n || dst == NULL || numelts(dst) < n)
+    throw new Invalid_argument("bcopy");
+  Cstr::bcopy((const `a *)src, (_ *)dst, n * sz);
+}

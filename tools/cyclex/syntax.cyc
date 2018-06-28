@@ -1,0 +1,4 @@
+
+#define SYNTAX_CYC
+#include "syntax.h"
+

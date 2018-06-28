@@ -1,0 +1,93 @@
+/* Part of the Cyclone compiler: remove unused labels
+   Copyright (C) 2004 Dan Grossman, Ben Hindman, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include <string.h>
+#include "cyclone/library/std/cycboot.h"
+#include "remove_labels.h"
+using Absyn;
+using List;
+namespace RemoveLabels;
+
+static struct LabelBin {
+  list_t<var_t> label_gotos;  /* used label names */
+  list_t<stmt_t> label_stmts; /* pointers to the stmt_t that potentially need removing */
+};
+typedef struct LabelBin @labelbin_t;
+
+static void remove_with_labelbin(labelbin_t lb) {
+  for (; lb->label_stmts != NULL; lb->label_stmts = lb->label_stmts->tl) {
+    let statement = (lb->label_stmts)->hd;
+    switch (statement->r) {
+      case &Label_s(label, s):
+        bool label_used = false;
+        let label_iter  = lb->label_gotos;
+        while (label_iter != NULL && !label_used) {
+          if (strptrcmp(label_iter->hd, label) == 0)
+            label_used = true;
+          label_iter = label_iter->tl;
+        }
+        if (!label_used)
+          *statement = *s;
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+static bool visit_label_f1(labelbin_t lb, exp_t e) { return true; }
+static bool visit_label_f2(labelbin_t lb, stmt_t s) {
+  switch (s->r) {
+    case &Goto_s(vt):
+      lb->label_gotos = new List{vt, lb->label_gotos};
+      return true;
+    case &Label_s(...):
+      lb->label_stmts = new List{s, lb->label_stmts};
+      return true;
+    default:
+      return true;
+  }
+}
+static void anal_decl(list_t<decl_t> tds) {
+  for (; tds != NULL; tds = tds->tl)
+    switch (tds->hd->r) {
+      case &Fn_d(fndt):
+        labelbin_t lb = new LabelBin{NULL, NULL};
+        visit_stmt(visit_label_f1, visit_label_f2, lb, fndt->body);
+        remove_with_labelbin(lb);
+        break;
+      case &ExternCinclude_d(tds1, tds2, ...):
+        anal_decl(tds1);
+        fallthru(tds2);
+      case &Using_d(_, tds):
+        fallthru(tds);
+      case &ExternC_d(tds):
+        fallthru(tds);
+      case &Namespace_d(_, tds):
+        anal_decl(tds);
+        break;
+      default:
+        break;  // top-level vars can't have stmt-exps in them
+    }
+}
+
+List::list_t<Absyn::decl_t> remove_unused_labels(List::list_t<Absyn::decl_t,`H> tds) {
+  anal_decl(tds);
+  return tds;
+}

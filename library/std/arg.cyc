@@ -1,0 +1,293 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2000-2001 Dan Grossman, Greg Morrisett, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+// Originally ported from Objective Caml:
+
+/***********************************************************************)
+(*                                                                     *)
+(*                           Objective Caml                            *)
+(*                                                                     *)
+(*             Damien Doligez, projet Para, INRIA Rocquencourt         *)
+(*                                                                     *)
+(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
+(*  en Automatique.  All rights reserved.  This file is distributed    *)
+(*  under the terms of the GNU Library General Public License.         *)
+(*                                                                     *)
+(***********************************************************************/
+
+#include "arg.h"
+#include "assert.h"
+#include "buffer.h"
+#include "cycboot.h"
+#include "string.h"
+namespace Arg;
+using Core;
+using List;
+
+extern datatype exn{Error, Bad(string_t)};
+
+datatype Flag{Prefix(string_t), Exact(string_t)};
+
+datatype Spec {
+  Unit_spec(void(@f)()),              // Call f with unit argument
+      Flag_spec(void(@f)(string_t)),  // Call f with flag argument
+      FlagString_spec(void(@f)(string_t, string_t)),
+      // Call f with flag & string arguments
+      Set_spec(bool @),    // Set the reference to true
+      Clear_spec(bool @),  // Set the reference to false
+      String_spec(void(@f)(string_t)),
+      // Call f with a string argument
+      Int_spec(void(@f)(int)),       // Call f with an int argument
+      Rest_spec(void(@f)(string_t))  // Stop interpreting keywords and call the
+                                     // function with each remaining argument
+};
+
+static datatype error{Unknown(string_t), Missing(string_t), Message(string_t),
+                      // option, actual, expected
+                      Wrong(string_t, string_t, string_t)};
+
+static spec_t<`r> lookup(speclist_t<`r> l, string_t x) {
+  while (l != NULL) {
+    let flag = (*l->hd)[0];
+    let len  = strlen(flag);
+    if (len > 0 && (*l->hd)[1]) {
+      if (strncmp(x, (*l->hd)[0], len) == 0)
+        return (*l->hd)[3];
+    } else if (strcmp(x, (*l->hd)[0]) == 0)
+      return (*l->hd)[3];
+    l = l->tl;
+  }
+  throw new Not_found;
+}
+
+namespace Justify {
+  /* break a line at the first space before posn howmuch,
+     or the first space after if there's none before,
+     or the end of the string if there are no spaces.
+     Write the portion before the break into a buffer
+     and return the remainder. */
+  static string_t<`r> break_line(Buffer::T b, int howmuch, string_t<`r> s) {
+    if (s == NULL)
+      return NULL;
+    if (howmuch < 0)
+      howmuch = 0;
+    let len = strlen(s);
+    assert(len <= numelts(s));
+    if (howmuch > len) {
+      Buffer::add_string(b, s);
+      return NULL;
+    }
+
+    /* Look for the first space before posn howmuch */
+    int i;
+    for (i = howmuch - 1; i >= 0 && !isspace(s[i]); i--)
+      /* skip */;
+
+    /* If no space before howmuch, look for one after */
+    if (i < 0) {
+      for (i = (howmuch ? howmuch - 1 : 0); i < len && s[i] && !isspace(s[i]); i++)
+        /* skip */;
+    }
+
+    /* Write the portion before */
+    Buffer::add_substring(b, s, 0, i);
+
+    /* Return the portion after */
+    string_t whatsleft = NULL;
+    /* advance to non-whitespace */
+    for (; i < len && s[i] && isspace(s[i]); i++)
+      /* skip */;
+    if (i < len && s[i])
+      whatsleft = s + i;
+    return whatsleft;
+  }
+
+  /* justify(b,item,indent,margin,desc):
+     Format item and desc as a paragraph, with item as a hanging
+     outdent, and desc as the body of the paragraph.  The paragraph
+     indent is a parameter, as is the right margin.  The results end
+     up in buffer b. */
+  void justify_b(Buffer::T b, int indent, int margin, string_t item, string_t desc) {
+    if (item != NULL)
+      Buffer::add_string(b, item);
+    if (desc == NULL)
+      return;
+    if (indent < 0)
+      indent = 0;
+    if (margin < 0)
+      margin = 0;
+
+    // string_t indentstr = new {for i<indent+1: (i==0)?'\n':' '};
+    mstring_t indentstr = new { for i < indent + 2 : 0 };
+    for (unsigned i = 0; i < indent + 1; i++)
+      indentstr[i] = (i == 0) ? '\n' : ' ';
+    let itemlen = strlen(item);
+    let itemsep;
+    if (strlen(desc) > 0) {
+      if (itemlen + 1 > indent)
+        itemsep = indentstr;
+      else {
+        mstring_t temp = new { for i < indent - itemlen + 1 : 0 };
+        for (unsigned i = 0; i < indent - itemlen; i++)
+          temp[i] = ' ';
+        itemsep = temp;
+      }
+    } else
+      return;
+
+    Buffer::add_string(b, itemsep);
+
+    while (desc != NULL) {
+      desc = break_line(b, margin - indent, desc);
+      if (desc != NULL)
+        Buffer::add_string(b, indentstr);
+      else
+        Buffer::add_string(b, "\n");
+    }
+    return;
+  }
+}  // namespace Justify
+
+void usage(speclist_t<`r1,`r2> speclist, string_t errmsg) {
+  fprintf(stderr, "%s\n", errmsg);
+  let b = Buffer::create(1024);
+  while (speclist != NULL) {
+    Justify::justify_b(b, 12, 72, strconcat((*speclist->hd)[0], (*speclist->hd)[2]),
+                       (*speclist->hd)[4]);
+    speclist = speclist->tl;
+  }
+  fprintf(stderr, "%s", Buffer::contents(b));
+}
+
+int current            = 0;
+static string_t ? args = NULL;
+
+static void stop(int prog_pos, datatype error @e, speclist_t<`r1,`r2> speclist, string_t errmsg) {
+  string_t progname = prog_pos < numelts(args) ? args[prog_pos] : "(?)";
+  switch (e) {
+    case &Unknown(s):
+      if (strcmp(s, "-help") != 0)
+        fprintf(stderr, "%s: unknown option `%s'.\n", progname, s);
+      break;
+    case &Missing(s):
+      fprintf(stderr, "%s: option `%s' needs an argument.\n", progname, s);
+      break;
+    case &Wrong(flag, cmd, t):
+      fprintf(stderr, "%s: wrong argument `%s'; option `%s' expects %s.\n", progname, cmd, flag, t);
+      break;
+    case &Message(s):
+      fprintf(stderr, "%s: %s.\n", progname, s);
+      break;
+  }
+  usage(speclist, errmsg);
+  current = numelts(args);  // skip everything else
+}
+
+void parse(speclist_t<`r1,`r2> speclist,
+           void anonfun(string_t<`H>),
+           bool anonflagfun(string_t<`H>),
+	   string_t errmsg,
+	   string_t<`H> ?`H orig_args) {
+  args = orig_args;
+
+  int initpos    = current;
+  unsigned int l = numelts(args);
+  // ignore any NULL that occurs at the end
+  if (args[l - 1] == NULL)
+    l = l - 1;
+  ++current;
+  while (current < l) {
+    string_t s = args[current];
+    if (s != NULL && numelts(s) >= 1 && s[0] == '-') {
+      spec_t action;
+      try
+        action = lookup(speclist, s);
+      catch {
+        case &Not_found:
+          // check if this is a catchall flag
+          if (!anonflagfun(s)) {
+            stop(initpos, new Unknown(s), speclist, errmsg);
+            return;
+          } else {
+            ++current;
+            continue;
+          }
+      }
+      try
+        switch (action) {
+          case &Unit_spec(f):
+            f();
+            break;
+          case &Flag_spec(f):
+            f(s);
+            break;
+          case &Set_spec(r):
+            *r = true;
+            break;
+          case &Clear_spec(r):
+            *r = false;
+            break;
+          case &FlagString_spec(f):
+            if (current + 1 < l) {
+              f(s, args[current + 1]);
+              ++current;
+            } else
+              stop(initpos, new Missing(s), speclist, errmsg);
+            break;
+          case &String_spec(f):
+            if (current + 1 < l) {
+              f(args[current + 1]);
+              ++current;
+            } else
+              stop(initpos, new Missing(s), speclist, errmsg);
+            break;
+          case &Int_spec(f):
+            string_t arg = args[current + 1];
+            int n        = 0;
+            if (sscanf(arg, "%d", &n) != 1) {
+              stop(initpos, new Wrong(s, arg, "an integer"), speclist, errmsg);
+              return;
+            }
+            f(n);
+            ++current;
+            break;
+          case &Rest_spec(f):
+            while (current < l - 1) {
+              f(args[current + 1]);
+              ++current;
+            }
+            break;
+        }
+      catch {
+        case &Bad(s2):
+          stop(initpos, new Message(s2), speclist, errmsg);
+          break;
+      }
+      ++current;
+    } else {
+      try
+        anonfun(s);
+      catch {
+        case &Bad(s2):
+          stop(initpos, new Message(s2), speclist, errmsg);
+          break;
+      }
+      ++current;
+    }
+  }
+}

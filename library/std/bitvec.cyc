@@ -1,0 +1,164 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 Dan Grossman
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+// Bit vectors -- particularly designed for data flow analysis.
+// Note that we're not overly defensive about different bit vectors being
+// the same size and things -- we rely on the client to enforce her own
+// abstractions.
+
+// Unfortunately, without typedef, we either add a level of indirection
+// or expose the implementation type.  (We can't even use #define because
+// of the grammar for returning arrays.)  For now, we'll expose the type.
+
+// If we ever really care about middle-end speed, maybe this should be in
+// the same module as the middle end so as to promote inlining.
+#include <stdio.h>
+#include "assert.h"
+#include "bitvec.h"
+
+namespace Bitvec {
+// POS_TO_WORD is division by 32
+// POS_TO_BIT is mod by 32
+#define POS_TO_WORD(pos) (pos >> 5)
+#define POS_TO_BIT(pos) (pos & 0x1F)
+#define INTSZ 32
+
+  bool get(bitvec_t bvec, int pos) {
+    int word   = POS_TO_WORD(pos);
+    int offset = POS_TO_BIT(pos);
+    return ((bvec[word] >> offset) & 1) == 1;
+  }
+
+  void set(bitvec_t bvec, int pos) {
+    int word   = POS_TO_WORD(pos);
+    int offset = POS_TO_BIT(pos);
+    bvec[word] = bvec[word] | (1u << offset);
+  }
+
+  void clear(bitvec_t bvec, int pos) {
+    int word   = POS_TO_WORD(pos);
+    int offset = POS_TO_BIT(pos);
+    bvec[word] = bvec[word] & ~(1u << offset);
+  }
+
+  bool get_and_set(bitvec_t bvec, int pos) {
+    int word   = POS_TO_WORD(pos);
+    int offset = POS_TO_BIT(pos);
+    int slot   = bvec[word];
+    bool ans   = ((slot >> offset) & 1) == 1;
+    if (!ans)
+      bvec[word] = slot | (1u << offset);
+    return ans;
+  }
+
+  void union_two(bitvec_t dest, bitvec_t src1, bitvec_t src2) {
+    unsigned len = numelts(dest);
+    assert(len <= numelts(src1) && len <= numelts(src2));
+    for (int i = 0; i < len; ++i)
+      dest[i] = src1[i] | src2[i];
+  }
+
+  void intersect_two(bitvec_t dest, bitvec_t src1, bitvec_t src2) {
+    unsigned len = numelts(dest);
+    assert(len <= numelts(src1) && len <= numelts(src2));
+    for (int i = 0; i < len; ++i)
+      dest[i] = (src1[i] & src2[i]);
+  }
+
+  void diff_two(bitvec_t dest, bitvec_t src1, bitvec_t src2) {
+    unsigned len = numelts(dest);
+    assert(len <= numelts(src1) && len <= numelts(src2));
+    for (int i = 0; i < len; ++i)
+      dest[i] = src1[i] & ~src2[i];
+  }
+
+  bool compare_two(bitvec_t src1, bitvec_t src2) {
+    unsigned len = numelts(src1);
+    assert(len <= numelts(src2));
+    for (int i = 0; i < len; ++i)
+      if (src1[i] != src2[i])
+        return false;
+    return true;
+  }
+
+  // makes one more entry then necessary when sz ia multiple of INTSZ
+  bitvec_t new_empty(int sz) {
+    bitvec_t ans = new { for i < (sz / INTSZ) + 1 : 0 };
+    return ans;
+  }
+  bitvec_t new_full(int sz) {
+    bitvec_t ans = new { for i < (sz / INTSZ) + 1 : 0xFFFFFFFF };
+    return ans;
+  }
+
+  bitvec_t new_copy(bitvec_t old) {
+    bitvec_t copy = new_empty(numelts(old));
+    union_two(copy, copy, old);
+    return copy;
+  }
+
+  bitvec_t from_list(Dict::dict_t<`a,`b> d, int f(`b), int sz, List::list_t<`a> l) {
+    bitvec_t ans = new { for i < (sz % INTSZ) + 1 : 0 };
+    for (; l != NULL; l = l->tl)
+      set(ans, f(Dict::lookup(d, l->hd)));
+    return ans;
+  }
+
+  List::list_t<int> to_sorted_list(bitvec_t bvec, int sz) {
+    List::list_t<int> ans = NULL;
+    for (int pos = sz - 1; pos >= 0;) {
+      int word = POS_TO_WORD(pos);
+      int bits = bvec[word];
+      for (int offset = POS_TO_BIT(pos); offset >= 0; --offset, --pos)
+        if (((bits >> offset) & 1) == 1)
+          ans = new {List::List(pos, ans)};
+    }
+    return ans;
+  }
+
+  void clear_all(bitvec_t bvec) {
+    unsigned len = numelts(bvec);
+    for (int i = 0; i < len; ++i)
+      bvec[i] = 0;
+  }
+
+  void set_all(bitvec_t bvec) {
+    unsigned len = numelts(bvec);
+    for (int i = 0; i < len; ++i)
+      bvec[i] = 0xFFFFFFFF;
+  }
+
+  bool all_set(bitvec_t bvec, int sz) {
+    int words = POS_TO_WORD(sz);
+    assert(words < numelts(bvec));
+    for (int i = 0; i < words; i++)
+      if (bvec[i] != 0xFFFFFFFF)
+        return false;
+    for (int i = words * INTSZ; i < sz; i++)
+      if (!get(bvec, i))
+        return false;
+    return true;
+  }
+
+  // for debugging
+  void print_bvec(bitvec_t bvec) {
+    for (int i = 0; i < INTSZ * (numelts(bvec)); ++i)
+      printf("%d", get(bvec, i) ? 1 : 0);
+    printf("\n");
+  }
+}  // namespace Bitvec

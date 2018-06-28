@@ -1,0 +1,40 @@
+load("//cyclone:build_defs.bzl", "cyc_binary", "cyc_library")
+
+cyc_library(
+    name = "arithcode",
+    srcs = [
+        "adaptive_model.cyc",
+        "arithmetic_coding.h",
+        "arithmetic_decode.cyc",
+        "arithmetic_encode.cyc",
+        "bit_input.cyc",
+        "bit_output.cyc",
+        "model.h",
+    ],
+    hdrs = [
+        "arithmetic_coding.h",
+        "model.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std"],
+)
+
+cyc_binary(
+    name = "encode",
+    srcs = ["encode.cyc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":arithcode",
+        "//cyclone/library/std",
+    ],
+)
+
+cyc_binary(
+    name = "decode",
+    srcs = ["decode.cyc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":arithcode",
+        "//cyclone/library/std",
+    ],
+)

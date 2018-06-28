@@ -1,0 +1,9 @@
+load("//cyclone:build_defs.bzl", "cyc_test")
+
+cyc_test(
+    name = "hello",
+    size = "small",
+    srcs = ["hello.cyc"],
+    args = ["World"],
+    deps = ["//cyclone/library/std"],
+)

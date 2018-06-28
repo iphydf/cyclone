@@ -1,0 +1,7 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "xmlecho",
+    srcs = ["xmlecho.cyc"],
+    deps = ["//cyclone/library/xml"],
+)

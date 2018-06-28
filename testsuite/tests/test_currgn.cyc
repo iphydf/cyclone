@@ -1,0 +1,86 @@
+#include "cyclone/library/std/core.h"
+using Core;
+
+// CURRENT REGION stuff
+
+region_t<`C> g(region_t<`C> f()) {
+  return f(); // ret
+}
+
+int @ `C f2() {
+  let r = current_handle();
+  int @ `C x = rnew(r) 3;
+  return x;
+}
+
+int @ `C f3() {
+  let r = g(current_handle);
+  int @ `C x = (int @ `C)rmalloc(r, sizeof(int));
+  *x = 3;
+  return x;
+}
+
+struct Point { int x; int y; };
+
+struct Point @ `C f4() {
+  let r = current_handle();
+  struct Point @ `C p = rmalloc(r, sizeof(struct Point));
+  p->x = 0;
+  p->y = 1;
+  return p;
+}
+
+int f5() {
+  int z = 0;
+  for (int j = 0; j < 10000; j++) {
+    region<`r> x;
+    for (int i = 0; i < 200; i++) {
+      let p = rnew(x) Point(i,i+1);
+      let q1 = f4(); // allocates in `r
+      region <`r2>y;
+      struct Point @`C+`r q2 = f4(); // allocates in `r2
+      let s = rnew(x) "hello";
+      z = p->x + p->y + q1->x + q2->y + *(f3()) + *(f2());
+      q1 = p; // OK, same region
+      q2 = p; // OK due effect subtyping
+    }
+  }
+  return z;
+}
+
+// AUTORELEASE stuff
+
+int * @autoreleased `C auto_alloc_int(int x) {
+  let res = qnew (refcnt_qual) 1;
+  return autorelease(res);
+}
+
+int * @autoreleased `C ? @autoreleased `C auto_alloc_array(int n) {
+  let arr = qnew (refcnt_qual) { for i < n : auto_alloc_int(i) };
+  for (int i = 0; i<n; i++) *arr[i] += 5;
+  return autorelease(arr);
+}
+
+int f6() {
+  auto_alloc_array(50);
+  int *`RC p;
+  { region<`r> r;
+    let arr1 = auto_alloc_array(50);
+    { region<`r2> r2;
+      int *? arr2 = auto_alloc_array(60);
+      p = inc_refptr(arr2[1]);
+//     fprintf(stderr,"ending inner pool\n\n");
+    }
+//   fprintf(stderr,"ending outer pool\n\n");
+  }
+//   fprintf(stderr,"done\n\n");
+  drop_refptr(p);
+  return 0;
+}
+
+
+int main(int argc, string_t ?argv) {
+  f5();
+  f6();
+  return 0;
+}

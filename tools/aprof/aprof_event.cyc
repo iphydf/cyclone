@@ -1,0 +1,490 @@
+/* Allocation profiler
+ * Copyright (C) 2001 Greg Morrisett, AT&T
+ * This file is part of the Cyclone compiler.
+ *
+ * The Cyclone compiler is free software; you can redistribute it
+ * and/or modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2 of
+ * the License, or (at your option) any later version.
+ *
+ * The Cyclone compiler is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with the Cyclone compiler; see the file COPYING. If not,
+ * write to the Free Software Foundation, Inc., 59 Temple Place -
+ * Suite 330, Boston, MA 02111-1307, USA. */
+
+#define APROF_LIB
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "aprof_event.h"
+#include "cyclone/library/std/array.h"
+#include "cyclone/library/std/core.h"
+#include "cyclone/library/std/hashtable.h"
+#include "cyclone/library/std/list.h"
+
+/* FIX: amounts for deallocation are INVALID when -nogc is used.
+ * This affects AllocE and ResizeE (see runtime_cyc.c).
+ */
+
+/***** This file is used to process the amon.out file.  It uses callbacks
+ *     to actually process the data in that file.  We have two processors
+ *     at the moment: one that prints tabular allocation data, and the
+ *     other that outputs an allocation graph in jgraph or gnuplot format.
+ *****/
+
+namespace Aprof;
+using Aprof;
+using Core;
+
+unsigned int clockdivisor = 1;
+
+///////////////////////////// STATISTICS /////////////////////////////
+
+clock_t max_time = 0;
+
+unsigned int num_create_events  = 0;
+unsigned int num_alloc_events   = 0;
+unsigned int num_free_events    = 0;
+unsigned int num_reclaim_events = 0;
+unsigned int num_resize_events  = 0;
+unsigned int num_gc_events      = 0;
+unsigned int num_gc_add_to_heap = 0;
+
+unsigned int num_alloc_heap   = 0;
+unsigned int bytes_alloc_heap = 0;
+
+unsigned int num_alloc_unique   = 0;
+unsigned int bytes_alloc_unique = 0;
+unsigned int num_freed_unique   = 0;
+unsigned int bytes_freed_unique = 0;
+
+unsigned int num_alloc_refcnt   = 0;
+unsigned int bytes_alloc_refcnt = 0;
+unsigned int num_freed_refcnt   = 0;
+unsigned int bytes_freed_refcnt = 0;
+
+unsigned int num_alloc_other   = 0;
+unsigned int bytes_alloc_other = 0;
+
+//////////////////// LEXING/PARSING ROUTINES //////////////////////
+
+static char buf[1000] @zeroterm;
+static struct RegionStats region_stats;
+
+static bool eof = false;
+
+static int lineno = 1;
+
+static void skip_whitespace(FILE @f) {
+  int c = getc(f);
+
+  while (c == ' ' || c == '\t' || c == '\n') {
+    if (c == '\n')
+      lineno++;
+    c = getc(f);
+  }
+  ungetc(c, f);
+}
+
+static bool gettoken(FILE @f) {
+  int i = 0;
+  int c;
+
+  char ?@nozeroterm bufp = (char ?@nozeroterm)buf;
+  skip_whitespace(f);
+  c = getc(f);
+  if (c == EOF)
+    return false;
+  while (c != EOF && c != ' ' && c != '\t' && c != '\n') {
+    bufp[i++] = (char)c;
+    c         = getc(f);
+  }
+  bufp[i] = '\0';
+  ungetc(c, f);
+  return true;
+}
+
+static int snarfline(FILE @f) {
+  try {
+    int c = getc(f);
+    while (c != '\n' && c != EOF)
+      c = getc(f);
+    if (c == EOF)
+      return false;
+    else {
+      ungetc(c, f);
+      return true;
+    }
+  } catch {
+    default:
+      fprintf(stderr, "snarfline failed\n");
+      break;
+  }
+  return false;
+}
+
+static char ?grabline(FILE @f) {
+  int c;
+  int i = 0;
+
+  char ?@nozeroterm bufp = (char ?@nozeroterm)buf;
+  skip_whitespace(f);
+  try {
+    c = getc(f);
+    while (c != '\n' && c != EOF) {
+      bufp[i++] = (char)c;
+      c         = getc(f);
+    }
+    if (c == EOF)
+      return NULL;
+    ungetc(c, f);
+    bufp[i] = '\0';
+    return strdup(bufp);
+  } catch {
+    default:
+      fprintf(stderr, "grabline failed\n");
+      break;
+  }
+  return NULL;
+}
+
+static bool getint(FILE @f, int @result) {
+  if (!gettoken(f))
+    return false;
+  try {
+    *result = atoi(buf);
+  } catch {
+    default:
+      fprintf(stderr, "bad integer %s\n", buf);
+      return false;
+  }
+  return true;
+}
+
+static bool getuint(FILE @f, unsigned int @result) {
+  if (!gettoken(f))
+    return false;
+  try {
+    *result = atoi(buf);
+  } catch {
+    default:
+      fprintf(stderr, "bad integer %s\n", buf);
+      return false;
+  }
+  return true;
+}
+
+static bool gethex(FILE @f, unsigned int @result) {
+  if (!gettoken(f))
+    return false;
+  int n = sscanf(buf, "%x", result);
+  return n == 1;
+}
+
+static bool get_region_stats(FILE @f, struct RegionStats @stats) {
+  // get the allocation amount
+  if (!getint(f, &stats->region_size_bytes))
+    return false;
+  if (!getint(f, &stats->free_bytes))
+    return false;
+  if (!getint(f, &stats->total_alloc_bytes))
+    return false;
+  return true;
+}
+
+///////////////////// PROCESSING A FILE ///////////////////////
+
+unsigned int event_num = 0;  // in case we count by event and not clock
+
+int proc_file(string_t file, Fn::fn_t<aprof_event_t, bool, `H> callback) {
+  // cached versions of events; callback better not cache them!
+  static datatype AProfEvent.AllocE __alloc_event =
+      AllocE(AllocEvent(0, "@", "@", 0, RegionStats(0, 0, 0), 0));
+  static datatype AProfEvent.GcE __gc_event = GcE(GcEvent(0, 0, RegionStats(0, 0, 0)));
+  static datatype AProfEvent.GcAddToHeapE __gcaddtoheap_event =
+      GcAddToHeapE(GcAddToHeapEvent(0, 0, 0, RegionStats(0, 0, 0)));
+  static datatype AProfEvent.ReclaimE __reclaim_event = ReclaimE(ReclaimEvent(0, 0));
+  static datatype AProfEvent.CreateE __create_event =
+      CreateE(CreateEvent(0, "@", "@", RegionStats(0, 0, 0)));
+  static datatype AProfEvent.ResizeE __resize_event =
+      ResizeE(ResizeEvent(0, "@", 0, RegionStats(0, 0, 0)));
+  static datatype AProfEvent.FreeE __free_event = FreeE(FreeEvent(0, "@", RegionStats(0, 0, 0)));
+  static datatype AProfEvent.MarkE __mark_event = MarkE(MarkEvent(0, ""));
+
+  FILE @f;
+  FILE *maybe_f;
+  maybe_f = fopen(file, "r");
+  if (maybe_f == NULL) {
+    fprintf(stderr, "can't open file %s\n", file);
+    exit(1);
+  }
+  f = (FILE @)maybe_f;
+  fseek(f, 0, SEEK_END);
+  int filesz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+#define UPDATE_FREQ_PERCENT 2
+  int seg   = filesz / (100 / UPDATE_FREQ_PERCENT);
+  int ticks = 0;
+  if (verbose) {
+    for (int i = 0; i < (100 / UPDATE_FREQ_PERCENT); i++)
+      fprintf(stderr, "=");
+    fprintf(stderr, "\n");
+  }
+
+  // process the input file one line at a time
+  while (gettoken(f)) {
+    if (strcmp(buf, "----") == 0)
+      break;
+    int cur_loc = ftell(f);
+    if ((cur_loc - (ticks * seg)) >= seg) {
+      if (verbose)
+        fprintf(stderr, ".");
+      ticks++;
+    }
+
+    // get the time
+    clock_t t = atoi(buf);
+    t         = t / clockdivisor;  // e.g., instead of counting by 10000 count by 1
+    if (use_events)                // use events instead of clocks -- so discard clock
+      t = event_num++;
+    if (max_time < t)
+      max_time = t;
+
+    // get the location
+    if (!gettoken(f)) {
+      fprintf(stderr, "missing location at time %d on line %d\n", t, lineno);
+      return -1;
+    }
+    let s = (string_t)strdup(buf);
+
+    // get the region name
+    if (!gettoken(f)) {
+      fprintf(stderr, "missing region name for %s on line %d\n", s, lineno);
+      return -1;
+    }
+    let rname = (string_t)strdup(buf);
+
+    // get the event
+    if (!gettoken(f)) {
+      fprintf(stderr, "missing allocation action for %s on line %d\n", s, lineno);
+      return -1;
+    }
+
+    /***********************/
+    /* CREATE REGION event */
+    /***********************/
+    if (!strcmp(buf, "create")) {
+      // set up the event
+      let &CreateE(CreateEvent(*time, *loc, *rgn, *stats)) = &__create_event;
+      if (!get_region_stats(f, stats)) {
+        fprintf(stderr, "failed to get region stats for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      *time = t;
+      *loc  = s;
+      *rgn  = rname;
+      num_create_events++;
+      // invoke the handler
+      if (!Fn::apply(callback, &__create_event)) {
+        fprintf(stderr, "callback failed for create event at %s on line %d\n", s, lineno);
+        return -1;
+      }
+    }
+
+    /*********************/
+    /* FREE REGION event */
+    /*********************/
+    else if (!strcmp(buf, "free")) {
+      // set up the event
+      let &FreeE(FreeEvent(*time, *rgn, *stats)) = &__free_event;
+      if (!get_region_stats(f, stats)) {
+        fprintf(stderr, "failed to get region stats for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      *time = t;
+      *rgn  = rname;
+      num_free_events++;
+      // invoke the handler
+      if (!Fn::apply(callback, &__free_event)) {
+        fprintf(stderr, "callback failed for free event at %s on line %d\n", s, lineno);
+        return -1;
+      }
+    }
+
+    /*********************/
+    /* MARK event */
+    /*********************/
+    else if (!strcmp(buf, "mark")) {
+      // set up the event
+      let &MarkE(MarkEvent(*time, *m)) = &__mark_event;
+      *time                            = t;
+      *m                               = grabline(f);
+      // invoke the handler
+      if (!Fn::apply(callback, &__mark_event)) {
+        fprintf(stderr, "callback failed for mark event at %s\n", s);
+        return -1;
+      }
+    }
+
+    /***********************/
+    /* RESIZE REGION event */
+    /***********************/
+    else if (!strcmp(buf, "resize")) {
+      // set up the event
+      let &ResizeE(ResizeEvent(*time, *rgn, *amt, *stats)) = &__resize_event;
+      /* FIX: amt is invalid if -nogc is used (but sign of amt is valid) */
+      if (!getint(f, amt)) {
+        fprintf(stderr, "failed to get shrink amount for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      if (!get_region_stats(f, stats)) {
+        fprintf(stderr, "failed to get region stats for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      *time = t;
+      *rgn  = rname;
+      num_resize_events++;
+      // invoke the handler
+      if (!Fn::apply(callback, &__resize_event)) {
+        fprintf(stderr, "callback failed for resize event at %s on line %d\n", s, lineno);
+        return -1;
+      }
+    }
+
+    /************/
+    /* GC event */
+    /************/
+    else if (!strcmp(buf, "gc")) {
+      // set up the event
+      let &GcE(GcEvent(*time, *amt, *stats)) = &__gc_event;
+      if (!get_region_stats(f, stats)) {
+        fprintf(stderr, "failed to get region stats for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      *time = t;
+      *amt  = *amt + 1;
+      num_gc_events++;
+      // invoke the handler
+      if (!Fn::apply(callback, &__gc_event)) {
+        fprintf(stderr, "callback failed for gc event at %s on line %d\n", s, lineno);
+        return -1;
+      }
+    }
+
+    /************/
+    /* GC add to heap event */
+    /************/
+    else if (!strcmp(buf, "gc_add_to_heap")) {
+      // set up the event
+      let &GcAddToHeapE(GcAddToHeapEvent(*time, *addr, *amt, *stats)) = &__gcaddtoheap_event;
+      if (!gethex(f, addr)) {
+        fprintf(stderr, "failed to get address for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      if (!getuint(f, amt)) {
+        fprintf(stderr, "failed to get alloc amount for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      if (!get_region_stats(f, stats)) {
+        fprintf(stderr, "failed to get region stats for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      *time = t;
+      num_gc_add_to_heap++;
+      // invoke the handler
+      if (!Fn::apply(callback, &__gcaddtoheap_event)) {
+        fprintf(stderr, "callback failed for gcaddtoheap event at %s on line %d\n", s, lineno);
+        return -1;
+      }
+    }
+
+    /********************************/
+    /* GC RECLAIM OBJECT event */
+    /********************************/
+    else if (!strcmp(buf, "reclaim")) {
+      // set up the event
+      let &ReclaimE(ReclaimEvent(*time, *addr)) = &__reclaim_event;
+      if (!gethex(f, addr)) {
+        fprintf(stderr, "failed to get address for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      *time = t;
+      num_reclaim_events++;
+
+      // invoke the handler
+      if (!Fn::apply(callback, &__reclaim_event)) {
+        fprintf(stderr, "callback failed for reclaim event at %s on line %d\n", s, lineno);
+        return -1;
+      }
+    }
+
+    /********************************/
+    /* ALLOCATE INTO A REGION event */
+    /********************************/
+    else if (!strcmp(buf, "alloc")) {
+      // set up the event
+      let &AllocE(AllocEvent(*time, *loc, *rgn, *amt, *stats, *addr)) = &__alloc_event;
+      if (!getint(f, amt)) {
+        fprintf(stderr, "failed to get alloc amount for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      if (!get_region_stats(f, stats)) {
+        fprintf(stderr, "failed to get region stats for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      if (!gethex(f, addr)) {
+        fprintf(stderr, "failed to get address for %s on line %d\n", s, lineno);
+        return -1;
+      }
+      *time = t;
+      *loc  = s;
+      *rgn  = rname;
+      num_alloc_events++;
+      if (strcmp(rname, "unique") == 0) {
+        if (*amt > 0) {
+          bytes_alloc_unique += *amt;
+          num_alloc_unique++;
+        } else {
+          /* FIX: amt is invalid if -nogc is used (but sign of amt is valid) */
+          bytes_freed_unique -= *amt;
+          num_freed_unique++;
+        }
+      } else if (strcmp(rname, "refcnt") == 0) {
+        if (*amt > 0) {
+          bytes_alloc_refcnt += *amt;
+          num_alloc_refcnt++;
+        } else {
+          /* FIX: amt is invalid if -nogc is used (but sign of amt is valid) */
+          bytes_freed_refcnt -= *amt;
+          num_freed_refcnt++;
+        }
+      } else if (!strcmp(rname, "heap")) {
+        bytes_alloc_heap += *amt;
+        num_alloc_heap++;
+      } else {
+        bytes_alloc_other += *amt;
+        num_alloc_other++;
+      }
+      // invoke the handler
+      if (!Fn::apply(callback, &__alloc_event)) {
+        fprintf(stderr, "callback failed for alloc event at %s on line %d\n", s, lineno);
+        return -1;
+      }
+    }
+
+    else {
+      fprintf(stderr, "Got unknown event at line %d\n", lineno);
+      return -1;
+    }
+    snarfline(f);
+  }
+
+  if (verbose)
+    fprintf(stderr, "\n");
+  return 0;
+}

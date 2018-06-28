@@ -1,0 +1,459 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2000-2001 Greg Morrisett, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+#include "array.h"
+#include "core.h"
+
+#include "list.h"
+using Core;
+using List;
+
+namespace Array;
+
+/* Array sorting algorithm using Quicksort.  Ported from: */
+
+/******************************************************************/
+/* qsort.c  --  Non-Recursive ANSI Quicksort function             */
+/*                                                                */
+/* Public domain by Raymond Gardner, Englewood CO  February 1991  */
+/*                                                                */
+/* Usage:                                                         */
+/*     qsort(base, nbr_elements, width_bytes, compare_function);  */
+/*        void *base;                                             */
+/*        size_t nbr_elements, width_bytes;                       */
+/*        int (*compare_function)(const void *, const void *);    */
+/*                                                                */
+/* Sorts an array starting at base, of length nbr_elements, each  */
+/* element of size width_bytes, ordered via compare_function,     */
+/* which is called as  (*compare_function)(ptr_to_element1,       */
+/* ptr_to_element2) and returns < 0 if element1 < element2,       */
+/* 0 if element1 = element2, > 0 if element1 > element2.          */
+/* Most refinements are due to R. Sedgewick. See "Implementing    */
+/* Quicksort Programs", Comm. ACM, Oct. 1978, and Corrigendum,    */
+/* Comm. ACM, June 1979.                                          */
+/******************************************************************/
+
+#define SWAP(a, b)   \
+  {                  \
+    temp   = arr[a]; \
+    arr[a] = arr[b]; \
+    arr[b] = temp;   \
+  }
+typedef `a @`r ptr_t<`a,`r>;
+#define COMP(a, b) (less_eq((ptr_t)(arr + a), (ptr_t)(arr + b)))
+#define T 3 /* subfiles of T or fewer elements will */
+            /* be sorted by a simple insertion sort */
+            /* Note!  T must be at least 3          */
+
+void qsort<`a,`r::E>(cmpfn_t<`a,`r,`r> less_eq, `a ?`r arr, int len)
+//  void qsort(cmpfn_t less_eq,`a ?`r arr, int len)
+{
+  int base_ofs =
+      0;  // FIX: this used to be an arg; need to get rid of it completely, but it's assigned to
+
+  `a temp;
+  int sp[40];          // FIX: complains not initialized
+  int sp_ofs;          /* stack and stack pointer        */
+  int i, j, limit_ofs; /* scan and limit pointers        */
+
+  if (base_ofs < 0 || base_ofs + len > numelts(arr) || len < 0)
+    throw new Core::Invalid_argument("Array::qsort");
+
+  limit_ofs = base_ofs + len;
+  sp_ofs    = 0;
+
+  for (;;) {                        /* repeat until break...          */
+    if (limit_ofs - base_ofs > T) { /* if more than T elements  */
+                                    /*   swap base with middle  */
+      SWAP((limit_ofs - base_ofs) / 2 + base_ofs, base_ofs);
+      i = base_ofs + 1;          /* i scans left to right    */
+      j = limit_ofs - 1;         /* j scans right to left    */
+      if (COMP(i, j) > 0)        /* Sedgewick's              */
+        SWAP(i, j);              /*    three-element sort    */
+      if (COMP(base_ofs, j) > 0) /*        sets things up    */
+        SWAP(base_ofs, j);       /*            so that       */
+      if (COMP(i, base_ofs) > 0) /*      *i <= *base <= *j   */
+        SWAP(i, base_ofs);       /* *base is pivot element   */
+      for (;;) {                 /* loop until break         */
+        do                       /* move i right             */
+          i++;                   /*        until *i >= pivot */
+        while (COMP(i, base_ofs) < 0);
+        do     /* move j left              */
+          j--; /*        until *j <= pivot */
+        while (COMP(j, base_ofs) > 0);
+        if (i > j)  /* if pointers crossed      */
+          break;    /*     break loop           */
+        SWAP(i, j); /* else swap elements, keep scanning*/
+      }
+      SWAP(base_ofs, j); /* move pivot into correct place  */
+                         /* if left subfile larger */
+      if (j - base_ofs > limit_ofs - i) {
+        sp[sp_ofs]     = base_ofs;  /* stack left subfile base  */
+        sp[sp_ofs + 1] = j;         /*    and limit             */
+        base_ofs       = i;         /* sort the right subfile   */
+      } else {                      /* else right subfile larger*/
+        sp[sp_ofs]     = i;         /* stack right subfile base */
+        sp[sp_ofs + 1] = limit_ofs; /*    and limit             */
+        limit_ofs      = j;         /* sort the left subfile    */
+      }
+      sp_ofs += 2; /* increment stack pointer  */
+    } else {       /* else subfile is small, use insertion sort  */
+      for (j = base_ofs, i = j + 1; i < limit_ofs; j = i, i++)
+        for (; COMP(j, j + 1) > 0; j--) {
+          SWAP(j, j + 1);
+          if (j == base_ofs)
+            break;
+        }
+      if (sp_ofs != 0) { /* if any entries on stack  */
+        sp_ofs -= 2;     /* pop the base and limit   */
+        base_ofs  = sp[sp_ofs];
+        limit_ofs = sp[sp_ofs + 1];
+      } else /* else stack empty, done   */
+        break;
+    }
+  }
+}
+
+//-------------------------------------------
+// Jeff Vinocur
+
+// Mergesort (stable)
+
+#define LESSEQ(a, b) (less_eq((ptr_t)(&from[a]), (ptr_t)(&from[b])))
+#define MIN(a, b) (a < b ? a : b)
+#define PUT(a) to[dest++] = from[a++]
+
+void msort(cmpfn_t<`a::B,`H,`H> less_eq, `a ?`H arr, int len) {
+  if (len > numelts(arr) || len < 0)
+    throw new Core::Invalid_argument("Array::msort");
+
+  `a ?`H from = new { for i < len : arr[0] };  // fill with `a junk
+  `a ?to = arr;
+  `a ?swap;
+
+  bool swapped = false;
+
+  int stepsize;  // Non-recursive mergesort repeatedly walks over
+                 // the array, each time in bigger steps.
+  int start;     // For each "stepsize", we "start" at different
+                 // offsets and merge two segments of that length.
+  int lstart, lend, rstart, rend;
+  // These are start, end of left (l) and right(r)
+  // segments being merged.
+  int dest;  // This is the offset currently being filled in
+             // the "to" array.  (Smaller element from the
+             // left and right halves is written to to[dest].)
+
+  for (stepsize = 1; stepsize < len; stepsize = stepsize * 2) {
+    swap = from;
+    from = to;
+    to   = swap;
+    dest = 0;
+
+    for (start = 0; start < len; start = start + (stepsize * 2)) {
+      lstart = start;
+      rstart = MIN(start + stepsize, len);
+      lend   = rstart;
+      rend   = MIN(start + (stepsize * 2), len);
+
+      while (lstart < lend && rstart < rend) {
+        if (LESSEQ(lstart, rstart) <= 0) {  // The <= makes it a stable sort
+          PUT(lstart);
+        } else {
+          PUT(rstart);
+        }
+      }
+
+      // Copy remaining elements.  Only one of these loops runs.
+      while (lstart < lend) {
+        PUT(lstart);
+      }
+      while (rstart < rend) {
+        PUT(rstart);
+      }
+    }
+  }
+
+  if (swapped)
+    for (int i = 0; i < len; i++)
+      from[i] = to[i];
+}
+
+//////// Below are bunches of stuff mimicking the List library
+
+`a ?from_list(List::list_t<`a> x) { return List::to_array(x); }
+
+list_t<`a> to_list(`a ?`r x) {
+  return List::from_array(x);
+}
+
+// return a fresh copy of the array (same as map of the identity)
+`a ?copy(`a::B ?`r x) {
+  int sx = numelts(x);
+  return new { for i < sx : x[i] };
+}
+
+// Apply a function to each element in an array, returning a new array.
+`b ?map(`b f(`a),`a ?`r x) {
+  int sx = numelts(x);
+  return new { for i < sx : f(x[i]) };
+}
+// Apply a function to each element in an array, returning a new array.
+// This uses an additional argument to simulate function closures.
+`b ?map_c(`b f(`c,`a),`c env,`a ?`r x) {
+  int sx = numelts(x);
+  return new { for i < sx : f(env, x[i]) };
+}
+
+// Apply a function to each element in an array, writing the results
+// back into the array.
+void imp_map(`a f(`a),`a ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++)
+    x[i] = f(x[i]);
+}
+void imp_map_c(`a f(`b,`a),`b env,`a ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++)
+    x[i] = f(env, x[i]);
+}
+
+// thrown when two arrays don't have the same size
+datatype exn{Array_mismatch};
+static datatype exn.Array_mismatch Array_mismatch_val = Array_mismatch;
+
+// Given two arrays of the same length and a function, apply the function
+// to each pair of elements (in order) and collect the results in a new array.
+// Throws Array_mismatch if the sizes of the arrays aren't the same.
+`c ?map2(`c f(`a,`b),`a ?`r1 x,`b ?`r2 y) {
+  int sx = numelts(x);
+  if (sx != numelts(y))
+    throw &Array_mismatch_val;
+  return new { for i < sx : f(x[i], y[i]) };
+}
+
+// Apply some function to each element of the array, but don't bother to
+// save the result.  Similar to Ocaml's List.iter but doesn't require
+// void type for the result of the function.
+void app(`b f(`a),`a ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++)
+    f(x[i]);
+}
+void app_c(`c f(`a,`b),`a env,`b ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++)
+    f(env, x[i]);
+}
+
+// same as app but with void functions -- unlike Popcorn, the iter
+// functions are no longer needed because we treat "void" as a boxed
+// type.
+void iter(void f(`a),`a ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++)
+    f(x[i]);
+}
+
+// same as app_c but with void functions
+void iter_c(void f(`b,`a),`b env,`a ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++)
+    f(env, x[i]);
+}
+
+// Same as app, but generalized to a pair of arrays.  Throws Array_mismatch
+// if the lengths of the arrays aren't the same.
+void app2(`c f(`a,`b),`a ?`r1 x,`b ?`r2 y) {
+  int sx = numelts(x);
+  if (sx != numelts(y))
+    throw &Array_mismatch_val;
+  for (int i = 0; i < sx; i++)
+    f(x[i], y[i]);
+}
+
+void app2_c(`d f(`a,`b,`c),`a env,`b ?`r1 x,`c ?`r2 y) {
+  int sx = numelts(x);
+  if (sx != numelts(y))
+    throw &Array_mismatch_val;
+  for (int i = 0; i < sx; i++)
+    f(env, x[i], y[i]);
+}
+
+// Same as iter, but generalized to a pair of arrays.  Throws Array_mismatch
+// if the lengths of the arrays aren't the same.
+void iter2(void f(`a,`b),`a ?`r1 x,`b ?`r2 y) {
+  int sx = numelts(x);
+  if (sx != numelts(y))
+    throw &Array_mismatch_val;
+  for (int i = 0; i < sx; i++)
+    f(x[i], y[i]);
+}
+
+void iter2_c(void f(`a,`b,`c),`a env,`b ?`r1 x,`c ?`r2 y) {
+  int sx = numelts(x);
+  if (sx != numelts(y))
+    throw &Array_mismatch_val;
+  for (int i = 0; i < sx; i++)
+    f(env, x[i], y[i]);
+}
+
+// Given an array [|x1,x2,...,xn-1,xn|], a function f, and an accumulator
+// a, return f(f(...(f(x2,f(x1,a))),xn-1),xn).  Notice that the function
+// is first applied to the left-most element of the array.
+`a fold_left(`a f(`a,`b),`a accum,`b ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++) {
+    accum = f(accum, x[i]);
+  }
+  return accum;
+}
+
+`a fold_left_c(`a f(`c,`a,`b),`c env,`a accum,`b ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++) {
+    accum = f(env, accum, x[i]);
+  }
+  return accum;
+}
+
+// Given an array [|x1,x2,....,xn-1,xn|], a function f, and an accumulator
+// a, return f(x1,f(x2,...,f(xn-1,f(xn,a))...)).  Notice that the function
+// is first applied to the right-most element of the list.
+`b fold_right(`b f(`a,`b),`a ?`r x,`b accum) {
+  for (int i = numelts(x) - 1; i >= 0; i--) {
+    accum = f(x[i], accum);
+  }
+  return accum;
+}
+`b fold_right_c(`b f(`c,`a,`b),`c env,`a ?`r x,`b accum) {
+  for (int i = numelts(x) - 1; i >= 0; i--) {
+    accum = f(env, x[i], accum);
+  }
+  return accum;
+}
+
+// Return a copy of an array in reverse.
+`a ?rev_copy(`a::B ?`r x) {
+  int sx = numelts(x);
+  int n  = sx - 1;
+  return new { for i < sx : x[n - i] };
+}
+
+// Imperatively reverse an array.
+void imp_rev(`a::B ?`r x) {
+  `a temp;
+  int i = 0;
+  int j = numelts(x) - 1;
+  while (i < j) {
+    temp = x[i];
+    x[i] = x[j];
+    x[j] = temp;
+    i++;
+    j--;
+  }
+}
+
+// Given a predicate on 'a values, determine whether every element in an
+// array satisfies the predicate.
+bool forall(bool pred(`a),`a ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++) {
+    if (!pred(x[i]))
+      return false;
+  }
+  return true;
+}
+bool forall_c(bool pred(`a,`b),`a env,`b ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++) {
+    if (!pred(env, x[i]))
+      return false;
+  }
+  return true;
+}
+
+// Given a predicate on 'a values, determine whether there exists an element
+// in the array that satisfies the predicate.
+bool exists(bool pred(`a),`a ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++) {
+    if (pred(x[i]))
+      return true;
+  }
+  return false;
+}
+bool exists_c(bool pred(`a,`b),`a env,`b ?`r x) {
+  int sx = numelts(x);
+  for (int i = 0; i < sx; i++) {
+    if (pred(env, x[i]))
+      return true;
+  }
+  return false;
+}
+
+// Given [|x1,...,xn|] and [|y1,...,yn|], return [|(x1,y1),...,(xn,yn)|].
+// Throws Array_mismatch if the lengths are not the same.
+$(`a,`b) ?zip(`a ?`r1 x,`b ?`r2 y) {
+  int sx = numelts(x);
+  if (sx != numelts(y))
+    throw &Array_mismatch_val;
+
+  return new { for i < sx : $(x[i], y[i]) };
+}
+
+// Given [|(x1,y1),...,(xn,yn)|], return ([|x1,...,xn|],[|y1,...,yn|])
+$(`a?,`b?) split($(`a,`b) ?`r1 x) {
+  int sx = numelts(x);
+  return $(
+      new { for i < sx : (x[i])[0] },
+      new { for i < sx : (x[i])[1] });
+}
+
+// Given an array [|x1,...,xn|] and x, determine if x is in the array.
+// Uses physical equality for comparison.
+bool memq(`a ?`r l, `a x) {
+  int s = numelts(l);
+  for (int i = 0; i < s; i++) {
+    if (l[i] == x)
+      return true;
+  }
+  return false;
+}
+
+bool mem(int compare(`a,`a), `a ?`r l, `a x) {
+  int s = numelts(l);
+  for (int i = 0; i < s; i++) {
+    if (0 == compare(l[i], x))
+      return true;
+  }
+  return false;
+}
+
+// Creates a new (smaller) array containing the specified slice of the
+// target array.  The last parameter is an int option of the number of
+// elements to take, or NULL for "take until the end of the array".
+`a ?extract(`a::B ?`r1 x, int start, int *`r2 n_opt) {
+  int sx = numelts(x);
+  int n  = (n_opt == NULL ? sx - start : *n_opt);
+
+  if (start < 0 || n <= 0 || start + (n_opt == NULL ? 0 : n) > sx)
+    throw new Core::Invalid_argument("Array::extract");
+
+  return new { for i < n : x[start + i] };
+}

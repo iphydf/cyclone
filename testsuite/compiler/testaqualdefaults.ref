@@ -1,0 +1,32 @@
+
+cyclone/testsuite/compiler/testaqualdefaults.cyc:27:2: alias qualifier bounds violated: RESTRICTED <> ALIASABLE
+cyclone/testsuite/compiler/testaqualdefaults.cyc:53:2: b was declared with type int *@aqual(UNIQUE) but initialized with type int *
+  ALIASABLE and UNIQUE are not compatible. ((different alias qualifiers))
+cyclone/testsuite/compiler/testaqualdefaults.cyc:118:6: field a of struct LCS expects type list_t<int *> != struct List<int *`GE9> *
+  `GE9 and `H are not compatible. 
+cyclone/testsuite/compiler/testaqualdefaults.cyc:141:11: actual argument has type 
+	struct List<int *@aqual(`p)> *
+ but formal has type 
+	
+struct List<int *> *
+  `p and ALIASABLE are not compatible. 
+	((abstracted type variable doesn't unify with constant))
+cyclone/testsuite/compiler/testaqualdefaults.cyc:142:11: actual argument has type 
+	struct List<int *@aqual(`q)> *
+ but formal has type 
+	
+struct List<int *> *
+  `q and ALIASABLE are not compatible. 
+	((abstracted type variable doesn't unify with constant))
+cyclone/testsuite/compiler/testaqualdefaults.cyc:143:6: field a of struct LCS expects type list_t<int *> != struct List<int *@aqual(`p)> *
+
+  `p and ALIASABLE are not compatible. 
+	((abstracted type variable doesn't unify with constant))
+cyclone/testsuite/compiler/testaqualdefaults.cyc:144:6: field a of struct LCS expects type list_t<int *> != struct List<int *@aqual(`q)> *
+
+  `q and ALIASABLE are not compatible. 
+	((abstracted type variable doesn't unify with constant))
+cyclone/testsuite/compiler/testaqualdefaults.cyc:148:2: alias qualifier bounds violated: `p <> ALIASABLE
+cyclone/testsuite/compiler/testaqualdefaults.cyc:184:2: noalias pointers in datatypes are not allowed: EEE
+
+COMPILATION FAILED!

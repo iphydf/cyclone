@@ -1,0 +1,709 @@
+/* Driver for the Cyclone compiler.
+   Copyright (C) 2001 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include "cyclone.h"
+
+#include <string.h>
+
+#include "cyclone/library/std/arg.h"
+#include "cyclone/library/std/filename.h"
+
+#include "cyclone/library/compiler/absyndump.h"
+#include "cyclone/library/compiler/absynpp.h"
+#include "cyclone/library/compiler/bansheeif.h"
+#include "cyclone/library/compiler/binding.h"
+#include "cyclone/library/compiler/cifc.h"
+#include "cyclone/library/compiler/currgn.h"
+#include "cyclone/library/compiler/flags.h"
+#include "cyclone/library/compiler/insert_checks.h"
+#include "cyclone/library/compiler/lex.h"
+#include "cyclone/library/compiler/low_treeshake.h"
+#include "cyclone/library/compiler/lower.h"
+#include "cyclone/library/compiler/new_control_flow.h"
+#include "cyclone/library/compiler/parse.h"
+#include "cyclone/library/compiler/remove_aggregates.h"
+#include "cyclone/library/compiler/remove_casts.h"
+#include "cyclone/library/compiler/remove_labels.h"
+#include "cyclone/library/compiler/rename_temps.h"
+#include "cyclone/library/compiler/tc.h"
+#include "cyclone/library/compiler/toc.h"
+#include "cyclone/library/compiler/toseqc.h"
+#include "cyclone/library/compiler/vcgen.h"
+#include "cyclone/library/compiler/warn.h"
+
+namespace Port {
+  void port(List::list_t<Absyn::decl_t>);
+}
+
+using Core;
+using List;
+
+typedef Hashtable::table_t<`a, `b> table_t<`a, `b>;
+
+// FLAGS ALL HERE (care about static?)
+static bool pp_r                       = false;
+static bool noshake_r                  = false;
+static bool noprint_r                  = false;
+static bool elim_se_r                  = false;
+static bool add_cyc_namespace_r        = true;
+static bool generate_line_directives_r = true;
+static bool print_full_evars_r         = false;
+static bool print_all_tvars_r          = false;
+static bool print_all_kinds_r          = false;
+static bool print_all_effects_r        = false;
+static bool toseqc_r                   = true;
+static bool vcgen_r                    = true;
+static bool nolower_r                  = false;
+
+// set which C compiler to use
+// (affects how attributes, 64-bit integers, etc. are translated)
+// defaults to gcc
+void set_c_compiler(string_t<`H> s) {
+  if (strcmp(s, "vc") == 0) {
+    Flags::c_compiler = Flags::Vc_c;
+  } else if (strcmp(s, "gcc") == 0) {
+    Flags::c_compiler = Flags::Gcc_c;
+  }
+  // else invalid compiler -- warn? throw exception?
+}
+
+void set_port_c_code() {
+  Flags::porting_c_code = true;
+  Warn::max_errors      = 65535;  // allow a lot of errors
+  Flags::set_parseonly();
+}
+
+static string_t output_file = NULL;
+static void set_output_file(string_t<`H> s) { output_file = s; }
+
+// These strings are install_path.c, which is created by Makefile wizardry.
+// We use Cstrings because we pull the same trick when bootstrapping (and
+// then we don't have a Cyclone compiler yet)
+extern "C" {
+extern Cstring Carch;
+extern Cstring Cversion;
+}
+
+static void set_many_errors() { Warn::max_errors = 65535; }
+
+// Prints the version # and exits
+static void print_version() {
+  printf("The Cyclone compiler, version %s\n", Cversion);
+  printf("Compiled for architecture: %s\n", Carch);
+  exit(0);
+}
+
+static bool is_cyclone_sourcefile(string_t s) {
+  let len = strlen(s);
+
+  if (len <= 4)
+    return false;
+  return strcmp(s + (len - 4), ".cyc") == 0;
+}
+
+static void clear_lineno() { generate_line_directives_r = false; }
+
+static void set_elim_se() {
+  // still exist in cyc_include.h
+  elim_se_r = true;
+}
+
+static void set_notoseqc() { toseqc_r = false; }
+static void set_nocyc() { add_cyc_namespace_r = false; }
+
+static void set_noreaps() {
+  // if reaps are disable add -D_CYC_INTERNAL_DISABLE_REAPS
+  // to make core.h macros for dynamic regions work properly
+  Flags::no_reaps = true;
+}
+
+static void warn_noinf(string_t option) {
+  Warn::warn(0,
+             "Interprocedural inference is not supported by this build of Cyclone; "
+             "ignoring %s option",
+             option);
+}
+
+static bool binit_done = false;
+
+static void set_interproc() {
+  if (!binit_done) {
+    binit_done = true;
+    if (BansheeIf::banshee_init())
+      Flags::interproc = true;
+    else
+      warn_noinf("--inf");
+  }
+}
+
+// Cyclone files given on the command line
+static list_t<stringptr_t> cyclone_files = NULL;
+
+static void add_other(string_t<`H> s) {
+  // For processing by Cyclone
+  cyclone_files = new List(new s, cyclone_files);
+}
+
+static bool add_other_flag(string_t<`H> s) { return false; }
+
+////********************************************************************
+
+bool compile_failure = false;  // for exit code (helps Makefile)
+
+static FILE *try_file_open(string_t filename, string_t mode,
+                           string_t msg_part) {
+  try {
+    return file_open(filename, mode);
+  } catch {
+    default:
+      compile_failure = true;
+      fprintf(stderr, "\nError: couldn't open %s %s\n", msg_part, filename);
+      fflush(stderr);
+      return NULL;
+  }
+}
+
+static $(datatype exn @, const char *, int) *uncaught_exn = NULL;
+
+extern "C" void CYCALLOCPROFILE_mark(const char *s);
+
+static `b do_stage(string_t stage_name, list_t<Absyn::decl_t, `H> tds,
+          `b f(`a, list_t<Absyn::decl_t, `H>), `a env, `b onfail) {
+  CYCALLOCPROFILE_mark((const char *)stage_name);
+  struct timeval start, end;
+  if (Flags::verbose)
+    gettimeofday(&start, NULL);
+
+  let ans;
+  try
+    ans = f(env, tds);
+  catch {
+    case x:
+      ans = onfail;
+      if (Warn::error_p())
+        break;
+      compile_failure = true;
+      fprintf(stderr, "COMPILER STAGE %s (unexpected exception)\n", stage_name);
+      uncaught_exn = new $(x, get_exn_filename(), get_exn_lineno());
+      break;
+  }
+  if (Warn::error_p())
+    compile_failure = true;
+  if (compile_failure) {
+    fprintf(stderr, "\nCOMPILATION FAILED!\n");
+    fflush(stderr);
+  } else if (Flags::verbose) {
+    fprintf(stderr, "%s completed ", stage_name);
+    gettimeofday(&end, NULL);
+    end.tv_sec -= start.tv_sec;
+    end.tv_usec -= start.tv_usec;
+    if (end.tv_usec < 0) {
+      end.tv_usec += 1000000;
+      --end.tv_sec;
+    }
+    fprintf(stderr, "(%d.%06d secs)\n", end.tv_sec, end.tv_usec);
+    fflush(stderr);
+  }
+  return ans;
+}
+
+static list_t<Absyn::decl_t> do_parse(FILE @`H f,
+                                      list_t<Absyn::decl_t, `H> ignore) {
+  Lex::lex_init(true);  // must forget typedefs, may as well flush symbols too
+  Lex::pos_init();
+  list_t<Absyn::decl_t> ans = NULL;
+  try {
+    ans = Parse::parse_file(f);
+    file_close(f);
+  } catch {
+    case &Parse::Exit:
+      file_close(f);
+      compile_failure = true;
+      break;
+    case e:
+      file_close(f);
+      rethrow(e);
+  }
+  Lex::lex_init(true);  // garbage collect those big tries
+  return ans;
+}
+
+static bool do_binding(bool ignore, list_t<Absyn::decl_t, `H> tds) {
+  Binding::resolve_all(tds);
+  return true;
+}
+
+static bool do_adjust(bool ignore, list_t<Absyn::decl_t, `H> tds) {
+  CurRgn::adjust_all(tds);
+  return true;
+}
+
+static list_t<Absyn::decl_t> do_typecheck(Tcenv::tenv_t te,
+                                          list_t<Absyn::decl_t, `H> tds) {
+  Tc::tc(te, true, tds);
+  if (!noshake_r)
+    tds = Tc::treeshake(te, tds);
+  return tds;
+}
+
+static JumpAnalysis::jump_anal_res_t do_jumpanalysis(
+    bool ignore, list_t<Absyn::decl_t, `H> tds) {
+  return JumpAnalysis::jump_analysis(tds);
+}
+
+static list_t<Absyn::decl_t> do_cfcheck(JumpAnalysis::jump_anal_res_t tables,
+                                        list_t<Absyn::decl_t, `H> tds) {
+  NewControlFlow::cf_check(tables, tds);
+  return tds;
+}
+
+static bool do_insert_checks(JumpAnalysis::jump_anal_res_t tables,
+                             list_t<Absyn::decl_t, `H> tds) {
+  InsertChecks::insert_checks(tds, tables, vcgen_r);
+  return true;
+}
+
+static list_t<Absyn::decl_t> do_translate(
+    table_t<Absyn::fndecl_t, table_t<Absyn::stmt_t, int> > pops,
+    list_t<Absyn::decl_t> tds) {
+  return Toc::toc(pops, tds);
+}
+
+static list_t<Absyn::decl_t> do_removeaggrs(bool ignore,
+                                            list_t<Absyn::decl_t, `H> tds) {
+  return RemoveAggrs::remove_aggrs(tds);
+}
+
+static list_t<Absyn::decl_t> do_removelabs(bool ignore,
+                                           list_t<Absyn::decl_t, `H> tds) {
+  return RemoveLabels::remove_unused_labels(tds);
+}
+
+static list_t<Absyn::decl_t> do_temprename(bool ignore,
+                                           list_t<Absyn::decl_t, `H> tds) {
+  return RenameTemps::rename(tds);
+}
+
+static list_t<Absyn::decl_t> do_castremove(bool ignore,
+                                           list_t<Absyn::decl_t, `H> tds) {
+  return RemoveCasts::remove_casts(tds);
+}
+
+static list_t<Absyn::decl_t> do_lower(bool ignore,
+                                      list_t<Absyn::decl_t, `H> tds) {
+  return Lower::lower(tds);
+}
+
+static list_t<Absyn::decl_t> do_toseqc(bool ignore,
+                                       list_t<Absyn::decl_t, `H> tds) {
+  return Toseqc::toseqc(tds);
+}
+
+static list_t<Absyn::decl_t> do_lowtreeshake(bool ignore,
+                                             list_t<Absyn::decl_t, `H> tds) {
+  if (!noshake_r)
+    return LowTreeShake::shake(tds);
+  return tds;
+}
+
+static list_t<Absyn::decl_t> do_print(FILE @`H out_file,
+                                      list_t<Absyn::decl_t, `H> tds) {
+  let params_r = Flags::stop_after_pass < Flags::Toc ? Absynpp::cyc_params_r
+                                                     : Absynpp::c_params_r;
+  params_r.expand_typedefs          = !Flags::noexpand_r;
+  params_r.add_cyc_prefix           = add_cyc_namespace_r;
+  params_r.generate_line_directives = generate_line_directives_r;
+  params_r.print_full_evars         = print_full_evars_r;
+  params_r.print_all_tvars          = print_all_tvars_r;
+  params_r.print_all_kinds          = print_all_kinds_r;
+  params_r.print_all_effects        = print_all_effects_r;
+
+  if (Flags::stop_after_pass > Flags::FlowAnalysis)
+    fprintf(out_file, "#include <cyc_include.h>\n");
+
+  if (pp_r) {
+    Absynpp::set_params(&params_r);
+    Absynpp::decllist2file(tds, out_file);
+  } else {
+    Absyndump::set_params(&params_r);
+    Absyndump::dumpdecllist2file(tds, out_file);
+  }
+  fflush(out_file);
+
+  return tds;
+}
+
+namespace Cyclone {
+  list_t<Absyn::decl_t> parse_file(string_t<`H> filename) {
+    if (Flags::stop_after_pass <= Flags::Cpp)
+      return NULL;
+
+    // Run the stages of the Cyclone compiler
+    Warn::reset(filename);  // necessary for good error messages!
+    FILE *in_file = try_file_open(filename, "r", "file");
+
+    list_t<Absyn::decl_t> tds = NULL;
+
+    // Parsing
+    if (!compile_failure && Flags::stop_after_pass >= Flags::Parsing)
+      tds = do_stage("parsing", tds, do_parse, (FILE @)in_file, tds);
+    return tds;
+  }
+}  // namespace Cyclone
+
+static void process_file(string_t<`H> filename) {
+  let tds = Cyclone::parse_file(filename);
+
+  // Porting
+  if (!compile_failure && Flags::porting_c_code) {
+    Port::port(tds);
+    return;
+  }
+
+  // Binding resolution
+  if (!compile_failure && Flags::stop_after_pass >= Flags::Binding) {
+    do_stage("binding", tds, do_binding, true, true);
+  }
+
+  // Current-Region Metavariable substitution
+  if (!compile_failure && Flags::stop_after_pass >= Flags::CurrentRegion)
+    do_stage("current region resolution", tds, do_adjust, true, true);
+
+  // Type checking
+  let te = Tcenv::tc_init();
+  if (!compile_failure && Flags::stop_after_pass >= Flags::TypeChecking)
+    tds = do_stage("type checking", tds, do_typecheck, te, tds);
+
+  // Jump analysis
+  let jump_tables = NULL;
+  if (!compile_failure && Flags::stop_after_pass >= Flags::Jumps)
+    jump_tables = do_stage("jump checking", tds, do_jumpanalysis, true, NULL);
+
+  // Control-flow checking
+  if (!compile_failure && Flags::stop_after_pass >= Flags::FlowAnalysis)
+    tds = do_stage("control-flow checking", tds, do_cfcheck, (_ @)jump_tables,
+                   tds);
+
+  // check-insertion
+  if (!compile_failure && Flags::stop_after_pass >= Flags::CheckInsertion)
+    do_stage("check insertion", tds, do_insert_checks, (_ @)jump_tables, true);
+
+  // Translation to C
+  if (!compile_failure && Flags::stop_after_pass >= Flags::Toc)
+    tds = do_stage("translation to C", tds, do_translate,
+                   jump_tables->pop_tables, tds);
+  // Removal of aggregates (necessary for comprehensions and to avoid GCC bug)
+  if (!compile_failure && Flags::stop_after_pass >= Flags::AggregateRemoval)
+    tds = do_stage("aggregate removal", tds, do_removeaggrs, true, tds);
+
+  // Lower the C code
+  if (!compile_failure && !nolower_r &&
+      Flags::stop_after_pass >= Flags::AggregateRemoval)
+    tds = do_stage("lowering C code", tds, do_lower, true, tds);
+
+  // Removal of unused labels (optional optimization good b/c of patterns)
+  if (!compile_failure && Flags::stop_after_pass >= Flags::LabelRemoval)
+    tds = do_stage("unused label removal", tds, do_removelabs, true, tds);
+    // Translation to left-to-right evaluation order
+#if 0
+  if (!compile_failure && toseqc_r && Flags::stop_after_pass >= Flags::EvalOrder)
+    tds = do_stage ("L-to-R evaluation order", tds, do_toseqc, true, tds);
+#endif
+  // Clean up state common to last three passes
+  if (!compile_failure && Flags::stop_after_pass >= Flags::Toc)
+    Toc::finish();
+  // Removal of unused declarations (optional optimization) FIX: make flag
+  if (!compile_failure && Flags::stop_after_pass >= Flags::EvalOrder)
+    tds = do_stage("low treeshaking", tds, do_lowtreeshake, true, tds);
+  // renaming of temporaries
+  if (!compile_failure && Flags::stop_after_pass >= Flags::TempRename)
+    tds = do_stage("renaming temporaries", tds, do_temprename, true, tds);
+  // remove casts where possible
+  if (!compile_failure && Flags::stop_after_pass >= Flags::CastRemoval)
+    tds = do_stage("removing casts", tds, do_castremove, true, tds);
+
+  if (!compile_failure)  // errors trump warnings
+    Warn::flush_warnings();
+  if (uncaught_exn !=
+      NULL)  // cannot use rethrow b/c file and line is wrong now
+  {
+    let &$(e, fn, line) = (_ @)uncaught_exn;
+    fprintf(stderr, "uncaught exception: %s from %s, line %d\n",
+            get_exn_name(e), fn, line);
+    fflush(stderr);
+    return;
+  }
+
+  // jcheney: we make a (empty) .c file even if the .cyc file produced no decls
+  FILE *out_file;
+  if (Flags::stop_after_pass <= Flags::Cpp)  // no tds to be printed
+    return;
+  if (Flags::stop_after_pass <= Flags::FlowAnalysis)
+    out_file = try_file_open(output_file, "w", "output file");
+  else
+    out_file = try_file_open(output_file, "w", "output file");
+
+  if (compile_failure || !out_file)
+    return;
+
+  if (!noprint_r) {
+    let env = (FILE @)out_file;
+    tds     = do_stage("printing", tds, do_print, env, tds);
+    file_close(out_file);
+  }
+}
+
+static string_t final_str       = "<final>";
+static stringptr_t final_strptr = &final_str;
+
+static bool is_cfile(stringptr_t n) {
+  string_t s = *n;
+
+  for (size_t i = 0; i < numelts(s); i++)
+    if (s[i] != ' ')
+      return s[i] != '-';
+  fprintf(stderr, "Error: filename consists solely of spaces\n");
+  return true;
+}
+
+static void set_max_vc_summary(int n) { Flags::max_vc_summary = n; }
+static void set_max_vc_paths(int n) { Flags::max_vc_paths = n; }
+static void set_max_vc_term_size(int n) { Flags::max_vc_term_size = n; }
+
+extern "C" void GC_blacklist_warn_clear();
+
+///////////////////////////////////////////////////////////////////
+// table of compiler options
+///////////////////////////////////////////////////////////////////
+using Arg {
+  typedef $(string_t flag, bool isprefix, string_t argdesc, spec_t spec,
+            string_t description) option_t;
+
+  void print_options();
+
+  // FIX: move strings to flags.cyc
+#define make_option(opt, flag, isprefix, argdesc, spec, spec_arg, description) \
+  datatype Spec.spec opt##_spec = spec(spec_arg);                              \
+  option_t opt##_tuple = $(flag, isprefix, argdesc, &opt##_spec, description); \
+  struct List<option_t @`H,`H> opt = {                                         \
+    &opt##_tuple, NULL                                                         \
+  }
+
+  make_option(opt1, "-v", false, "",
+              Set_spec, &Flags::verbose,
+              "print compilation stages verbosely");
+  make_option(opt2, "--version", false, "",
+              Unit_spec, print_version,
+              "print version information and exit");
+  make_option(opt3, "-o", false, " <file>",
+              String_spec, set_output_file,
+              "set the output file name to <file>");
+  make_option(opt4, "-Wlose-unique", false, "",
+              Set_spec, &Flags::warn_lose_unique,
+              "try to warn when a unique pointer might get lost");
+  make_option(opt5, "-Woverride", false, "",
+              Set_spec, &Flags::warn_override,
+              "warn when a local variable overrides an existing variable");
+  make_option(opt6, "-Wall", false, "",
+              Unit_spec, Flags::set_all_warnings,
+              "turn on all warnings");
+  make_option(opt7, "-stopafter-parse", false, "",
+              Unit_spec, Flags::set_parseonly,
+              "stop after parsing");
+  make_option(opt8, "-stopafter-tc", false, "",
+              Unit_spec, Flags::set_tconly,
+              "stop after type checking");
+  make_option(opt9, "-noprint", false, "",
+              Set_spec, &noprint_r,
+              "do not print output (when stopping early)");
+  make_option(opt10, "-stopafter-cf", false, "",
+              Unit_spec, Flags::set_cfonly,
+              "stop after control-flow checking");
+  make_option(opt11, "-pp", false, "",
+              Set_spec, &pp_r,
+              "pretty print the C code that Cyclone generates");
+  make_option(opt12, "-up", false, "",
+              Clear_spec, &pp_r,
+              "ugly print the C code that Cyclone generates (default)");
+  make_option(opt13, "-elim-statement-expressions", false, "",
+              Set_spec, &elim_se_r,
+              "avoid statement expressions in C output"
+              " (implies --inline-checks)");
+  make_option(opt14, "-no-elim-statement-expressions", false, "",
+              Clear_spec, &elim_se_r,
+              "do not avoid statement expressions in C output");
+  make_option(opt15, "-c-comp", false, " <compiler>",
+              String_spec, set_c_compiler,
+              "produce C output for the given compiler");
+  make_option(opt16, "--nolineno", false, "",
+              Unit_spec, clear_lineno,
+              "don't generate line numbers for debugging (automatic with -pp)");
+  make_option(opt17, "-nocyc", false, "",
+              Unit_spec, set_nocyc,
+              "don't add implicit namespace Cyc");
+  make_option(opt18, "-noremoveunused", false, "",
+              Set_spec, &noshake_r,
+              "don't remove externed variables that aren't used");
+  make_option(opt19, "-noexpandtypedefs", false, "",
+              Set_spec, &Flags::noexpand_r,
+              "don't expand typedefs in pretty printing");
+  make_option(opt20, "-printalltvars", false, "",
+              Set_spec, &print_all_tvars_r,
+              "print all type variables (even implicit default effects)");
+  make_option(opt21, "-printallkinds", false, "",
+              Set_spec, &print_all_kinds_r,
+              "always print kinds of type variables");
+  make_option(opt22, "-printfullevars", false, "",
+              Set_spec, &print_full_evars_r,
+              "print full information for evars (type debugging)");
+  make_option(opt23, "-printalleffects", false, "",
+              Set_spec, &print_all_effects_r,
+              "print effects for functions (type debugging)");
+  make_option(opt24, "-warnboundschecks", false, "",
+              Set_spec, &Flags::warn_bounds_checks,
+              "warn when bounds checks can't be eliminated");
+  make_option(opt25, "-warnnullchecks", false, "",
+              Set_spec, &Flags::warn_all_null_deref,
+              "warn when any null check can't be eliminated");
+  make_option(opt26, "-warnaliascoercion", false, "",
+              Set_spec, &Flags::warn_alias_coerce,
+              "warn when any alias coercion is inserted");
+  make_option(opt27, "-warnregioncoerce", false, "",
+              Set_spec, &Flags::warn_region_coerce,
+              "warn when any region coercion is inserted");
+  make_option(opt28, "-noregister", false, "",
+              Set_spec, &Flags::no_register,
+              "treat register storage class as public");
+  make_option(opt29, "-detailedlocation", false, "",
+              Clear_spec, &Position::use_gcc_style_location,
+              "try to give more detailed location information for errors");
+  make_option(opt30, "-port", false, "",
+              Unit_spec, set_port_c_code,
+              "suggest how to port C code to Cyclone");
+  make_option(opt31, "-noregions", false, "",
+              Set_spec, &Flags::no_regions,
+              "generate code that doesn't use regions");
+  make_option(opt32, "--manyerrors", false, "",
+              Unit_spec, set_many_errors,
+              "don't stop after only a few errors.");
+  make_option(opt33, "--parsestate", false, "",
+              Set_spec, &Flags::print_parser_state_and_token,
+              "print the parse state and token on a syntax error");
+  make_option(opt34, "-help", false, "",
+              Unit_spec, print_options,
+              "print out the available options");
+  make_option(opt35, "-usage", false, "",
+              Unit_spec, print_options,
+              "print out the available options");
+  make_option(opt36, "-no-seq-c", false, "",
+              Unit_spec, set_notoseqc,
+              "do not force left-to-right evaluation order of generated code (unsafe)");
+  make_option(opt37, "--novcgen", false, "",
+              Clear_spec, &vcgen_r,
+              "do not compute verification-conditions");
+  make_option(opt38, "--cifc-inst-tvar", false, "",
+              Unit_spec, Cifc::set_inst_tvar,
+              "instantiate type variables instead of introducing new ones");
+  make_option(opt39, "-stopafter-crgn", false, "",
+              Unit_spec, Flags::set_crgnonly,
+              "stop after currrgn");
+  make_option(opt40, "--allpaths", false, "",
+              Set_spec, &Flags::allpaths,
+              "analyze all forward paths in verification-condition generator");
+  make_option(opt41, "--mergepaths", false, "",
+              Clear_spec, &Flags::allpaths,
+              "merge paths at join-points within the verification-condition generator");
+  make_option(opt42, "-noreaps", false, "",
+              Unit_spec, set_noreaps,
+              "generate code that doesn't use reaps");
+  make_option(opt43, "--unprovable", false, "",
+              Set_spec, &Flags::print_unprovable,
+              "print assertions that were unprovable");
+  make_option(opt44, "--max_vc_summary", false, "",
+              Int_spec, set_max_vc_summary,
+              "controls the maximum size of post-conditions inlined by vcgen");
+  make_option(opt45, "--max_vc_paths", false, "",
+              Int_spec, set_max_vc_paths,
+              "controls the maximum number of paths explored by constraint solver");
+  make_option(opt46, "--max_vc_term_size", false, "",
+              Int_spec, set_max_vc_term_size,
+              "controls the maximum size of terms considered by the constraint solver");
+  make_option(opt47, "--warnassert", false, "",
+              Set_spec, &Flags::warn_assert,
+              "warn when an assert might fail at run-time");
+  make_option(opt48, "--no-lower", false, "",
+              Set_spec, &nolower_r,
+              "do not lower the C code");
+  make_option(opt49, "--better-widen", false, "",
+              Set_spec, &Flags::better_widen,
+              "construct better loop invariants within vcgen analysis");
+  make_option(opt50,"--inf",false,"",
+              Unit_spec,set_interproc,
+              "Use interprocedural type inference");
+
+  struct List<option_t @`H,`H> @`H global_options[] = {
+             &opt1,  &opt2,  &opt3,  &opt4,  &opt5,  &opt6,  &opt7,  &opt8,  &opt9,
+    &opt10, &opt11, &opt12, &opt13, &opt14, &opt15, &opt16, &opt17, &opt18, &opt19,
+    &opt20, &opt21, &opt22, &opt23, &opt24, &opt25, &opt26, &opt27, &opt28, &opt29,
+    &opt30, &opt31, &opt32, &opt33, &opt34, &opt35, &opt36, &opt37, &opt38, &opt39,
+    &opt40, &opt41, &opt42, &opt43, &opt44, &opt45, &opt46, &opt47, &opt48, &opt49,
+    &opt50,
+  };
+
+  void print_options() { usage(global_options[0], "<program.cyc>"); }
+}
+
+int
+main (int argc, string_t<`H> ?`H argv)
+{
+  // Don't print garbage collector warnings about allocations of blacklisted
+  // blocks.  This turns up on OS X and possibly other BSD systems (??)
+  GC_blacklist_warn_clear();
+
+  // parse the command-line arguments
+  string_t optstring = "Options:";
+  // initialize the global options list tails
+  for (int i = 1; i < numelts(global_options); i++)
+    global_options[i - 1]->tl = global_options[i];
+  Arg::speclist_t<`H, `H> options = global_options[0];
+
+  // Finally parse the other command-line arguments
+  Arg::current = 0;
+  Arg::parse(options, add_other, add_other_flag, optstring, argv);
+  if (cyclone_files == NULL) {
+    fprintf(stderr, "missing file\n");
+    exit(1);
+  }
+
+  // Process each .cyc file
+  try {
+    for (let l = rev(cyclone_files); l != NULL; l = l->tl) {
+      process_file(*(l->hd));
+      if (compile_failure)
+        return 1;
+    }
+  } catch {
+    case x:
+      if (compile_failure)
+        return 1;
+      Core::rethrow(x);
+  }
+
+  return compile_failure ? 1 : 0;
+}
