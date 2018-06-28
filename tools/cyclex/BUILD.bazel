@@ -1,0 +1,31 @@
+load("//cyclone:build_defs.bzl", "cyc_binary", "cyclex", "cycyacc")
+
+cyclex(
+    name = "lexer",
+)
+
+cycyacc(
+    name = "parser_tab",
+    src = "parser.cyy",
+)
+
+cyc_binary(
+    name = "cyclex",
+    srcs = [
+        "compact.cyc",
+        "compact.h",
+        "lexer.h",
+        "lexgen.cyc",
+        "lexgen.h",
+        "main.cyc",
+        "output.cyc",
+        "output.h",
+        "parser.h",
+        "syntax.cyc",
+        "syntax.h",
+        ":lexer",
+        ":parser_tab",
+    ],
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std"],
+)

@@ -1,0 +1,73 @@
+#include "cyclone/testsuite/cyctest.h"
+#include "support.h"
+
+/* The test suites */
+
+#include "suites/try_suite.h"
+#include "suites/core_suite.h"
+#include "suites/list_suite.h"
+#include "suites/array_suite.h"
+#include "suites/tuple_suite.h"
+#include "suites/pattern_match_suite.h"
+#include "suites/set_suite.h"
+#include "suites/dict_suite.h"
+#include "suites/hash_suite.h"
+#include "suites/string_suite.h"
+#include "suites/buffer_suite.h"
+#include "suites/queue_suite.h"
+#include "suites/rope_suite.h"
+#include "suites/ctype_suite.h"
+#include "suites/xarray_suite.h"
+#include "suites/bitvec_suite.h"
+#include "suites/filename_suite.h"
+#include "suites/float_suite.h"
+#include "suites/fn_suite.h"
+#include "suites/pp_suite.h"
+#include "suites/arg_suite.h"
+#include "suites/printf_suite.h"
+#include "suites/scanf_suite.h"
+#include "suites/extern_c_suite.h"
+#include "suites/attribute_suite.h"
+#include "suites/letv_suite.h"
+#include "suites/signals_suite.h"
+#include "suites/union_suite.h"
+#include "suites/swap_suite.h"
+
+/* Running them */
+
+CT_MAIN_BEGIN(print_level)
+
+  CT_SUITE_REGISTER(Exception);
+  CT_SUITE_REGISTER(Core);
+  CT_SUITE_REGISTER(Array);
+  CT_SUITE_REGISTER(List);
+  CT_SUITE_REGISTER(Tuple);
+  CT_SUITE_REGISTER(Patterns);
+  CT_SUITE_REGISTER(Set);
+  CT_SUITE_REGISTER(Dict);
+  CT_SUITE_REGISTER(Hash);
+  CT_SUITE_REGISTER(String);
+  CT_SUITE_REGISTER(Buffer);
+  CT_SUITE_REGISTER(Queue);
+  CT_SUITE_REGISTER(Rope);
+  CT_SUITE_REGISTER(Ctype);
+  CT_SUITE_REGISTER(Xarray);
+  CT_SUITE_REGISTER(Bitvec);
+  CT_SUITE_REGISTER(Filename);
+  CT_SUITE_REGISTER(Float);
+  CT_SUITE_REGISTER(Fn);
+  CT_SUITE_REGISTER(PP);
+  CT_SUITE_REGISTER(Arg);
+  CT_SUITE_REGISTER(Printf);
+  CT_SUITE_REGISTER(Scanf);
+  CT_SUITE_REGISTER(ExternC);
+  CT_SUITE_REGISTER(Attributes);
+  CT_SUITE_REGISTER(Letv);
+  CT_SUITE_REGISTER(Signals);
+  CT_SUITE_REGISTER(TaggedUnions);
+  CT_SUITE_REGISTER(Swap);
+
+  if (print_level > 0)
+    printf("*************** CYCLONE TEST SUITE ***************\n\n");
+
+CT_MAIN_END(print_level)

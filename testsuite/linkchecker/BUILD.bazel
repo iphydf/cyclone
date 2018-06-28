@@ -1,0 +1,34 @@
+#genrule(
+#    name = "sample_srcs",
+#    srcs = [
+#        "external.cyc",
+#        "sample.cyc",
+#        "//cyclone/library/std/cyc-lib:cycspecs",
+#    ],
+#    outs = [
+#        "external.c",
+#        "sample.c",
+#    ],
+#    cmd = " ".join([
+#        "$(location //cyclone/tools/cyclone)",
+#        "  --geninterface",
+#        "  -ic",
+#        #"  -stopafter-toc",
+#        "  $(location external.cyc)",
+#        "  $(location sample.cyc);",
+#        "mv $$(dirname $(location external.cyc))/external.c $(location external.c);",
+#        "mv $$(dirname $(location sample.cyc))/sample.c $(location sample.c);",
+#    ]),
+#    tools = ["//cyclone/tools/cyclone"],
+#)
+#
+#cc_test(
+#    name = "sample",
+#    srcs = [":sample_srcs"],
+#    copts = ["-m32"],
+#    linkopts = ["-m32"],
+#    deps = [
+#        "//cyclone/library/runtime",
+#        "//cyclone/library/std/cyc-lib",
+#    ],
+#)

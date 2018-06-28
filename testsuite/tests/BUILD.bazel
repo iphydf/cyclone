@@ -1,0 +1,19 @@
+load("//cyclone:build_defs.bzl", "cyc_test")
+
+[cyc_test(
+    name = src[:-4],
+    size = "small",
+    srcs = [src],
+    linkopts = ["-lpthread"],
+    deps = [
+        "//cyclone/library/std",
+        "//cyclone/testsuite:cyctest",
+    ],
+) for src in glob(
+    ["*.cyc"],
+    exclude = [
+        "mmap_test.cyc",
+        "sigaction_test.cyc",
+        "structarray.cyc",
+    ],
+)]

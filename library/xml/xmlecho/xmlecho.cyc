@@ -1,0 +1,50 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+#include "cyclone/library/xml/xmldump.h"
+#include "cyclone/library/xml/xmlscan.h"
+#include "cyclone/library/xml/xmlparse.h"
+#include "cyclone/library/std/lexing.h"
+#include <stdio.h>
+
+using Core;
+
+void doit(string_t file) {
+  let fd = file_open(file,"r");
+  try {
+    region r;
+    let rslt = XmlParse::rparse_file(r,fd);
+    XmlDump::dumpContents(stdout,rslt);
+  } catch {
+  case &Failure(s):
+    fprintf(stderr,"Failure: %s\n",s);
+    fclose(fd);
+    exit(1);
+  case x:
+    fclose(fd);
+    throw x;
+  }
+  fclose(fd);
+}
+
+int main(int argc, string_t ? argv) {
+  argv++; // skip the name of the executable
+  for (int n = numelts(argv); n > 0 && *argv; n--,argv++)
+    doit(*argv);
+  return 0;
+}

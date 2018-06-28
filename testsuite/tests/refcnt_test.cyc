@@ -1,0 +1,98 @@
+#include "cyclone/library/std/core.h"
+#include <stdio.h>
+#include "cyclone/testsuite/cyctest.h"
+
+CT_SUITE_BEGIN(Refcnt)
+
+void begin() { }
+void end() { }
+
+using Core;
+
+int @@aqual(`q) my_alloc(aqual_t<`q> aqh : RESTRICTED >= `q) {
+  return qnew (aqh) -1;
+//   return rcnew 1; // no good
+//   return unew 1; // no good
+}
+
+int my_deref(int *`r::E x) { return *x; }
+
+struct foo<`q::Q> {
+  int *@aqual(`q) x;
+  int *@aqual(`q) y;
+};
+
+void refcnt_test() {
+  /* basic usage */
+  int *`RC p1 = rcnew 3;
+  CT_ASSERT(*p1 == 3);
+  CT_ASSERT(refptr_count(p1) == 1);
+  let p2 = alias_refptr(p1);
+
+  CT_ASSERT(*p1 == 3);
+  CT_ASSERT(refptr_count(p1) == 2);
+  CT_ASSERT(*p2 == 3);
+  CT_ASSERT(refptr_count(p2) == 2);
+
+  drop_refptr(p1);
+  CT_ASSERT(*p2 == 3);
+  CT_ASSERT(refptr_count(p2) == 1);
+
+  drop_refptr(p2); // p2 now consumed
+
+  /* consuming stuff */
+  int *`RC p = rcnew 3;
+  let q = p;
+//   let n = *p; // no good
+
+  /* region ordering */
+  int *`H x = rcnew 1;
+//   int *`U x = rcnew 1; // no good
+//   int *`RC x = new 1; // no good
+//   int *`RC x = unew 1; // no good
+
+  /* polymorphism */
+  int *`RC y = my_alloc(refcnt_qual);
+
+  /* aliasing */
+  int z;
+  { let alias <`r>int *`r y2 = y;
+    z = my_deref(y2);
+  }
+  // implicit aliasing
+  z = my_deref(y);
+  CT_ASSERT(refptr_count(y) == 1);
+  CT_ASSERT(z == -1);
+  drop_refptr(y);
+
+  /* swap and paths */
+  struct foo @f = rcnew foo(rcnew 1, rcnew 2);
+  q :=: f->x;
+  CT_ASSERT(refptr_count(q) == 1);
+  CT_ASSERT(*q == 1);
+
+  let p3 = NULL;
+  f->x :=: p3;
+  CT_ASSERT(refptr_count(p3) == 1);
+  CT_ASSERT(*p3 == 3);
+
+  drop_refptr(p3);
+  drop_refptr(q);
+//   drop_refptr(f->y); // no good
+  q = NULL;
+  q :=: f->y;
+
+  CT_ASSERT(refptr_count(q) == 1);
+  CT_ASSERT(*q == 2);
+
+  drop_refptr(q);
+  drop_refptr(f);
+}
+
+CT_SUITE_INIT
+CT_ADD_TEST(refcnt_test)
+CT_SUITE_END
+
+CT_MAIN_BEGIN(print_level)
+CT_SUITE_REGISTER(Refcnt);
+CT_MAIN_END(print_level)

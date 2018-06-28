@@ -1,0 +1,4 @@
+COMPILER STAGE translation to C (unexpected exception)
+
+COMPILATION FAILED!
+uncaught exception: Cyc_Null_Exception from bazel-out/host/bin/cyclone/library/compiler/toc.c, line 10766

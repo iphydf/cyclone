@@ -1,0 +1,330 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "cyclone/library/std/core.h"
+#include "cyclone/library/std/filename.h"
+#include "cyclone/library/std/list.h"
+
+using Core;
+using List;
+
+//#define DEBUG(e) e
+#define DEBUG(e)
+
+datatype exn{Eof(int)};
+datatype exn.Eof Eof_val = Eof(0);
+static bool noexpand_tab = false;
+
+void read_filename(FILE@ input, char ?buf) {
+  int i = 0;
+  int c = fgetc(input);
+  while (c != ':' && c != EOF) {
+    buf[i] = (char)c;
+    i++;
+    c = fgetc(input);
+  }
+  buf[i] = 0;
+  if (c == EOF)
+    throw &Eof_val;
+  else {
+    c = fgetc(input);
+    if (c != '(') {
+      fprintf(stderr, "Ill-formed rewrite\n");
+      exit(1);
+    }
+  }
+}
+
+void read_num(FILE @input, int @j) {
+  char buffer[11]@zeroterm = {for i < 10 : 0};
+  int i                    = 0;
+  int c                    = fgetc(input);
+  while (c >= '0' && c <= '9') {
+    buffer[i] = (char)c;
+    i++;
+    c = fgetc(input);
+  }
+  if (c == EOF)
+    throw &Eof_val;
+  *j = atoi(buffer);
+}
+
+void read_line(FILE @f) {
+  int c = fgetc(f);
+  while (c != '\n' && c != EOF)
+    c = fgetc(f);
+  if (c == EOF)
+    throw &Eof_val;
+}
+
+typedef struct Rewrite {
+  int line;
+  int offset;
+  string_t old_str;
+  string_t new_str;
+} @rewrite_t;
+
+int cmp_rewrite(rewrite_t r1, rewrite_t r2) {
+  if (r1->line < r2->line)
+    return -1;
+  if (r2->line < r1->line)
+    return 1;
+  if (r1->offset < r2->offset)
+    return -1;
+  if (r2->offset < r1->offset)
+    return 1;
+  return 0;
+}
+
+void seekit(FILE @f, int cur_line, int cur_off, int new_line, int new_off) {
+  while (cur_line != new_line) {
+    read_line(f);
+    cur_line++;
+    cur_off = 0;
+  }
+  while (cur_off != new_off) {
+    fgetc(f);
+    cur_off++;
+  }
+}
+
+void read_up_to(FILE @input,char ?buf, int c) {
+  int c2 = fgetc(input);
+  while (c2 != c) {
+    *buf = (char)c2;
+    buf++;
+    c2 = fgetc(input);
+  }
+  *buf = (char)0;
+}
+
+void skip_past(FILE @input, int c) {
+  int c2 = fgetc(input);
+  while (c2 != c) {
+    c2 = fgetc(input);
+  }
+}
+
+void copy_up_to(FILE @fin, FILE @fout, int @curr_line, int @curr_off, int desired_line,
+                int desired_off, bool @firstspcs, bool @inmidspace) {
+  int c;
+  while (*curr_line != desired_line) {
+    c = fgetc(fin);
+    fputc(c, fout);
+    if (c == EOF) {
+      fprintf(stderr, "copy_up_to:  oops!  Ran out of file!\n");
+      break;
+    }
+    if (c == '\n') {
+      *curr_line  = *curr_line + 1;
+      *curr_off   = 0;
+      *firstspcs  = true;
+      *inmidspace = false;
+    } else if (c == '\t' || c == ' ') {
+      if (*firstspcs) {
+        // beginning of the row, all whitespaces are accounted for
+        if (c == '\t' && !noexpand_tab) {
+          *curr_off = *curr_off + 8 - (*curr_off % 8);
+        } else {  // c == ' ' or noexpand_tab with '\t'
+          *curr_off = *curr_off + 1;
+        }
+      } else if (!*inmidspace) {
+        *curr_off   = *curr_off + 1;
+        *inmidspace = true;
+      }
+    } else {
+      *curr_off   = *curr_off + 1;
+      *firstspcs  = false;
+      *inmidspace = false;
+    }
+  }
+  while (*curr_off != desired_off) {
+    c = fgetc(fin);
+    fputc(c, fout);
+    if (c == EOF) {
+      fprintf(stderr, "copy_up_to: oops!  Ran out of file 2!\n");
+      break;
+    }
+    if (c == '\n') {
+      fprintf(stderr, "copy_up_to: oops! Ran off the end of line %d!\n", *curr_line);
+      *curr_line  = *curr_line + 1;
+      *curr_off   = 0;
+      *firstspcs  = true;
+      *inmidspace = false;
+      break;
+    } else if (c == '\t' || c == ' ') {
+      if (*firstspcs) {
+        // beginning of the row, all whitespaces are accounted for
+        if (c == '\t' && !noexpand_tab) {
+          *curr_off = *curr_off + 8 - (*curr_off % 8);
+        } else {  // c == ' '
+          *curr_off = *curr_off + 1;
+        }
+      } else if (!*inmidspace) {
+        *curr_off   = *curr_off + 1;
+        *inmidspace = true;
+      }
+    } else {
+      *curr_off   = *curr_off + 1;
+      *firstspcs  = false;
+      *inmidspace = false;
+    }
+  }
+}
+
+void skip_input(FILE @fin, int @curr_line, int @curr_off, int count, bool @firstspcs,
+                bool @inmidspace) {
+  int c;
+  while (count != 0) {
+    c = fgetc(fin);
+    if (c == EOF) {
+      fprintf(stderr, "skip_input: oops!  Ran out of file!\n");
+      break;
+    }
+    if (c == '\n') {
+      *curr_line  = *curr_line + 1;
+      *curr_off   = 0;
+      *firstspcs  = true;
+      *inmidspace = false;
+      count--;
+    } else if (c == '\t' || c == ' ') {
+      if (*firstspcs) {
+        // beginning of the row, all whitespaces are accounted for
+        if (c == '\t' && !noexpand_tab) {
+          *curr_off = *curr_off + 8 - (*curr_off % 8);
+          count     = count - (8 - *curr_off % 8);
+        } else {  // c == ' '
+          *curr_off = *curr_off + 1;
+          count--;
+        }
+      } else if (!*inmidspace) {
+        *curr_off = *curr_off + 1;
+        count--;
+        *inmidspace = true;
+      }
+    } else {
+      *curr_off = *curr_off + 1;
+      count--;
+      *firstspcs  = false;
+      *inmidspace = false;
+    }
+  }
+}
+
+void copy_rest(FILE @fin, FILE @fout) {
+  int c = fgetc(fin);
+  while (c != EOF) {
+    fputc(c, fout);
+    c = fgetc(fin);
+  }
+}
+
+int main(int argc, const char ?`H?argv) {
+  FILE @input = stdin;
+  argv++;
+  argc--;
+  if (argc > 0) {
+    if (strcmp(*argv, "-help") == 0 || strcmp(*argv, "--help") == 0 ||
+        strcmp(*argv, "-usage") == 0 || strcmp(*argv, "--usage") == 0) {
+      fprintf(stderr,
+              "usage:  rewrite [-noexpandtab] [file]\n"
+              "   where [file] is a set of rewrites generated by cyclone -port.\n"
+              "   If [file] is not present, defaults to stdin.\n");
+      exit(1);
+    }
+  }
+  if (argc > 0) {
+    if (strcmp(*argv, "-noexpandtab") == 0) {
+      noexpand_tab = true;
+      argc         = argc - 1;
+      argv         = argv + 1;
+    }
+  }
+  if (argc > 0) {
+    FILE *inp = fopen((const char @)(*argv), "r");
+    if (!inp) {
+      fprintf(stderr, "could not open file %s for reading", *argv);
+      exit(1);
+    }
+    input = inp;
+  }
+  char filename[1026]@zeroterm = {for i < 1025 : 0};
+  char delta[1026]@zeroterm = {for i < 1025 : 0};
+  int line1 = 0, line2 = 0;
+  int offset1 = 0, offset2 = 0;
+  bool firstspcs = true, inmidspace = false;
+  int i            = 0;
+  string_t old_str = "";
+  string_t new_str = "";
+
+  // list of files and associated rewrites
+  list_t<$(char ?, list_t<rewrite_t>)@> fs = NULL;
+
+  try {
+    while (true) {
+      read_filename(input, filename);
+      DEBUG(printf("filename: %s\n", filename));
+      read_num(input, &line1);
+      DEBUG(printf("line1: %d\n", line1));
+      read_num(input, &offset1);
+      DEBUG(printf("offset1: %d\n", offset1));
+      // read_num(input,&line2);
+      // DEBUG(printf("line2: %d\n",line2));
+      // read_num(input,&offset2);
+      // DEBUG(printf("offset2: %d\n",offset2));
+      skip_past(input, '`');
+      read_up_to(input, delta, '\'');
+      new_str = aprintf("%s", delta);
+      DEBUG(printf("new_str: %s\n", new_str));
+      skip_past(input, '`');
+      read_up_to(input, delta, '\'');
+      old_str = aprintf("%s", delta);
+      DEBUG(printf("old_str: %s\n", old_str));
+      read_line(input);
+      // if the file ends in .cyp then skip the rewrite
+      let n = strlen(filename);
+      if (n > 4 && strcmp(filename + (n - 4), ".cyp") == 0)
+        continue;
+      // insert into fs
+      list_t<$(char ?`H, list_t<rewrite_t, `H>)@`H,`H> f = fs;
+      while (f != NULL) {
+        if (strcmp((*f->hd)[0], filename) == 0)
+          break;
+        f = f->tl;
+      }
+      if (f == NULL) {
+        fs = f = new List{new $(strdup(filename), NULL), fs};
+      }
+      (*f->hd)[1] = new List(new Rewrite{line1, offset1, old_str, new_str}, (*f->hd)[1]);
+    }
+  } catch {
+    case &Eof(_):
+      break;
+  }
+  printf("done parsing rewrites (%d total).\n", List::length(fs));
+  fflush(stdout);
+  for (let xs = fs; xs != NULL; xs = xs->tl) {
+    let $(file, rewrites) = *xs->hd;
+    let basename          = Filename::chop_extension(file);
+    let fileout           = strconcat(basename, "_new.cyc");
+    rewrites              = rimp_merge_sort(cmp_rewrite, rewrites);
+    printf("Rewriting file %s to %s\n", file, fileout);
+    FILE @fin    = (FILE @)fopen((const char @)file, "r");
+    FILE @fout   = (FILE @)fopen((const char @)fileout, "w");
+    int cur_line = 1;
+    int cur_off  = 0;
+    for (; rewrites; rewrites = rewrites->tl) {
+      printf("line %d, offset %d: `%s' -> `%s'\n", rewrites->hd->line, rewrites->hd->offset,
+             rewrites->hd->old_str, rewrites->hd->new_str);
+      copy_up_to(fin, fout, &cur_line, &cur_off, rewrites->hd->line, rewrites->hd->offset,
+                 &firstspcs, &inmidspace);
+      fprintf(fout, "%s", rewrites->hd->new_str);
+      skip_input(fin, &cur_line, &cur_off, strlen(rewrites->hd->old_str), &firstspcs, &inmidspace);
+    }
+    copy_rest(fin, fout);
+    fclose(fin);
+    fclose(fout);
+  }
+  return 0;
+}

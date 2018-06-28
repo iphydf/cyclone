@@ -1,0 +1,10 @@
+---
+BasedOnStyle: Google
+NamespaceIndentation: All
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+PointerAlignment: Right
+DerivePointerAlignment: false
+AlignConsecutiveDeclarations: false
+AlignConsecutiveAssignments: false
+ColumnLimit: 100

@@ -1,0 +1,390 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 1999-2001 Greg Morrisett, Dan Grossman
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+#include "list.h"
+#include "set.h"
+
+namespace Set;
+using List;
+
+/* Sets are a comparison function and a list of elements.
+ * The comparison function should return 0 when elements are equal, i
+ * < 0 if the first elt is less than the second, and i > 0 if the
+ * first elt is greater than the second elt.  The list of nodes is
+ * always maintained in sorted order with no duplicates. */
+abstract struct Set<`a,`r> {
+  int(@cmp)(`a,`a);
+  int cardinality;
+  list_t<`a,`r> nodes;
+};
+
+/* Given a comparison function, return an empty set. */
+set_t<`a> empty(int(@`H comp)(`a,`a)) { return new Set(comp, 0, NULL); }
+set_t<`a,`r> rempty(region_t<`r> rgn, int(@`H comp)(`a,`a)) {
+  return rnew(rgn) Set(comp, 0, NULL);
+}
+
+set_t<`a> singleton(int(@`H comp)(`a,`a),`a x) { return new Set(comp, 1, new List(x, NULL)); }
+
+int cardinality(set_t s) { return (s->cardinality); }
+
+/* Determine whether a set is empty */
+bool is_empty(set_t s) { return (s->cardinality == 0); }
+
+/* Return true if element is present, false otherwise */
+static bool member_b(int cmp(`a,`a), list_t<`a> n,`a elt) {
+  for (; n != NULL; n = n->tl) {
+    int i = cmp(elt, n->hd);
+    if (i == 0)
+      return true;
+    if (i < 0)
+      return false;
+  }
+  return false;
+}
+
+bool member(set_t<`a> s,`a elt) { return (member_b(s->cmp, s->nodes, elt)); }
+
+/* Internal function to insert an elt into a sorted list of nodes,
+ * returning a new list of nodes (that shares with the old one).
+ * Assumes elt is not in the list. */
+static list_t<`a,`r> insert_b(region_t<`r> rgn, int cmp(`a,`a), list_t<`a,`r> n,`a elt) {
+  if (n == NULL)
+    return rnew(rgn) List(elt, NULL);
+  int i = cmp(elt, n->hd);
+  if (i < 0)
+    return rnew(rgn) List(elt, n);
+  list_t<`a,`r> result = rnew(rgn) List(n->hd, NULL);
+  list_t<`a,`r> prev   = result;
+  n                    = n->tl;
+  while (n != NULL && (i = cmp(n->hd, elt)) < 0) {
+    prev->tl = rnew(rgn) List(n->hd, NULL);
+    prev     = prev->tl;
+    n        = n->tl;
+  }
+  prev->tl = rnew(rgn) List(elt, n);
+  return (result);
+}
+
+/* Inserts an elt into a set. */
+set_t<`a> insert(set_t<`a,`H> s,`a elt) {
+  if (member(s, elt))
+    return (s);
+  return new Set(s->cmp, s->cardinality + 1, insert_b(Core::heap_region, s->cmp, s->nodes, elt));
+}
+set_t<`a,`r> rinsert(region_t<`r> rgn, set_t<`a,`r> s, `a elt) {
+  if (member(s, elt))
+    return s;
+  return rnew(rgn) Set(s->cmp, s->cardinality + 1, insert_b(rgn, s->cmp, s->nodes, elt));
+}
+
+/* Internal function to insert an elt into a sorted list of nodes
+ * that modifies the old list.  Assumes elt is not in the list. */
+static list_t<`a,`r> imp_insert_b(region_t<`r> rgn, int cmp(`a,`a), list_t<`a,`r> n,`a elt) {
+  if (n == NULL)
+    return rnew(rgn) List(elt, NULL);
+  int i = cmp(elt, n->hd);
+  if (i < 0)
+    return rnew(rgn) List(elt, n);
+  list_t<`a,`r> prev = n, res = n;
+  n = n->tl;
+  while (n != NULL && (i = cmp(n->hd, elt)) < 0) {
+    prev = prev->tl;
+    n    = n->tl;
+  }
+  prev->tl = rnew(rgn) List(elt, n);
+  return (res);
+}
+
+/* Inserts an elt into a set. */
+void imp_insert(set_t<`a,`H> s,`a elt) {
+  if (!member(s, elt)) {
+    s->nodes = imp_insert_b(Core::heap_region, s->cmp, s->nodes, elt);
+    ++s->cardinality;
+  }
+}
+void imp_rinsert(region_t<`r> rgn, set_t<`a,`r> s, `a elt) {
+  if (!member(s, elt)) {
+    s->nodes = imp_insert_b(rgn, s->cmp, s->nodes, elt);
+    ++s->cardinality;
+  }
+}
+
+/* Unions two sets by merging the nodes */
+set_t<`a> union_two(set_t<`a,`H> s1, set_t<`a,`H> s2) {
+  if (s1 == s2)
+    return s1;
+  if (s1->cardinality == 0)
+    return s2;
+  if (s2->cardinality == 0)
+    return s1;
+
+  list_t<`a> nodes  = NULL;
+  int cardinality   = 0;
+  int(@comp)(`a,`a) = s1->cmp;
+
+  list_t<`a> x1   = s1->nodes;
+  list_t<`a> x2   = s2->nodes;
+  list_t<`a> curr = NULL;
+
+  while ((x1 != NULL) && (x2 != NULL)) {
+    int i = comp(x1->hd, x2->hd);
+    if (i == 0) {
+      // they're equal -- discard one copy
+      x2 = x2->tl;
+    } else if (i < 0) {
+      // x1->hd <= x2->hd -- insert x1 into nodes
+      if (curr == NULL) {
+        nodes = new List(x1->hd, NULL);
+        curr  = nodes;
+      } else {
+        curr->tl = new List(x1->hd, NULL);
+        curr     = curr->tl;
+      }
+      x1 = x1->tl;
+      ++cardinality;
+    } else {
+      // x2->hd <= x1->hd -- insert x2 into nodes
+      if (curr == NULL) {
+        nodes = new List(x2->hd, NULL);
+        curr  = nodes;
+      } else {
+        curr->tl = new List(x2->hd, NULL);
+        curr     = curr->tl;
+      }
+      x2 = x2->tl;
+      ++cardinality;
+    }
+  }
+  if (x1 != NULL) {
+    // splice x1 into the tail
+    if (curr == NULL)
+      nodes = x1;
+    else
+      curr->tl = x1;
+    cardinality += List::length(x1);
+  } else if (x2 != NULL) {
+    // splice x2 into the tail
+    if (curr == NULL)
+      nodes = x2;
+    else
+      curr->tl = x2;
+    cardinality += List::length(x2);
+  }
+  return new Set(comp, cardinality, nodes);
+}
+
+/* Internal function used to delete an elt from a list of nodes --
+ * assumes the elt is in the list exactly once and that the nodes are sorted. */
+static list_t<`a> delete_b(int cmp(`a,`a), list_t<`a,`H> n,`a elt) {
+  if (cmp(n->hd, elt) == 0)
+    return (n->tl);
+
+  list_t<`a> result = new List(n->hd, NULL);
+  list_t<`a> prev   = result;
+  n                 = n->tl;
+  while (n != NULL && (cmp(n->hd, elt) != 0)) {
+    prev->tl = new List(n->hd, NULL);
+    prev     = prev->tl;
+    n        = n->tl;
+  }
+  prev->tl = n->tl;
+  return (result);
+}
+
+/* Delete a elt/pair from the set if present. */
+set_t<`a> delete (set_t<`a,`H> s,`a elt) {
+  if (member(s, elt))
+    return new Set(s->cmp, s->cardinality - 1, delete_b(s->cmp, s->nodes, elt));
+  return s;
+}
+
+/* Internal function used to delete an elt from a list of nodes --
+ * assumes the elt is in the list exactly once and that the nodes are sorted.
+ * Modifies the list in place. */
+static list_t<`a> imp_delete_b(int cmp(`a,`a), list_t<`a,`H> n,`a elt,`a @ret) {
+  if (cmp(n->hd, elt) == 0)
+    return (n->tl);
+
+  list_t<`a> prev = n, res = n;
+  n = n->tl;
+  while (n != NULL && (cmp(n->hd, elt) != 0)) {
+    prev = prev->tl;
+    n    = n->tl;
+  }
+  prev->tl = n->tl;
+  *ret     = n->hd;
+  return (res);
+}
+
+/* Delete a elt/pair from the set if present and return it. */
+`a imp_delete(set_t<`a,`H> s,`a elt) {
+  `a ret = elt;
+  if (member(s, elt)) {
+    s->nodes = imp_delete_b(s->cmp, s->nodes, elt, &ret);
+    --s->cardinality;
+  }
+  return ret;
+}
+
+/* Fold a function f across the set yielding an accumulator. */
+`b fold(`b f(`a,`b), set_t<`a> s,`b accum) {
+  for (list_t n = s->nodes; n != NULL; n = n->tl)
+    accum = f(n->hd, accum);
+  return accum;
+}
+`b fold_c(`b f(`c,`a,`b),`c env, set_t<`a> s,`b accum) {
+  for (list_t n = s->nodes; n != NULL; n = n->tl)
+    accum = f(env, n->hd, accum);
+  return accum;
+}
+
+/* Apply a function to each element in a set */
+void app(`b f(`a), set_t<`a> s) { List::app(f, s->nodes); }
+void iter(void f(`a), set_t<`a> s) { List::iter(f, s->nodes); }
+void iter_c(void f(`c,`a),`c env, set_t<`a> s) { List::iter_c(f, env, s->nodes); }
+
+/* return the intersection of two sets */
+// could try to prevent more allocation with subset checks
+set_t<`a> intersect(set_t<`a,`H> s1, set_t<`a,`H> s2) {
+  if (s1 == s2)
+    return s1;
+  int(@comp)(`a,`a) = s1->cmp;
+  list_t<`a> x1     = s1->nodes;
+  list_t<`a> x2     = s2->nodes;
+  list_t<`a> result = NULL, prev = NULL;
+  int card = 0;
+  if (x1 == NULL)
+    return s1;
+  if (x2 == NULL)
+    return s2;
+
+  while (x1 != NULL && x2 != NULL) {
+    int i = comp(x1->hd, x2->hd);
+    if (i == 0) {
+      if (result == NULL) {
+        result = new List(x1->hd, NULL);
+        prev   = result;
+      } else {
+        prev->tl = new List(x1->hd, NULL);
+        prev     = prev->tl;
+      }
+      ++card;
+      x1 = x1->tl;
+      x2 = x2->tl;
+    } else if (i < 0) {
+      x1 = x1->tl;
+    } else {
+      x2 = x2->tl;
+    }
+  }
+  return new Set(comp, card, result);
+}
+
+set_t<`a> from_list(int(@`H comp)(`a,`a), list_t<`a,`r> x) {
+  list_t<`a> z = List::merge_sort(comp, x);
+  // remove duplicates
+  for (list_t<`a> y = z; y != NULL; y = y->tl)
+    if ((y->tl != NULL) && (comp(y->hd, y->tl->hd) == 0))
+      y->tl = y->tl->tl;
+  return new Set(comp, List::length(z), z);
+}
+
+list_t<`a,`r> to_list(set_t<`a,`r> s) { return s->nodes; }
+
+bool subset(set_t<`a> s1, set_t<`a> s2) {
+  int(@comp)(`a,`a) = s1->cmp;
+  list_t<`a> x1     = s1->nodes;
+  list_t<`a> x2     = s2->nodes;
+
+  while (true) {
+    if (x1 == NULL)
+      return true;
+    if (x2 == NULL)
+      return false;
+    int i = comp(x1->hd, x2->hd);
+    if (i < 0)
+      return false;
+    if (i == 0)
+      x1 = x1->tl;
+    x2 = x2->tl;
+  }
+  return true;
+}
+
+set_t<`a> diff(set_t<`a,`H> s1, set_t<`a,`H> s2) {
+  int(@comp)(`a,`a) = s1->cmp;
+  list_t<`a> x1     = s1->nodes;
+  list_t<`a> x2     = s2->nodes;
+  int card          = s1->cardinality;
+
+  if (x2 == NULL)
+    return (s1);
+
+  for (; x2 != NULL; x2 = x2->tl) {
+    `a elt = x2->hd;
+    if (member_b(comp, x1, elt)) {
+      --card;
+      x1 = delete_b(comp, x1, elt);
+    }
+  }
+  return new Set(comp, card, x1);
+}
+
+int setcmp(set_t<`a> s1, set_t<`a> s2) {
+  if ((unsigned)s1 == (unsigned)s2)
+    return 0;
+  if (s1->cardinality != s2->cardinality)
+    return s1->cardinality - s2->cardinality;
+
+  list_t<`a> x1    = s1->nodes;
+  list_t<`a> x2    = s2->nodes;
+  int(@cmp)(`a,`a) = s1->cmp;
+  while (x1 != NULL) {
+    int diff = cmp(x1->hd, x2->hd);
+    if (diff != 0)
+      return diff;
+    x1 = x1->tl;
+    x2 = x2->tl;
+  }
+  return 0;
+}
+
+bool equals(set_t<`a> s1, set_t<`a> s2) { return setcmp(s1, s2) == 0; }
+
+datatype exn{Absent};
+datatype exn.Absent Absent_val = Absent;
+
+/* Return an elt (in this case -- the first one in the set).
+ * If the set is empty, throw Absent. */
+`a choose(set_t<`a> s) {
+  if (s->nodes == NULL)
+    throw &Absent_val;
+  return (s->nodes->hd);
+}
+
+bool iter_f<`a,`r1,`r2,`r3>(list_t<`a,`r1> @`r2 elts_left, `a @`r3 dest) {
+  if (!*elts_left)
+    return false;
+  *dest      = (*elts_left)->hd;
+  *elts_left = (*elts_left)->tl;
+  return true;
+}
+Iter::iter_t<`a, regions(`a) +`r1 +`r2> make_iter(region_t<`r1> rgn, set_t<`a,`r2> s) {
+  return Iter::Iter { .env = rnew(rgn) s->nodes, .next = iter_f @<`a,`r2,`r1><> };
+}

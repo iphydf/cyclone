@@ -1,0 +1,35 @@
+HEADERS[] =
+  files.h
+  gram.h
+  lex.h
+  machine.h
+  new.h
+  state.h
+  symtab.h
+  system.h
+  types.h
+
+OBJECTS[] =
+  LR0.o
+  closure.o
+  conflicts.o
+  derives.o
+  files.o
+  getargs.o
+  gram.o
+  lalr.o
+  lex.o
+  main.o
+  nullable.o
+  output.o
+  print.o
+  reader.o
+  reduce.o
+  symtab.o
+  version.o
+  warshall.o
+  cycbison_simple.string.o
+
+link (std)
+
+boot-program (cycbison)

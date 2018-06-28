@@ -1,0 +1,12 @@
+load("//cyclone:build_defs.bzl", "cyc_library")
+
+cyc_library(
+    name = "std",
+    boot_srcs = glob([
+        "*.c",
+        "libc/*.c",
+    ]),
+    copts = ["-D_POSIX_C_SOURCE=199309L"],
+    linkopts = ["-lpthread"],
+    visibility = ["//visibility:public"],
+)

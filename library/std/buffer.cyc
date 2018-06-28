@@ -1,0 +1,173 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2000-2001 Greg Morrisett, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+// Originally ported from Objective Caml:
+
+/***********************************************************************)
+(*                                                                     *)
+(*                           Objective Caml                            *)
+(*                                                                     *)
+(*   Pierre Weis and Xavier Leroy, projet Cristal, INRIA Rocquencourt  *)
+(*                                                                     *)
+(*  Copyright 1999 Institut National de Recherche en Informatique et   *)
+(*  en Automatique.  All rights reserved.  This file is distributed    *)
+(*  under the terms of the GNU Library General Public License.         *)
+(*                                                                     *)
+(***********************************************************************/
+
+#include "buffer.h"
+#include "string.h"
+
+namespace Buffer;
+using Core;
+
+//(* Extensible buffers *)
+
+abstract struct t {
+  mstring_t<`H, UNIQUE> buffer;
+  unsigned int position;
+  unsigned int length;
+  mstring_t<`H, UNIQUE> initial_buffer;
+};
+
+T create(unsigned int n) {
+  if (n > 0) {
+    mstring_t<`H, UNIQUE> s = qcalloc(heap_region, unique_qual, n + 1, sizeof(char));
+    return new t(s, 0, n, NULL);
+  } else {
+    return new t(NULL, 0, 0, NULL);
+  }
+}
+
+mstring_t contents(T b) {
+  let buf = NULL;
+  buf :=: b->buffer;
+  if (buf == NULL)
+    return NULL;
+  let res = substring(buf, 0, b->position);
+  buf :=: b->buffer;
+  return res;
+}
+
+mstring_t<`H, UNIQUE> extract(T b) {
+  let buf = NULL;
+  buf :=: b->buffer;
+  buf[b->position] = '\0';
+  b->position      = 0;
+  b->length        = 0;
+  return buf;
+}
+
+bool restore(T b, mstring_t<`H, UNIQUE> buf) __attribute__((consume(2))) {
+  int len = strlen(buf);
+  buf :=: b->buffer;
+  if (buf != NULL) {
+    buf :=: b->buffer;
+    Core::ufree((char *@nozeroterm`U)buf);
+    return false;
+  }
+  b->position = 0;
+  b->length   = len;
+  return true;
+}
+
+size_t length(T b) { return (size_t)b->position; }
+
+void clear(T b) { b->position = 0; }
+
+void reset(T b) {
+  b->position = 0;
+  if (b->initial_buffer != NULL) {
+    let buf = NULL;
+    b->initial_buffer :=: buf;
+    b->length = numelts(buf) - 1;
+    b->buffer :=: buf;
+    Core::ufree((char *@nozeroterm `U)buf);
+  }
+  return;
+}
+
+static void resize(T b, unsigned int more) {
+  size_t len     = b->length;
+  size_t new_len = len == 0 ? 1 : len;
+  mstring_t<`H, UNIQUE> new_buffer;
+  while (b->position + more > new_len) {
+    new_len = 2 * new_len;
+  }
+  new_buffer = qcalloc(heap_region, unique_qual, new_len + 1, sizeof(char));
+  if (b->length != 0) {
+    let alias<`r> char ?`r x = new_buffer;
+    strncpy((char ?@nozeroterm)x, b->buffer, b->position);
+  }
+  if (b->initial_buffer == NULL)
+    b->initial_buffer :=: b->buffer;
+  b->buffer :=: new_buffer;
+  Core::ufree((char *@nozeroterm `U)new_buffer);
+  b->length = new_len;
+  return;
+}
+
+void add_char(T b, char c) {
+  int pos = b->position;
+  if (pos >= b->length)
+    resize(b, 1);
+  (b->buffer)[pos] = c;
+  b->position      = pos + 1;
+  return;
+}
+
+// Note: like substring, this does not check for
+// NUL terminators within the specified substring
+void add_substring(T b, string_t s, int offset, int len) {
+  if (offset < 0 || len < 0 || offset + len > numelts(s))
+    throw new Invalid_argument("Buffer::add_substring");
+  int new_position = b->position + len;
+  if (new_position > b->length)
+    resize(b, len);
+  let buf = NULL;
+  buf :=: b->buffer;
+  {
+    let alias<`r> char ?`r x = buf;
+    zstrncpy((char ?@nozeroterm)(x + b->position), s + offset, len);
+  }
+  buf :=: b->buffer;
+  b->position = new_position;
+  return;
+}
+
+// This DOES check for NUL terminators
+void add_string(T b, string_t s) {
+  int len          = strlen(s);
+  int new_position = b->position + len;
+  if (new_position > b->length)
+    resize(b, len);
+  let buf = NULL;
+  buf :=: b->buffer;
+  {
+    let alias<`r> char ?`r x = buf;
+    strncpy((char ?@nozeroterm)x + b->position, s, len);
+  }
+  buf :=: b->buffer;
+  b->position = new_position;
+  return;
+}
+
+void add_buffer(T b, T bs) {
+  add_substring(b, bs->buffer, 0, bs->position);
+  return;
+}

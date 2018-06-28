@@ -1,0 +1,519 @@
+/* Kind constants and utility functions.
+   Copyright (C) 2004 Dan Grossman, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+#include "kinds.h"
+
+#include "warn.h"
+
+#include <string.h>
+
+using Absyn;
+using Core;
+
+namespace Kinds;
+
+#if 0
+struct Kind rk          = Kind (RgnKind   , NoHint        );
+#endif
+struct Kind ak    = Kind(AnyKind, NoHint);
+struct Kind bk    = Kind(BoxKind, NoHint);
+struct Kind mk    = Kind(MemKind, NoHint);
+struct Kind ik    = Kind(IntKind, NoHint);
+struct Kind ek    = Kind(EffKind, NoHint);
+struct Kind boolk = Kind(BoolKind, NoHint);
+struct Kind ptrbk = Kind(PtrBndKind, NoHint);
+struct Kind aqk   = Kind(AqualKind, NoHint);
+
+struct Kind bk_rhint  = Kind(BoxKind, RestrictedHint);
+struct Kind bk_uhint  = Kind(BoxKind, UniqueHint);
+struct Kind bk_rchint = Kind(BoxKind, RefcntHint);
+
+struct Kind mk_rhint  = Kind(MemKind, RestrictedHint);
+struct Kind mk_uhint  = Kind(MemKind, UniqueHint);
+struct Kind mk_rchint = Kind(MemKind, RefcntHint);
+
+struct Kind ak_rhint  = Kind(AnyKind, RestrictedHint);
+struct Kind ak_uhint  = Kind(AnyKind, UniqueHint);
+struct Kind ak_rchint = Kind(AnyKind, RefcntHint);
+
+#if 0
+struct Kind trk         = Kind (RgnKind   , Top           );
+struct Kind tak         = Kind (AnyKind   , Top           );
+struct Kind tmk         = Kind (MemKind   , Top           );
+struct Kind urk         = Kind (RgnKind   , Unique        );
+struct Kind uak         = Kind (AnyKind   , Unique        );
+struct Kind umk         = Kind (MemKind   , Unique        );
+#endif
+#if 0
+struct Opt<kind_t> rko        = { &rk        };
+#endif
+struct Opt<kind_t> ako = {
+  &ak
+};
+struct Opt<kind_t> bko = {
+  &bk
+};
+struct Opt<kind_t> mko = {
+  &mk
+};
+struct Opt<kind_t> iko = {
+  &ik
+};
+struct Opt<kind_t> eko = {
+  &ek
+};
+struct Opt<kind_t> boolko = {
+  &boolk
+};
+struct Opt<kind_t> ptrbko = {
+  &ptrbk
+};
+struct Opt<kind_t> aqko = {
+  &aqk
+};
+
+struct Opt<kind_t> bk_rhinto = {
+  &bk_rhint
+};
+struct Opt<kind_t> bk_uhinto = {
+  &bk_uhint
+};
+struct Opt<kind_t> bk_rchinto = {
+  &bk_rchint
+};
+
+struct Opt<kind_t> mk_rhinto = {
+  &mk_rhint
+};
+struct Opt<kind_t> mk_uhinto = {
+  &mk_uhint
+};
+struct Opt<kind_t> mk_rchinto = {
+  &mk_rchint
+};
+
+struct Opt<kind_t> ak_rhinto = {
+  &ak_rhint
+};
+struct Opt<kind_t> ak_uhinto = {
+  &ak_uhint
+};
+struct Opt<kind_t> ak_rchinto = {
+  &ak_rchint
+};
+
+#if 0
+struct Opt<kind_t> trko       = { &trk       };
+struct Opt<kind_t> tako       = { &tak       };
+struct Opt<kind_t> tbko       = { &tbk       };
+struct Opt<kind_t> tmko       = { &tmk       };
+struct Opt<kind_t> urko       = { &urk       };
+struct Opt<kind_t> uako       = { &uak       };
+struct Opt<kind_t> ubko       = { &ubk       };
+struct Opt<kind_t> umko       = { &umk       };
+#endif
+
+opt_t<kind_t> kind_to_opt(kind_t kh) {
+  let &Kind(k, h) = kh;
+
+  if (h == NoHint) {
+    switch (k) {
+      case AnyKind:
+        return &ako;
+      case MemKind:
+        return &mko;
+      case BoxKind:
+        return &bko;
+#if 0
+        case RgnKind:    return &rko;
+#endif
+      case EffKind:
+        return &eko;
+      case IntKind:
+        return &iko;
+      case BoolKind:
+        return &bko;
+      case AqualKind:
+        return &aqko;
+      case PtrBndKind:
+        return &ptrbko;
+      default:
+        Warn::impos2("kind_to_opt: bad kind ", kh);
+    }
+  } else {
+    switch (k) {
+      case BoxKind:
+        switch (h) {
+          case RestrictedHint:
+            return &bk_rhinto;
+          case UniqueHint:
+            return &bk_uhinto;
+          default:
+            return &bk_rchinto;
+        }
+      case MemKind:
+        switch (h) {
+          case RestrictedHint:
+            return &mk_rhinto;
+          case UniqueHint:
+            return &mk_uhinto;
+          default:
+            return &mk_rchinto;
+        }
+      case AnyKind:
+        switch (h) {
+          case RestrictedHint:
+            return &ak_rhinto;
+          case UniqueHint:
+            return &ak_uhinto;
+          default:
+            return &ak_rchinto;
+        }
+      default:
+        Warn::impos2("kind_to_opt: bad kind ", kh);
+    }
+  }
+}
+
+kindbound_t kind_to_bound(kind_t k) { return new Eq_kb(k); }
+
+opt_t<kindbound_t> kind_to_bound_opt(kind_t k) { return new Opt(kind_to_bound(k)); }
+
+// Convert an identifier to a kind
+kind_t id_to_kind(string_t<`H> s, seg_t loc) {
+  if (strlen(s) == 1 || strlen(s) == 2) {
+    switch (s[0]) {
+      case 'A':
+        return &ak;
+      case 'M':
+        return &mk;
+      case 'B':
+        return &bk;
+      case 'R':
+        Warn::warn(loc, "Region kind ::R is deprecated; use effect kind ::E instead");
+        return &ek;
+      case 'E':
+        return &ek;
+      case 'I':
+        return &ik;
+      case 'Q':
+        return &aqk;
+      default:
+        if (strlen(s) == 2) {
+          Warn::warn2(loc, "Usage of deprecated kind: ", s);
+          if (s[1] == 'B') {
+            switch (s[0]) {
+              case 'U':
+                return &bk_uhint;
+              case 'T':
+                return &bk_rhint;
+              case 'C':
+                return &bk_rchint;
+              default:
+                break;
+            }
+          }
+          if (s[1] == 'M') {
+            switch (s[0]) {
+              case 'U':
+                return &mk_uhint;
+              case 'T':
+                return &mk_rhint;
+              case 'C':
+                return &mk_rchint;
+              default:
+                break;
+            }
+          }
+          if (s[1] == 'A') {
+            switch (s[0]) {
+              case 'U':
+                return &ak_uhint;
+              case 'T':
+                return &ak_rhint;
+              case 'C':
+                return &ak_rchint;
+              default:
+                break;
+            }
+          }
+          if (s[1] == 'R') {
+            Warn::warn(loc, "Region kind ::R is deprecated; use effect kind ::E instead");
+            return &ek;
+          }
+        }
+        break;
+    }
+  }
+  Warn::err2(loc, "bad kind: ", s, " strlen=", strlen(s));
+  return &bk;
+}
+
+string_t kind2string(kind_t kh) {
+  let &Kind(k, h) = kh;
+
+  if (h == NoHint) {
+    switch (k) {
+      case AnyKind:
+        return "A";
+      case MemKind:
+        return "M";
+      case BoxKind:
+        return "B";
+#if 0
+        case RgnKind:   return "R";
+#endif
+      case AqualKind:
+        return "Q";
+      case EffKind:
+        return "E";
+      case IntKind:
+        return "I";
+      case BoolKind:
+        return "BOOL";
+      case PtrBndKind:
+      default:
+        return "PTRBND";
+    }
+  } else {
+    switch (k) {
+      case BoxKind:
+        switch (h) {
+          case RestrictedHint:
+            return "TB";
+          case UniqueHint:
+            return "UB";
+          default:
+            return "CB";
+        }
+      case MemKind:
+        switch (h) {
+          case RestrictedHint:
+            return "TM";
+          case UniqueHint:
+            return "UM";
+          default:
+            return "CM";
+        }
+      case AnyKind:
+        switch (h) {
+          case RestrictedHint:
+            return "TA";
+          case UniqueHint:
+            return "UA";
+          default:
+            return "CA";
+        }
+      default:
+        Warn::impos2("Bad kind");
+    }
+  }
+}
+
+kindbound_t compress_kb(kindbound_t k) {
+  switch (k) {
+    case &Eq_kb(_):
+    case &Unknown_kb(NULL):
+    case &Less_kb(NULL, _):
+      return k;
+
+    case &Unknown_kb(&Opt(*k2)):
+      fallthru(k2);
+    case &Less_kb(&Opt(*k2), _):
+      *k2 = compress_kb(*k2);
+      return *k2;
+  }
+}
+
+kind_t force_kb(kindbound_t kb) {
+  switch (compress_kb(kb)) {
+    case &Eq_kb(k):
+      return k;
+    case &Unknown_kb(*f):
+      fallthru(f, &bk);
+    case &Less_kb(*f, k):
+      *f = new Opt(kind_to_bound(k));
+      return k;
+  }
+}
+
+// does a deep copy of a type to avoid sharing type variables.
+// Note that any evars continue to be shared.  This should
+// be run only before feeding the type to the well-formedness checker.
+kindbound_t copy_kindbound(kindbound_t kb) {
+  switch (compress_kb(kb)) {
+    case &Unknown_kb(_):
+      return new Unknown_kb(NULL);
+    case &Less_kb(_, k):
+      return new Less_kb(NULL, k);
+    default:
+      return kb;
+  }
+}
+
+// Our partial order looks like this:
+//          AbsType   EffKind  RgnKind  IntKind BoolKind PtrBndKind AqualKind
+//             V
+//          MemType
+//             V
+//          BoxType
+// Only used during unification -- we can constrain an Evar or VarType
+// as long as we move down in the lattice.
+bool kind_leq(kind_t ka1, kind_t ka2) {
+  let &Kind(k1, _) = ka1;
+  let &Kind(k2, _) = ka2;
+
+  // check the kind part
+  if (k1 != k2)
+    switch ($(k1, k2)) {
+      case $(BoxKind, MemKind):
+      case $(BoxKind, AnyKind):
+      case $(MemKind, AnyKind):
+        break;
+      default:
+        return false;
+    }
+      // check the aliasable part
+#if 0
+  if (a1 != a2)
+    switch ($(a1, a2))
+      {
+      case $(Aliasable, Top):
+      case $(Unique, Top):
+        return true;
+      default:
+        return false;
+      }
+#endif
+  return true;
+}
+
+kind_t tvar_kind(tvar_t tv, kind_t def) {
+  switch (compress_kb(tv->kind)) {
+    case &Eq_kb(k):
+      return k;
+    case &Less_kb(_, k):
+      return k;
+    default:
+      tv->kind = new Less_kb(NULL, def);
+      return def;
+  }
+}
+
+struct Opt<struct Kind *> tvar_kind_opt(tvar_t tv) {
+  switch (compress_kb(tv->kind)) {
+    case &Eq_kb(k):
+      return Opt{k};
+    case &Less_kb(_, k):
+      return Opt{k};
+    default:
+      return Opt{NULL};
+  }
+}
+
+$(tvar_t, kindbound_t) swap_kind(type_t t, kindbound_t kb) {
+  switch (compress(t)) {
+    case &VarType(tv):
+      let oldkb = tv->kind;
+      tv->kind  = kb;
+      return $(tv, oldkb);
+    default:
+      Warn::impos2("swap_kind: cannot update the kind of ", t);
+  }
+}
+
+bool kind_eq(kind_t k1, kind_t k2) {
+  return k1 == k2 || k1->kind == k2->kind && k1->aliashint == k2->aliashint;
+}
+
+// Given two kind constraint refs, merge them so that they will
+// point to the most constrained kind -- if they're compatible
+// return true, otherwise return false.
+bool constrain_kinds(kindbound_t c1, kindbound_t c2) {
+  c1 = compress_kb(c1);
+  c2 = compress_kb(c2);
+
+  if (c1 == c2)
+    return true;
+
+  switch ($(c1, c2)) {
+    case $(&Eq_kb(k1), &Eq_kb(k2)):
+      return k1 == k2;
+
+    case $(_, &Unknown_kb(*f)):
+      *f = new Opt(c1);
+      return true;
+    case $(&Unknown_kb(*f), _):
+      *f = new Opt(c2);
+      return true;
+
+    case $(&Less_kb(*f, k1), &Eq_kb(k2)):
+      if (!kind_leq(k2, k1))
+        return false;
+      *f = new Opt(c2);
+      return true;
+
+    case $(&Eq_kb(k1), &Less_kb(*f, k2)):
+      if (!kind_leq(k1, k2))
+        return false;
+      *f = new Opt(c1);
+      return true;
+
+    case $(&Less_kb(*f1, k1), &Less_kb(*f2, k2)):
+      if (kind_leq(k1, k2)) {
+        *f2 = new Opt(c1);
+        return true;
+      }
+      if (kind_leq(k2, k1)) {
+        *f1 = new Opt(c2);
+        return true;
+      }
+      return false;
+  }
+}
+
+type_opt_t consistent_aliashint(seg_t loc, kindbound_t kb, type_opt_t aq) {
+  switch (kb) {
+    case &Eq_kb(&Kind(_, ah)):
+      switch (ah) {
+        case NoHint:
+          return aq;
+        case RestrictedHint:
+          if (aq == NULL || aq == rtd_qual_type)
+            return rtd_qual_type;
+          Warn::err2(loc, "Inconsistent qualifier bounds");
+          break;
+        case UniqueHint:
+          if (aq == NULL || aq == un_qual_type)
+            return un_qual_type;
+          Warn::err2(loc, "Inconsistent qualifier bounds");
+          break;
+        case RefcntHint:
+          if (aq == NULL || aq == rc_qual_type)
+            return rc_qual_type;
+          Warn::err2(loc, "Inconsistent qualifier bounds");
+          break;
+        default:
+          Warn::err2(loc, "Inconsistent qualifier bounds");
+      }
+      break;
+    default:
+      break;
+  }
+  return aq;
+}

@@ -1,0 +1,14 @@
+load("//cyclone:build_defs.bzl", "cyc_test")
+
+cyc_test(
+    name = "cyctest",
+    size = "small",
+    srcs = glob(["suites/*.h"]) + [
+        "cyctest.cyc",
+        "support.h",
+    ],
+    deps = [
+        "//cyclone/library/std",
+        "//cyclone/testsuite:cyctest",
+    ],
+)

@@ -1,0 +1,83 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 Greg Morrisett
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+#include "rope.h"
+#include "string.h"
+
+namespace Rope;
+using Core;
+
+static datatype R {
+  String_rope(string_t),
+  Array_rope(rope_t?)
+};
+abstract struct Rope_node {
+  datatype R @v;
+};
+
+rope_t from_string(string_t<`H> s) { return new Rope_node{new String_rope(s)}; }
+rope_t concat(rope_t r1, rope_t r2) { return new Rope_node{new Array_rope(new {r1, r2})}; }
+rope_t concata(rope_t ?`H rs) {
+  return new Rope_node(new Array_rope(rs));
+}
+rope_t concatl(List::list_t<rope_t> l) {
+  return new Rope_node(new Array_rope(new {for
+      i < List::length(l)
+          : ({
+              rope_t r = l->hd;
+              l        = l->tl;
+              r;
+            })
+  }));
+}
+
+unsigned int length(rope_t r) {
+  switch (r->v) {
+    case &String_rope(ss):
+      return (unsigned int)strlen(ss);
+    case &Array_rope(rs):
+      unsigned int total = 0, sz = numelts(rs);
+      for (unsigned int i = 0; i < sz; i++)
+        total += length(rs[i]);
+      return total;
+  }
+}
+
+static unsigned int flatten_it(mstring_t s, unsigned int i, rope_t r) {
+  switch (r->v) {
+    case &String_rope(ss):
+      let len = strlen(ss);
+    strncpy((char ?@nozeroterm)s+i,ss,len);
+    return i + len;
+    case &Array_rope(rs):
+      let len = numelts(rs);
+      for (int j = 0; j < len; j++)
+        i = flatten_it(s, i, rs[j]);
+      return i;
+  }
+}
+
+mstring_t to_string(rope_t r) {
+  mstring_t s = new_string(length(r) + 1);
+  flatten_it(s, 0, r);
+  // memoize the flattening
+  r->v = new String_rope(s);
+  return s;
+}
+
+int cmp(rope_t r1, rope_t r2) { return strcmp(to_string(r1), to_string(r2)); }

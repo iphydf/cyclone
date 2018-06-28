@@ -1,0 +1,8 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "bison",
+    boot_srcs = glob(["*.c"]),
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/boot/library/std"],
+)

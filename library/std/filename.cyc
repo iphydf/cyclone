@@ -1,0 +1,101 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 Greg Morrisett, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+#include "cycboot.h"
+#include "filename.h"
+#include "list.h"
+#include "string.h"
+#define DIR_SEPARATOR '/'
+#define DIR_SEPARATOR_STR ("/")
+
+namespace Filename;
+using Core;
+using List;
+
+// FIX: this produces a bad initializer.
+// Anyway, why is this useful?  getcwd() would be better.
+// string current_dir_name = ".";
+
+mstring_t concat(string_t s1, string_t s2) {
+  return strconcat(s1, strconcat(DIR_SEPARATOR_STR, s2));
+}
+
+mstring_t chop_extension(string_t filename) {
+  int i = numelts(filename) - 1;
+  while (i >= 0 && filename[i] != '.')
+    --i;
+  if (i < 0)
+    throw new Invalid_argument("chop_extension");
+  return substring(filename, 0, i);
+}
+
+// FIX: I've always thought the type of this was wrong.
+// It should return an option.  Root dirs have no dirname.
+mstring_t dirname(string_t filename) {
+  int i = numelts(filename) - 1;
+  while (i >= 0 && filename[i] != DIR_SEPARATOR)
+    --i;
+  if (i < 0)
+    return new_string(0);
+  ;
+  return substring(filename, 0, i);
+}
+
+// FIX: similarly, this should return an option.
+mstring_t basename(string_t filename) {
+  int i = numelts(filename) - 1;
+  while (i >= 0 && filename[i] != DIR_SEPARATOR)
+    --i;
+  return substring(filename, i + 1, numelts(filename) - (i + 1));
+}
+
+bool check_suffix(string_t filename, string_t suffix) {
+  int i = numelts(filename) - 1;
+  int j = numelts(suffix) - 1;
+  while (i >= 0 && j >= 0)
+    if (filename[i--] != suffix[j--])
+      return false;
+  if (j >= 0)
+    return false;
+  return true;
+}
+
+mstring_t gnuify(string_t filename) {
+  bool has_drive_name = numelts(filename) > 1 && filename[1] == ':';
+  int i, j;
+  mstring_t ans;
+  int ans_sz;
+  if (has_drive_name) {
+    ans_sz = numelts(filename) + 1;
+    ans    = new { for k < ans_sz : '\000' };
+    ans[0] = ans[1] = '/';
+    ans[2]          = filename[0];
+    i               = 3;
+    j               = 2;
+  } else {
+    ans_sz = numelts(filename);
+    ans    = new { for k < ans_sz : '\000' };
+    i = 0;
+    j = 0;
+  }
+  while (i < ans_sz) {
+    char c   = filename[j++];
+    ans[i++] = (c == '\\') ? '/' : c;
+  }
+  return ans;
+}

@@ -1,0 +1,11 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "aprof",
+    srcs = glob([
+        "*.cyc",
+        "*.h",
+    ]),
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std"],
+)

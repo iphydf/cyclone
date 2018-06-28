@@ -1,0 +1,15 @@
+load("//cyclone:build_defs.bzl", "cyc_test")
+
+cyc_test(
+    name = "streambufftest",
+    size = "small",
+    srcs = [
+        "streambuff.cyc",
+        "streambuff.h",
+        "streambufftest.cyc",
+    ],
+    deps = [
+        "//cyclone/library/std",
+        "//cyclone/testsuite:cyctest",
+    ],
+)

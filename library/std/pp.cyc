@@ -1,0 +1,569 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+/*
+ * pp.cyc
+ * Trevor Jim
+ *
+ * Kamin's version of Wadler's pretty printing combinators,
+ * extended to do hyperlinks for Tk.
+ */
+
+#include "core.h"
+#include "cycboot.h"
+#include "fn.h"
+#include "hashtable.h"
+#include "list.h"
+#include "pp.h"
+#include "string.h"
+#include "xarray.h"
+
+using Core;
+using Fn;
+using Hashtable;
+using List;
+
+namespace PP;
+
+typedef struct Doc *doc_opt_t;
+
+datatype Alist<`a> {
+  Empty;
+  Single(`a);
+  Append(datatype Alist<`a> @, datatype Alist<`a> @);
+};
+
+typedef datatype Alist<`a> @alist_t<`a>;
+datatype Alist.Empty<stringptr_t> Empty_stringptr             = Empty;
+datatype Alist.Empty<$(int, int, int, string_t) @> Empty_link = Empty;
+
+alist_t<`a> append(alist_t<`a> a1, alist_t<`a> a2) {
+  switch
+    $(a1, a2) {
+      case $(&Empty, _):
+        return a2;
+      case $(_, &Empty):
+        return a1;
+      default:
+        return new Append(a1, a2);
+    }
+}
+
+list_t<`a> list_of_alist_f(alist_t<`a> y, list_t<`a, `H> l) {
+  switch (y) {
+    case &Empty:
+      return l;
+    case &Single(z):
+      return new List(z, l);
+    case &Append(a1, a2):
+      return list_of_alist_f(a1, list_of_alist_f(a2, l));
+  }
+}
+
+list_t<`a> list_of_alist(alist_t<`a> x) { return list_of_alist_f(x, NULL); }
+
+// I've inlined the type link as $(int,int,int,string)@ below;
+// it is line, char, length, link content
+// (I'm having problems getting the preprocessor to do it)
+
+struct Ppstate {
+  int ci;   // current indent
+  int cc;   // current column
+  int cl;   // current line
+  int pw;   // page width
+  int epw;  // effective page width
+};
+
+struct Out {
+  int newcc;                                    // new current column
+  int newcl;                                    // new current line
+  alist_t<stringptr_t> ppout;                   // pretty-printed output
+  alist_t<$(int, int, int, string_t) @> links;  // hyperlinks
+};
+
+struct Doc {
+  int mwo;                       // min width, w/o newline
+  int mw;                        // min width, w/newline
+  fn_t<ppstate_t, out_t, `H> f;  // thunk for doing a step of pretty printing
+};
+
+static void dump_out(FILE @f, alist_t<stringptr_t> al) {
+  let xarr = Xarray::create(16, al);
+
+  Xarray::add(xarr, al);
+  int last = 0;
+  while (last >= 0) {
+    switch (Xarray::get(xarr, last)) {
+      case &Empty:
+        --last;
+        break;
+      case &Single(s):
+        --last;
+        fprintf(f, "%s", *s);
+        break;
+      case &Append(a1, a2):
+        Xarray::set(xarr, last, a2);
+        if (last == Xarray::length(xarr) - 1)
+          Xarray::add(xarr, a1);
+        else
+          Xarray::set(xarr, last + 1, a1);
+        ++last;
+        break;
+    }
+  }
+  Xarray::reuse(xarr);
+}
+
+// Dump a doc to a file descriptor
+void file_of_doc(doc_t d, int w, FILE @f) {
+  assert(w >= 0);
+  out_t o = apply(d->f, new Ppstate(0, 0, 1, w, w));
+
+  dump_out(f, o->ppout);
+}
+
+// Convert a doc_t to a string.  Takes a doc_t and a width as arguments.
+string_t string_of_doc(doc_t d, int w) {
+  assert(w >= 0);
+  out_t o = apply(d->f, new Ppstate(0, 0, 1, w, w));
+
+  return str_sepstr(list_of_alist(o->ppout), "");
+}
+
+// Convert a doc_t to a string and hyperlinks.
+// Takes a doc_t and a width as arguments.
+$(string_t, list_t<$(int, int, int, string_t) @>) @string_and_links(doc_t d, int w) {
+  assert(w >= 0);
+  out_t o = apply(d->f, new Ppstate(0, 0, 1, w, w));
+
+  return new $((string_t)str_sepstr(list_of_alist(o->ppout), ""), list_of_alist(o->links));
+}
+
+int tex_output = false;
+
+static Hashtable::table_t<`a, `b, `H> init_table(Hashtable::table_opt_t<`a, `b, `H> @`H tbl,
+                                                 int(@`H cmp)(`a, `a), int(@`H hash)(`a)) {
+  if (*tbl == NULL)
+    *tbl = Hashtable::create(101, cmp, hash);
+  return *tbl;
+}
+
+// a newline followed by i blanks
+string_t nlblanks(int i) {
+  static table_opt_t<int, stringptr_t> bhashtbl = NULL;
+  let t                                         = init_table(&bhashtbl, intcmp, identity);
+
+  if (i < 0)
+    throw new Failure("nlblanks");
+  try
+    return *Hashtable::lookup(t, i);
+  catch {
+    case &Not_found:
+      if (!tex_output) {
+        let num_tabs   = i / 8;
+        let num_spaces = i % 8;
+        let total      = 2 + num_tabs + num_spaces;
+        mstring_t nlb  = new_string(total);
+        nlb[0]         = '\n';
+        for (int j = 0; j < num_tabs; j++)
+          nlb[j + 1] = '\t';
+        for (int j = 0; j < num_spaces; j++)
+          nlb[j + 1 + num_tabs] = ' ';
+        Hashtable::insert(t, i, new {(string_t)nlb});
+        return nlb;
+      } else {
+        /* Use tildes instead of spaces, and \\ for newline,
+         * if we are producing output for TeX */
+        let total     = 3 + i;
+        mstring_t nlb = new_string(total + 1);
+        nlb[0]        = '\\';
+        nlb[1]        = '\\';
+        nlb[2]        = '\n';
+        for (int j = 3; j < total; j++)
+          nlb[j] = '~';
+        Hashtable::insert(t, i, new {(string_t)nlb});
+        return nlb;
+      }
+  }
+}
+
+static int const infinity = 9999999;
+
+static out_t text_doc_f($(int, string_t<`H>) @clo, ppstate_t st) {
+  let &$(slen, s) = clo;
+  return new Out(st->cc + slen, st->cl, new Single(new {s}), &Empty_link);
+}
+
+static doc_t text_doc(string_t<`H> s) {
+  int slen = strlen(s);
+
+  return new Doc(slen, infinity, make_fn(text_doc_f, new $(slen, s)));
+}
+
+doc_t text(string_t<`H> s) {
+  // hash the strings...
+  static table_opt_t<stringptr_t, doc_t> str_hashtbl = NULL;
+  let t = init_table(&str_hashtbl, zstrptrcmp, hash_stringptr);
+
+  let p = new s;
+
+  try
+    return Hashtable::lookup(t, p);
+  catch {
+    case &Not_found:
+      doc_t d = text_doc(s);
+      Hashtable::insert(t, p, d);
+      return d;
+  }
+}
+
+doc_t textptr(stringptr_t<`H> s) { return text(*s); }
+
+/* A version of text where the length is specified by the caller, not
+   taken from the length of the string itself.  This is needed to
+   support markup, like TeX commands. */
+static doc_t text_width_doc(string_t<`H> s, int slen) {
+  return new Doc(slen, infinity, make_fn(text_doc_f, new $(slen, s)));
+}
+
+doc_t text_width(string_t<`H> s, int slen) {
+  static table_opt_t<stringptr_t, doc_t> str_hashtbl = NULL;
+  let t = init_table(&str_hashtbl, zstrptrcmp, hash_stringptr);
+
+  let p = new s;
+
+  try
+    return Hashtable::lookup(t, p);
+  catch {
+    case &Not_found:
+      doc_t d = text_width_doc(s, slen);
+      Hashtable::insert(t, p, d);
+      return d;
+  }
+}
+
+// FIX: ineffecient to create an out_t for the empty string!!
+static doc_opt_t nil_doc_opt = NULL;
+
+// This is made a function because non-constant initializers not allowed
+doc_t nil_doc() {
+  if (nil_doc_opt == NULL)
+    nil_doc_opt = text("");
+  return nil_doc_opt;
+}
+
+// This is made a function because non-constant initializers not allowed
+doc_t blank_doc() {
+  static doc_opt_t blank_doc_opt = NULL;
+  if (blank_doc_opt == NULL)
+    blank_doc_opt = text(" ");
+  return blank_doc_opt;
+}
+
+static out_t hyperlink_f($(int, string_t<`H>, string_t<`H>) @clo, ppstate_t st) {
+  let &$(slen, shrt, full) = clo;
+  return new Out(st->cc + slen, st->cl, new Single(new {shrt}),
+                 new Single(new $(st->cl, st->cc, slen, full)));
+}
+
+doc_t hyperlink(string_t<`H> shrt, string_t<`H> full) {
+  int slen = strlen(shrt);
+
+  return new Doc(slen, infinity, make_fn(hyperlink_f, new $(slen, shrt, full)));
+}
+
+// This is made a function because non-constant initializers not allowed
+static out_t line_f(ppstate_t st) {
+  return new Out(st->ci, st->cl + 1, new Single(new {nlblanks(st->ci)}), &Empty_link);
+}
+
+doc_t line_doc() {
+  static doc_opt_t line_doc_opt = NULL;
+  if (line_doc_opt == NULL)
+    line_doc_opt = new Doc(0, 0, fp2fn(line_f));
+  return line_doc_opt;
+}
+
+static out_t nest_f($(int, doc_t) @clo, ppstate_t st) {
+  let &$(k, d) = clo;
+  assert(k >= 0);
+  ppstate_t st2 = new Ppstate(st->ci + k, st->cc, st->cl, st->pw, st->epw);
+  return apply(d->f, st2);
+}
+
+doc_t nest(int k, doc_t d) { return new Doc(d->mwo, d->mw, make_fn(nest_f, new $(k, d))); }
+
+int min(int x, int y) {
+  if (x <= y)
+    return x;
+  else
+    return y;
+}
+
+int max(int x, int y) {
+  if (x >= y)
+    return x;
+  else
+    return y;
+}
+
+static out_t concat_f($(doc_t, doc_t) @clo, ppstate_t st) {
+  let &$(d1, d2) = clo;
+  assert(d1 != nil_doc_opt);
+  assert(d2 != nil_doc_opt);
+
+  int epw2      = max(st->pw - d2->mw, st->epw - d1->mwo);
+  ppstate_t st2 = new Ppstate(st->ci, st->cc, st->cl, st->pw, epw2);
+  out_t o1      = apply(d1->f, st2);
+  ppstate_t st3 = new Ppstate(st->ci, o1->newcc, o1->newcl, st->pw, epw2);
+  out_t o2      = apply(d2->f, st3);
+  out_t o3 =
+      new Out(o2->newcc, o2->newcl, append(o1->ppout, o2->ppout), append(o1->links, o2->links));
+  return o3;
+}
+
+static doc_t concat(doc_t d1, doc_t d2) {
+  if (d1 == nil_doc_opt)
+    return d2;
+  if (d2 == nil_doc_opt)
+    return d1;
+  return new Doc(min(d1->mw, d1->mwo + d2->mwo), min(d1->mw, d1->mwo + d2->mw),
+                 make_fn(concat_f, new $(d1, d2)));
+}
+
+doc_t cat(... doc_t l) {
+  let d = nil_doc();
+
+  for (int i = numelts(l) - 1; i >= 0; i--)
+    d = concat(l[i], d);
+  return d;
+}
+
+// good places in here for passing address of locals (eg. st)
+
+static out_t long_cats_f(list_t<doc_t> ds0, ppstate_t st) {
+  list_t<out_t> os = NULL;
+  for (let ds = ds0; ds != NULL; ds = ds->tl) {
+    doc_t d = ds->hd;
+    if (d == nil_doc_opt)
+      continue;
+
+    out_t o = apply(d->f, st);
+    st      = new Ppstate(st->ci, o->newcc, o->newcl, st->pw, st->epw - d->mwo);
+    os      = new List(o, os);
+  }
+
+  int newcc = os->hd->newcc;
+  int newcl = os->hd->newcl;
+
+  alist_t<stringptr_t> s                      = &Empty_stringptr;
+  alist_t<$(int, int, int, string_t) @> links = &Empty_link;
+
+  for (; os != NULL; os = os->tl) {
+    s     = append(os->hd->ppout, s);
+    links = append(os->hd->links, links);
+  }
+
+  return new Out(newcc, newcl, s, links);
+}
+
+static doc_t long_cats(list_t<doc_t, `H> doclist) {
+#ifdef DEBUG
+  fprintf(stderr, "doing long cats %d\n", List::length(doclist));
+#endif
+  list_t<doc_t> orig = doclist;
+  doc_t d            = doclist->hd;
+  doclist            = doclist->tl;
+  int mw             = d->mw;
+  int mwo            = d->mw;
+
+  for (let ds = doclist; ds != NULL; ds = ds->tl) {
+    int mw2  = min(mw, mwo + ds->hd->mwo);
+    int mwo2 = min(mw, mwo + ds->hd->mw);
+    mw       = mw2;
+    mwo      = mwo2;
+  }
+
+  return new Doc(mw, mwo, make_fn(long_cats_f, orig));
+}
+
+doc_t cats(list_t<doc_t, `H> doclist) {
+  if (doclist == NULL)
+    return nil_doc();
+  else if (doclist->tl == NULL)
+    return doclist->hd;
+  // JGM: a hack to avoid stack overflow
+  else if (List::length(doclist) > 30)
+    return long_cats(doclist);
+  else
+    return concat(doclist->hd, cats(doclist->tl));
+}
+
+static out_t
+cats_arr_f (doc_t ?`H @docs_ptr, ppstate_t st)
+{
+  list_t<out_t> os = NULL;
+  doc_t ? docs     = *docs_ptr;
+
+  int sz = numelts(docs);
+  for (int i = 0; i < sz; ++i) {
+    doc_t d = docs[i];
+    assert(d != nil_doc_opt);
+    out_t o = apply(d->f, st);
+    st      = new Ppstate(st->ci, o->newcc, o->newcl, st->pw, st->epw - d->mwo);
+    os      = new List(o, os);
+  }
+
+  int newcc = os->hd->newcc;
+  int newcl = os->hd->newcl;
+
+  alist_t<stringptr_t> s                      = &Empty_stringptr;
+  alist_t<$(int, int, int, string_t) @> links = &Empty_link;
+
+  for (; os != NULL; os = os->tl) {
+    s     = append(os->hd->ppout, s);
+    links = append(os->hd->links, links);
+  }
+
+  return new Out(newcc, newcl, s, links);
+}
+
+doc_t
+cats_arr (doc_t ?`H docs)
+{
+  size_t sz = numelts(docs);
+
+  if (sz == 0)
+    throw new Failure("cats_arr -- size zero array");
+  doc_t d = docs[0];
+  int mw  = d->mw;
+  int mwo = d->mw;
+  for (size_t i = 1; i < sz; ++i) {
+    int mw2  = min(mw, mwo + docs[i]->mwo);
+    int mwo2 = min(mw, mwo + docs[i]->mw);
+    mw       = mw2;
+    mwo      = mwo2;
+  }
+  return new Doc(mw, mwo, make_fn(cats_arr_f, new {docs}));
+}
+
+static out_t doc_union_f($(doc_t, doc_t) @clo, ppstate_t st) {
+  let &$(d, d2) = clo;
+  bool dfits    = st->cc + d->mwo <= st->epw || st->cc + d->mw <= st->pw;
+  if (dfits)
+    return apply(d->f, st);
+  else
+    return apply(d2->f, st);
+}
+
+doc_t doc_union(doc_t d, doc_t d2) {
+  return new Doc(min(d->mwo, d2->mwo), min(d->mw, d2->mw), make_fn(doc_union_f, new $(d, d2)));
+}
+
+// This is made a function because non-constant initializers not allowed
+doc_t oline_doc() { return doc_union(nil_doc(), line_doc()); }
+
+static out_t tab_f(doc_t d, ppstate_t st) {
+  ppstate_t st2 = new Ppstate(st->cc, st->cc, st->cl, st->pw, st->epw);
+
+  return apply(d->f, st2);
+}
+
+doc_t tab(doc_t d) {
+  doc_t d2 = new Doc(d->mwo, d->mw, make_fn(tab_f, d));
+
+  return d2;
+}
+
+/* Sequences */
+static doc_t ppseq_f(doc_t pp(`a), string_t<`H> sep, list_t<`a> l) {
+  if (l == NULL)
+    return nil_doc();
+  else if (l->tl == NULL)
+    return pp(l->hd);
+  else
+    return cat(pp(l->hd), text(sep), oline_doc(), ppseq_f(pp, sep, l->tl));
+}
+
+doc_t ppseq(doc_t pp(`a), string_t<`H> sep, list_t<`a> l) { return tab(ppseq_f(pp, sep, l)); }
+
+doc_t seq_f(string_t<`H> sep, list_t<doc_t, `H> l) {
+  if (l == NULL)
+    return nil_doc();
+  else if (l->tl == NULL)
+    return l->hd;
+  else {
+    doc_t sep2  = text(sep);
+    doc_t oline = oline_doc();
+    let x       = l;
+    while (x->tl != NULL) {
+      let temp = x->tl;
+      x->tl    = new List(sep2, new List(oline, temp));
+      x        = temp;
+    }
+    return cats(l);
+    // This causes stack overflow on big sequences
+#if 0
+      return cats (new List (l->hd,
+                             new List (text (sep),
+                                       new List (oline_doc (),
+                                                 new List (f (sep, l->tl), NULL)))));
+#endif
+  }
+}
+
+doc_t seq(string_t<`H> sep, list_t<doc_t, `H> l) { return tab(seq_f(sep, l)); }
+
+// Sequences broken by lines
+doc_t ppseql_f(doc_t pp(`a), string_t<`H> sep, list_t<`a> l) {
+  if (l == NULL)
+    return nil_doc();
+  else if (l->tl == NULL)
+    return pp(l->hd);
+  else
+    return cat(pp(l->hd), text(sep), line_doc(), ppseql_f(pp, sep, l->tl));
+}
+
+doc_t ppseql(doc_t pp(`a), string_t<`H> sep, list_t<`a> l) { return tab(ppseql_f(pp, sep, l)); }
+
+static doc_t seql_f(string_t<`H> sep, list_t<doc_t, `H> l) {
+  if (l == NULL)
+    return nil_doc();
+  else if (l->tl == NULL)
+    return l->hd;
+  else
+    return cat(l->hd, text(sep), line_doc(), seql_f(sep, l->tl));
+}
+
+doc_t seql(string_t<`H> sep, list_t<doc_t, `H> l0) { return tab(seql_f(sep, l0)); }
+
+doc_t group(string_t<`H> start, string_t<`H> stop, string_t<`H> sep, list_t<doc_t, `H> ss) {
+  return cat(text(start), seq(sep, ss), text(stop));
+}
+
+// Like group but return the empty doc if the list is empty
+doc_t egroup(string_t<`H> start, string_t<`H> stop, string_t<`H> sep, list_t<doc_t, `H> ss) {
+  if (ss == NULL)
+    return nil_doc();
+  else
+    return cat(text(start), seq(sep, ss), text(stop));
+}
+
+doc_t groupl(string_t<`H> start, string_t<`H> stop, string_t<`H> sep, list_t<doc_t, `H> ss) {
+  return cat(text(start), seql(sep, ss), text(stop));
+}

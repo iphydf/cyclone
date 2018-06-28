@@ -1,0 +1,14 @@
+HEADERS[] =
+  aprof_event.h
+
+OBJECTS[] =
+  aprof.o
+  aprof_event.o
+  aprof_graph.o
+  aprof_newgraph.o
+  aprof_summary.o
+  aprof_svg.o
+
+link (std)
+
+program (aprof)

@@ -1,0 +1,20 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "runtime",
+    srcs = glob([
+        "*.c",
+        "*.h",
+    ]),
+    copts = [
+        "-Werror",
+        "-Wno-unused",
+        "-m32",
+    ],
+    linkopts = [
+        "-ldl",
+        "-m32",
+    ],
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std/cyc-lib"],
+)

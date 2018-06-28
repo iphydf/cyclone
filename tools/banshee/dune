@@ -1,0 +1,6 @@
+(executable
+  (name banshee)
+  (libraries str))
+(ocamllex lexer)
+(menhir
+  (modules parser))

@@ -1,0 +1,706 @@
+/* Resolves uses of the "current region" metavariables in code.
+   Copyright (C) 2004 Michael Hicks, Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include "currgn.h"
+
+#include "kinds.h"
+#include "tcutil.h"
+#include "warn.h"
+
+#include <assert.h>
+#include "cyclone/library/std/hashtable.h"
+
+using Absyn;
+using List;
+
+namespace CurRgn;
+
+static struct Tvar *curr_tvar  = NULL;
+static type_opt_t curr_rgn_typ = NULL;
+
+string_t curr_rgn_name = "`C";
+
+tvar_t curr_rgn_tvar(void) {
+  if (curr_tvar == NULL) {
+    curr_tvar =
+        new Tvar(new curr_rgn_name, Tcutil::new_tvar_id(), Kinds::kind_to_bound(&Kinds::ek), NULL);
+    curr_rgn_typ = var_type((tvar_t)curr_tvar);
+  }
+  return (tvar_t)curr_tvar;
+}
+
+type_t curr_rgn_type(void) {
+  curr_rgn_tvar();
+  curr_rgn_typ = var_type((tvar_t)curr_tvar);
+  return (type_t)curr_rgn_typ;
+}
+
+void subst_inst(list_t<$(tvar_t, type_t) @> inst, tvar_t tv, type_t t) {
+  for (; inst != NULL; inst->tl) {
+    let &$(*tvi, *ti) = inst->hd;
+    if (tvar_cmp(*tvi, tv) == 0) {
+      *ti = t;
+      return;
+    }
+  }
+}
+
+// if the argument is a function type, we return a new argument
+// descriptor that abstracts for `C.  Otherwise we return the original
+// argument.
+static $(var_opt_t, tqual_t, type_t) @argtype($(var_opt_t, tqual_t, type_t) @`H arg) {
+  let &$(vopt, tq, t) = arg;
+  switch (t) {
+    case &PointerType(PtrInfo(t1, ...)):
+      if (!Tcutil::is_function_type(t1))
+        return arg;
+      break;
+    default:
+      return arg;
+  }
+  let t2 = Tcutil::copy_type(t);
+  switch (compress(t2)) {
+    case &PointerType(PtrInfo(t1, ...)):
+      switch (compress(t1)) {
+        case &FnType(FnInfo{*tvars, ...}):
+          // change the type of functions to be parameterized by `C, so
+          // that `C is not substituted for
+          let tvars2 = *tvars;
+          *tvars     = new List((tvar_t)curr_tvar, tvars2);
+          return new $(vopt, tq, t2);
+        default:
+          Warn::impos("internal compiler error: not a function type");
+      }
+    default:
+      Warn::impos("internal compiler error: not a pointer type");
+  }
+}
+
+// "Instantiates" `C in the function's type with the current LIFO region
+type_t instantiate(type_t fntype, type_t currgn) {
+  switch (fntype) {
+    case &FnType(FnInfo{tvars, eff, res_tq, res_typ, *args_info, ...}):
+      // Need to make sure we don't instantiate for any functions
+      // appearing in the arguments of the function; simulates our
+      // assumption that they will be higher order
+      let old_args_info = *args_info;
+      // adds `C to bound variables in the function
+      *args_info = List::map(argtype, *args_info);
+      // instantiate `C
+      let inst    = new List(new $((tvar_t)curr_tvar, currgn), NULL);
+      let fntype2 = Tcutil::substitute(inst, fntype);
+      // restore the old bound variables in both types
+      switch (fntype2) {
+        case &FnType(FnInfo{tvars, _, _, _, *args_info2, ...}):
+          *args_info2 = old_args_info;
+          let tvars2  = tvars;
+          break;
+        default:
+          break;
+      }
+      *args_info = old_args_info;
+      return fntype2;
+    default:
+      return fntype;  // error will get caught in caller
+  }
+}
+
+// Used as an argument to filter for type variable lists
+bool is_not_curr_rgn(tvar_t v) { return tvar_cmp(v, (tvar_t)curr_tvar) != 0; }
+// Used as an argument to exists for type variable lists
+bool is_curr_rgn(tvar_t v) { return tvar_cmp(v, (tvar_t)curr_tvar) == 0; }
+
+struct rgnsubenv {
+  list_t<$(tvar_t, type_t) @`H, `H> inst;
+  bool in_externC;
+  bool toplevel;
+};
+
+static void rgnsubstmt(struct rgnsubenv, stmt_t);
+static void rgnsubexp(struct rgnsubenv, exp_t);
+static void rgnsubexpopt(struct rgnsubenv, exp_opt_t);
+static void rgnsubds(struct rgnsubenv, list_t<$(list_t<designator_t>, exp_t) @>);
+static void rgnsubdtdecl(Position::seg_t, struct rgnsubenv, datatypedecl_t);
+static void rgnsubaggrdecl(Position::seg_t, struct rgnsubenv, aggrdecl_t);
+
+// Checks that the given tvar is not `C.
+static void check_tvar(Position::seg_t loc, tvar_t tv) {
+  if (tvar_cmp(tv, (tvar_t)curr_tvar) == 0)
+    Warn::err2(loc, "Cannot abstract special type variable ", (tvar_t)curr_tvar);
+}
+
+static void check_tvars(Position::seg_t loc, list_t<tvar_t> tvs) {
+  for (; tvs != NULL; tvs = tvs->tl)
+    check_tvar(loc, tvs->hd);
+}
+
+static void rgnsubtypes(Position::seg_t loc, struct rgnsubenv env, list_t<type_t> ts);
+
+// Checks that a type doesn't contain occurrences of curr_rgn tvar
+static void rgnsubtype(Position::seg_t loc, struct rgnsubenv env, type_t type) {
+  switch (compress(type)) {
+    case &VarType(v):
+      if (env.toplevel)
+        check_tvar(loc, v);
+      return;
+    case &TypedefType(_, ts, ...):
+      rgnsubtypes(loc, env, ts);
+      return;
+    case &SubsetType(vd, e, ...):
+      rgnsubtype(loc, env, vd->type);
+      rgnsubexpopt(env, e);
+      return;
+    case &ArrayType(ArrayInfo{t1, _, e, zt, _}):
+      rgnsubtype(loc, env, t1);
+      rgnsubexpopt(env, e);
+      rgnsubtype(loc, env, zt);
+      return;
+    case &PointerType(PtrInfo(t1, _, PtrAtts(r, _, b, zt, _, rel, _))):
+      rgnsubtype(loc, env, t1);
+      rgnsubtype(loc, env, r);
+      rgnsubtype(loc, env, b);
+      rgnsubtype(loc, env, zt);
+      rgnsubtype(loc, env, rel);
+      return;
+    // Assume that function types are always OK to refer to `C.
+    case &FnType(...):
+      return;
+    case &AnonAggrType(_, _, fs):
+      for (; fs != NULL; fs = fs->tl) {
+        rgnsubtype(loc, env, fs->hd->type);
+        rgnsubexpopt(env, fs->hd->requires_clause);
+      }
+      return;
+    case &Cvar(_, r, ...):
+      fallthru(r);
+    case &Evar(_, r, _, _):
+      if (r != NULL)
+        rgnsubtype(loc, env, r);
+      return;
+    case &AppType(c, ts):
+      rgnsubtypes(loc, env, ts);
+      return;
+    case &ValueofType(e):
+      rgnsubexp(env, e);
+      return;
+    case &TypeofType(e):
+      rgnsubexp(env, e);
+      return;
+    case &TypeDeclType(td, topt):
+      assert(topt == NULL);
+      switch (td->r) {
+        case &Aggr_td(ad):
+          rgnsubaggrdecl(loc, env, ad);
+          return;
+        case &Datatype_td(dtd):
+          rgnsubdtdecl(loc, env, dtd);
+          return;
+        case &Enum_td(...):
+          return;
+      }
+      return;
+  }
+}
+
+static void rgnsubtypes(Position::seg_t loc, struct rgnsubenv env, list_t<type_t> ts) {
+  for (; ts != NULL; ts = ts->tl)
+    rgnsubtype(loc, env, ts->hd);
+}
+
+// substitute the type instantiation inst throughout the expression e.
+// Side-effects e, rather than creating a new expression.
+static void rgnsubexp(struct rgnsubenv env, exp_t e) {
+  switch (e->r) {
+    case &Const_e(_):
+    case &Enum_e(...):
+    case &AnonEnum_e(...):
+    case &Pragma_e(...):
+    case &Asm_e(...):  // FIX: deal with asm()?
+    case &Var_e(...):
+      break;
+
+    case &Offsetof_e(*t, f):
+      fallthru(t);
+    case &Sizeoftype_e(*t):
+      rgnsubtype(e->loc, env, *t);
+      if (!env.toplevel)
+        *t = Tcutil::substitute_nofun(env.inst, *t);
+      break;
+
+    case &Conditional_e(e1, e2, e3):
+      rgnsubexp(env, e1);
+      rgnsubexp(env, e2);
+      rgnsubexp(env, e3);
+      break;
+
+    case &Comprehension_e(vd, e1, e2, res):
+      fallthru(e1, e2);
+    case &AssignOp_e(e1, _, e2):
+      fallthru(e1, e2);
+    case &Swap_e(e1, e2):
+      fallthru(e1, e2);
+    case &And_e(e1, e2):
+      fallthru(e1, e2);
+    case &Or_e(e1, e2):
+      fallthru(e1, e2);
+    case &Subscript_e(e1, e2):
+      fallthru(e1, e2);
+    case &SeqExp_e(e1, e2):
+      rgnsubexp(env, e1);
+      rgnsubexp(env, e2);
+      break;
+
+    case &Datatype_e(es, dtd, dtfd):
+      fallthru(es);
+    // FIX: deal with datatype defs?
+    case &Primop_e(_, es):
+      for (; es != NULL; es = es->tl)
+        rgnsubexp(env, es->hd);
+      break;
+
+    case &ComprehensionNoinit_e(e1, *t, _):
+      fallthru(t, e1);
+    case &Cast_e(*t, e1, ...):
+      rgnsubtype(e->loc, env, *t);
+      if (!env.toplevel)
+        *t = Tcutil::substitute_nofun(env.inst, *t);
+      fallthru(e1);
+
+    case &AggrMember_e(e1, ...):
+      fallthru(e1);
+    case &AggrArrow_e(e1, ...):
+      fallthru(e1);
+    case &Tagcheck_e(e1, ...):
+      fallthru(e1);
+    case &Increment_e(e1, _):
+      fallthru(e1);
+    case &Assert_e(e1, _, _):
+      fallthru(e1);
+    case &Assert_false_e(e1):
+      fallthru(e1);
+    case &Deref_e(e1):
+      fallthru(e1);
+    case &Address_e(e1):
+      fallthru(e1);
+    case &Sizeofexp_e(e1):
+      fallthru(e1);
+    case &Extension_e(e1):
+      fallthru(e1);
+    case &Throw_e(e1, _):
+      fallthru(e1);
+    case &NoInstantiate_e(e1):
+      rgnsubexp(env, e1);
+      break;
+
+    case &Valueof_e(*t):
+      rgnsubtype(e->loc, env, *t);
+      if (!env.toplevel) {
+        let new_typ = Tcutil::substitute_nofun(env.inst, *t);
+        if (new_typ == *t)
+          break;
+        // reduce valueof(valueof_t(e)) to e
+        switch (compress(new_typ)) {
+          case &ValueofType(e1):
+            e->r     = e1->r;
+            e->topt  = e1->topt;
+            e->annot = e1->annot;
+            break;
+          default:
+            *t = new_typ;
+            break;
+        }
+      }
+      break;
+    case &FnCall_e(e1, es, vararg, resv):
+      while (es != NULL) {
+        rgnsubexp(env, es->hd);
+        es = es->tl;
+      }
+      rgnsubexp(env, e1);
+      break;
+    case &Instantiate_e(e1, ts):
+      while (ts != NULL) {
+        rgnsubtype(e->loc, env, ts->hd);
+        if (!env.toplevel)
+          ts->hd = Tcutil::substitute_nofun(env.inst, ts->hd);
+        ts = ts->tl;
+      }
+      rgnsubexp(env, e1);
+      break;
+
+    case &New_e(eopt, e1, qopt):
+      rgnsubexpopt(env, eopt);
+      rgnsubexpopt(env, qopt);
+      rgnsubexp(env, e1);
+      break;
+
+    case &CompoundLit_e(i, ds):
+      rgnsubtype(e->loc, env, (*i)[2]);
+      if (!env.toplevel)
+        (*i)[2] = Tcutil::substitute_nofun(env.inst, (*i)[2]);
+      rgnsubds(env, ds);
+      break;
+
+    case &UnresolvedMem_e(_, ds):
+      rgnsubds(env, ds);
+      break;
+    case &Array_e(ds):
+      rgnsubds(env, ds);
+      break;
+
+    case &Aggregate_e(_, ts, ds, _):
+      for (; ts != NULL; ts = ts->tl) {
+        rgnsubtype(e->loc, env, ts->hd);
+        if (!env.toplevel)
+          ts->hd = Tcutil::substitute_nofun(env.inst, ts->hd);
+      }
+      rgnsubds(env, ds);
+      break;
+
+    case &AnonStruct_e(*t, _, ds):
+      if (*t != NULL) {
+        rgnsubtype(e->loc, env, (type_t)*t);
+        if (!env.toplevel)
+          *t = Tcutil::substitute_nofun(env.inst, (type_t)*t);
+      }
+      rgnsubds(env, ds);
+      break;
+
+    case &Malloc_e(MallocInfo(_, rgnopt, aqopt, elt_t, e1, _, _)):
+      assert(!env.toplevel);
+      rgnsubexpopt(env, rgnopt);
+      rgnsubexpopt(env, aqopt);
+      if (elt_t != NULL) {
+        rgnsubtype(e->loc, env, *elt_t);
+        *elt_t = Tcutil::substitute_nofun(env.inst, *elt_t);
+      }
+      rgnsubexp(env, e1);
+      break;
+
+    case &StmtExp_e(s):
+      rgnsubstmt(env, s);
+      break;
+  }
+  if (e->topt != NULL) {
+    rgnsubtype(e->loc, env, (type_t)e->topt);
+    if (!env.toplevel)
+      e->topt = Tcutil::substitute_nofun(env.inst, (type_t)e->topt);
+  }
+}
+
+static void rgnsubexpopt(struct rgnsubenv env, exp_opt_t e) {
+  if (e == NULL)
+    return;
+  rgnsubexp(env, e);
+}
+
+static void rgnsubds(struct rgnsubenv env, list_t<$(list_t<designator_t>, exp_t) @> ds) {
+  for (; ds != NULL; ds = ds->tl)
+    rgnsubexp(env, (*ds->hd)[1]);
+}
+
+static void rgnsubpat(struct rgnsubenv env, pat_t p) {
+  assert(!env.toplevel);
+  switch (p->r) {
+    case &Wild_p:
+      return;
+
+    case &Var_p(vd, p1):
+      fallthru(vd, p1);
+    case &Reference_p(vd, p1):
+      // FIX: is this the right thing to do here?
+      if (vd->type != NULL) {
+        rgnsubtype(p->loc, env, vd->type);
+        vd->type = Tcutil::substitute_nofun(env.inst, vd->type);
+      }
+      rgnsubpat(env, p1);
+      return;
+
+    case &AliasVar_p(tv, vd):
+      check_tvar(p->loc, tv);
+      if (vd->type != NULL) {
+        rgnsubtype(p->loc, env, vd->type);
+        vd->type = Tcutil::substitute_nofun(env.inst, vd->type);
+      }
+      return;
+
+    case &TagInt_p(tv, vd):
+      // FIX: is this the right thing to do here?
+      if (vd->type != NULL) {
+        rgnsubtype(p->loc, env, vd->type);
+        vd->type = Tcutil::substitute_nofun(env.inst, vd->type);
+      }
+      check_tvar(p->loc, tv);
+      return;
+
+    case &Pointer_p(p1):
+      rgnsubpat(env, p1);
+      return;
+
+    case &Aggr_p(_, _, tvs, ds, _):
+      for (; tvs != NULL; tvs = tvs->tl)
+        check_tvar(p->loc, tvs->hd);
+      for (; ds != NULL; ds = ds->tl)
+        rgnsubpat(env, (*ds->hd)[1]);
+      return;
+
+    // FIX: deal with datatype fields?
+    case &Datatype_p(_, _, ps, _):
+      fallthru(ps);
+    case &UnknownCall_p(_, ps, _):
+      for (; ps != NULL; ps = ps->tl)
+        rgnsubpat(env, ps->hd);
+      return;
+
+    case &Null_p:
+    case &Int_p(...):
+    case &Char_p(...):
+    case &Float_p(...):
+    case &Enum_p(...):
+    case &AnonEnum_p(...):
+    case &UnknownId_p(...):
+      return;
+
+    case &Exp_p(e):
+      rgnsubexp(env, e);
+      return;
+  }
+}
+
+static void rgnsubaggrdecl(Position::seg_t loc, struct rgnsubenv env, aggrdecl_t ad) {
+  check_tvars(loc, ad->tvs);
+  if (ad->impl != NULL) {
+    check_tvars(loc, ad->impl->exist_vars);
+    let fc = ad->impl->effconstr;
+    for (; fc != NULL; fc = fc->tl) {
+      switch (fc->hd) {
+        case &SingleConstraint(e):
+          rgnsubtype(loc, env, e);
+          break;
+        case &DisjointConstraint(e1, e2):
+          fallthru(e1, e2);
+        case &SubsetConstraint(e1, e2):
+          rgnsubtype(loc, env, e1);
+          rgnsubtype(loc, env, e2);
+          break;
+      }
+    }
+    let fs = ad->impl->fields;
+    for (; fs != NULL; fs = fs->tl) {
+      rgnsubtype(loc, env, fs->hd->type);
+      rgnsubexpopt(env, fs->hd->requires_clause);
+    }
+  }
+}
+
+static void rgnsubdtdecl(Position::seg_t loc, struct rgnsubenv env, datatypedecl_t tud) {
+  check_tvars(loc, tud->tvs);
+  if (tud->fields != NULL)
+    for (_ fs = tud->fields->v; fs != NULL; fs = fs->tl) {
+      let ts = fs->hd->typs;
+      while (ts != NULL) {
+        let &$(_, *typ) = ts->hd;
+        rgnsubtype(loc, env, *typ);
+        ts = ts->tl;
+      }
+    }
+}
+
+static void rgnsubdecls(struct rgnsubenv, list_t<decl_t>);
+static void rgnsubdecl(struct rgnsubenv env, decl_t d) {
+  switch (d->r) {
+    case &Var_d(vd):
+      let &Vardecl(_, _, _, _, *t, initializer, ...) = vd;
+      rgnsubexpopt(env, initializer);
+      rgnsubtype(d->loc, env, *t);
+      if (!env.toplevel)
+        *t = Tcutil::substitute_nofun(env.inst, *t);
+      return;
+
+    case &Fn_d(fd):
+      // We set the current region to be `C at the start of a function
+      // body.  We do not substitute for the arguments, effect, or
+      // partial order; these should stay abstract (they are substituted
+      // for during typechecking). FIX: probably need to substitute for
+      // ensures clauses
+      env.toplevel = false;
+      env.inst     = new List(new $((tvar_t)curr_tvar, (type_t)curr_rgn_typ), NULL);
+      rgnsubstmt(env, fd->body);
+#if 0
+      rgnsubtype (d->loc, env, fd->i.ret_type);
+      fd->i.ret_type = Tcutil::substitute_nofun (env.inst, fd->i.ret_type);
+#endif
+      return;
+
+    case &Typedef_d(td):
+      assert(env.toplevel);
+      check_tvars(d->loc, td->tvs);
+      if (td->defn != NULL)
+        rgnsubtype(d->loc, env, (type_t)td->defn);
+      return;
+
+    case &Aggr_d(ad):
+      assert(env.toplevel);
+      rgnsubaggrdecl(d->loc, env, ad);
+      return;
+
+    case &Datatype_d(tud):
+      assert(env.toplevel);
+      rgnsubdtdecl(d->loc, env, tud);
+      return;
+
+    // FIX: probably need to deal with these decls
+    // Need externC flag ...
+    case &ExternC_d(...):
+    case &ExternCinclude_d(...):
+    case &Enum_d(...):
+    case &Porton_d:
+    case &Portoff_d:
+    case &Tempeston_d:
+    case &Tempestoff_d:
+      return;
+
+    case &Namespace_d(v, ds2):
+      fallthru(ds2);
+    case &Using_d(_, ds2):
+      rgnsubdecls(env, ds2);
+      return;
+
+    case &Let_d(p, _, e, _):
+      rgnsubpat(env, p);
+      rgnsubexp(env, e);
+      return;
+
+    case &Letv_d(vds):
+      assert(!env.toplevel);
+      for (; vds != NULL; vds = vds->tl) {
+        rgnsubtype(d->loc, env, vds->hd->type);
+        vds->hd->type = Tcutil::substitute_nofun(env.inst, vds->hd->type);
+      }
+      return;
+    case &Region_d(...):
+      Warn::impos("internal compiler error: region or pool at toplevel");
+  }
+}
+
+static void rgnsubstmt(struct rgnsubenv env, stmt_t s) {
+  switch (s->r) {
+    case &Skip_s:
+    case &Break_s:
+    case &Continue_s:
+    case &Goto_s(_):
+      break;
+
+    case &Exp_s(e):
+      rgnsubexp(env, e);
+      break;
+    case &Seq_s(s1, s2):
+      rgnsubstmt(env, s1);
+      rgnsubstmt(env, s2);
+      break;
+    case &Return_s(eopt):
+      rgnsubexpopt(env, eopt);
+      break;
+
+    case &IfThenElse_s(e, s1, s2):
+      rgnsubexp(env, e);
+      rgnsubstmt(env, s1);
+      rgnsubstmt(env, s2);
+      break;
+
+    case &Do_s(s, $(e, _)):
+      fallthru(e, s);
+    case &While_s($(e, _), s1):
+      rgnsubexp(env, e);
+      rgnsubstmt(env, s1);
+      break;
+
+    case &For_s(e1, $(e2, guard_s), $(e3, cont_s), s1):
+      rgnsubexp(env, e1);
+      rgnsubexp(env, e2);
+      rgnsubexp(env, e3);
+      rgnsubstmt(env, s1);
+      break;
+
+    case &Label_s(l, s1):
+      rgnsubstmt(env, s1);
+      break;
+
+    case &Fallthru_s(es, _):
+      while (es != NULL) {
+        rgnsubexp(env, es->hd);
+        es = es->tl;
+      }
+      break;
+
+    case &Switch_s(e, scs, _):
+      rgnsubexp(env, e);
+      while (scs != NULL) {
+        let &Switch_clause(p, _, eopt, s1, _) = scs->hd;
+        rgnsubpat(env, p);
+        rgnsubexpopt(env, eopt);
+        rgnsubstmt(env, s1);
+        scs = scs->tl;
+      }
+      break;
+
+    case &TryCatch_s(s1, scs, _):
+      while (scs != NULL) {
+        let &Switch_clause(p, _, eopt, s1, _) = scs->hd;
+        rgnsubpat(env, p);
+        rgnsubexpopt(env, eopt);
+        rgnsubstmt(env, s1);
+        scs = scs->tl;
+      }
+      break;
+
+    case &Decl_s(d, s1):
+      switch (d->r) {
+        case &Region_d(tv, vd, open_exp_opt):
+          check_tvar(d->loc, tv);
+          rgnsubexpopt(env, open_exp_opt);
+          // Here's the interesting case.  We switch the current region to
+          // be the tvar declared here, and then recur.
+          // FIX: support dynamic regions
+          if (open_exp_opt == NULL) {
+            subst_inst(env.inst, (tvar_t)curr_tvar, var_type(tv));
+            rgnsubstmt(env, s1);
+          } else
+            rgnsubstmt(env, s1);
+          break;
+
+        default:
+          rgnsubdecl(env, d);
+          rgnsubstmt(env, s1);
+          break;
+      }
+      break;
+  }
+}
+
+static void rgnsubdecls(struct rgnsubenv env, list_t<decl_t> ds) {
+  for (; ds != NULL; ds = ds->tl)
+    rgnsubdecl(env, ds->hd);
+}
+
+void adjust_all(list_t<Absyn::decl_t, `H> tds) {
+  curr_rgn_type();  // initializes the globals if not there already
+  struct rgnsubenv env = {NULL, false, true};
+  rgnsubdecls(env, tds);
+}

@@ -1,0 +1,93 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2000, 2001 Greg Morrisett, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+////////////////////////////////////////////////////////////////////////////
+// Defines "closures" and operations on them                              //
+////////////////////////////////////////////////////////////////////////////
+#include "fn.h"
+
+namespace Fn;
+
+struct Function<`arg,`res,`bd> {
+  <`env::B> : regions(`env) <= `bd
+  `res(@`H f)(`env,`arg);
+  `env env;
+};
+
+fn_t<`arg,`res,`bd> make_fn(`res(@`H f)(`env,`arg), `env x : regions(`env) <= `bd) {
+  return new Function(f, x);
+}
+
+static `res fp_apply(`res(@`H f)(`arg), `arg x) { return f(x); }
+
+// convert a function pointer to a closure
+fn_t<`arg,`res,`bd> fp2fn(`res(@`H f)(`arg) : regions(`res(@`H)(`arg)) <= `bd) {
+  return make_fn(fp_apply, f);
+}
+
+// apply closure f to argument x
+`res apply(fn_t<`arg,`res> f, `arg x) {
+  let &Function{code, env} = f;
+  return code(env, x);
+}
+
+static `c fn_compose($(fn_t<`b,`c,`bd>, fn_t<`a,`b,`bd>) @`H f_and_g,`a arg) {
+  let &$(f, g) = f_and_g;
+  return apply(f, apply(g, arg));
+}
+
+// compose closures
+fn_t<`a,`c, `bd2> compose(fn_t<`a,`b,`bd> g, fn_t<`b,`c,`bd> f
+                          : regions($(`a,`b,`c) @`H +`bd) <= `bd2) {
+  return make_fn(fn_compose, new $(f, g));
+}
+
+// These next two functions are used for currying
+static `c inner($(fn_t<$(`a,`b) @`H,`c,`bd>,`a) @env, `b second) {
+  return apply((*env)[0], new $((*env)[1], second));
+}
+
+// regions($(fn_t<$(`a,`b)@`H,`c,`bd>, `a))+`H>
+static fn_t<`b,`c,`bd2> outer(fn_t<$(`a,`b) @`H,`c,`bd> f, `a first
+                              : regions($(`a,`b,`c) @`H +`bd) <= `bd2) {
+  return make_fn(inner, new $(f, first));
+}
+
+// curry a closure that takes a pair
+fn_t<`a, fn_t<`b,`c,`bd2>, `bd2> curry(fn_t<$(`a,`b) @`H,`c,`bd> f
+                                       : regions($(`a,`b,`c) @`H +`bd) <= `bd2) {
+  return make_fn(outer, f);
+}
+
+static `c lambda(fn_t<`a, fn_t<`b,`c, `bd2>, `bd> f, $(`a,`b) @arg) {
+  return apply(apply(f, (*arg)[0]), (*arg)[1]);
+}
+
+// uncurry a closure
+fn_t<$(`a,`b) @,`c,`bd3> uncurry(fn_t<`a, fn_t<`b,`c,`bd2>,`bd> f
+                                 : regions($(`a,`b,`c) @`H +`bd +`bd2) <= `bd3) {
+  return make_fn(lambda, f);
+}
+
+// map a closure across a list
+List::list_t<`b,`H> map_fn(fn_t<`a,`b,`bd> f, List::list_t<`a> x) {
+  List::list_t res = NULL;
+  for (; x != NULL; x = x->tl)
+    res = new List::List(apply(f, x->hd), res);
+  return List::imp_rev(res);
+}

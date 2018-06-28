@@ -1,0 +1,147 @@
+/* Constructing call graphs.
+   Copyright (C) 2004 Greg Morrisett, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include "callgraph.h"
+
+#include "absynpp.h"
+
+#include <string.h>
+#include "cyclone/library/std/hashtable.h"
+#include "cyclone/library/std/set.h"
+
+// code for constructing a callgraph -- more properly, we construct a
+// callgraph_t that for each (defined) function f, maps f to the set
+// of (defined) functions S such that each member g of S appears
+// within f.  Note that g may not be actually called by f and f may
+// call an h not in S if a caller passes a pointer to h.  We also have
+// to build a map from qvars to top-level function definitions so that
+// when we see a free occurrence of f, we can map it to its function
+// definition (in case f was defined earlier using a prototype.)
+
+namespace Callgraph;
+
+using Absyn;
+using List;
+
+typedef Set::set_t<fndecl_t> fndecl_set_t;
+
+// We need to map free qvar's to their fndecls.  The binding phase
+// should really do this, but it may map to a later vardecl instead
+// of the fndecl.
+typedef Hashtable::table_t<qvar_t, fndecl_t> fndefns_t;
+
+// these next few functions take the mapping from qvars to function
+// declarations (fds), some syntax, and an accumulator set of function
+// declarations, and insert any free occurrence of a function f that
+// occurs within the syntax.
+static bool visit_cg_f1($(fndefns_t, fndecl_set_t) @env, exp_t e) {
+  let name;
+
+  switch (e->r) {
+    case &Var_e(&Funname_b(fd)):
+      name = fd->name;
+      break;
+    case &Var_e(&Global_b(vd)):
+      name = vd->name;
+      break;
+    default:
+      return true;
+  }
+
+  let &$(fds, s) = env;
+  try {
+    // we don't want to enter any extern "C include" functions --
+    // these don't occur in the fds set.
+    s = Set::insert(s, Hashtable::lookup(fds, name));
+    // inserted an edge
+    *env = $(fds, s);
+  } catch {
+    case &Core::Not_found:
+      break;
+  }
+  return false;
+}
+
+static bool visit_cg_f2($(fndefns_t, fndecl_set_t) @env, stmt_t s) { return true; }
+
+static fndecl_set_t cg_stmt(fndefns_t fds, stmt_t e, fndecl_set_t s) {
+  let env = $(fds, s);
+
+  visit_stmt(visit_cg_f1, visit_cg_f2, &env, e);
+  let $(_, s) = env;
+  return s;
+}
+
+static int fndecl_cmp(fndecl_t fd1, fndecl_t fd2) { return Absyn::qvar_cmp(fd1->name, fd2->name); }
+
+static int hash_fndecl(fndecl_t fd) { return (int)fd; }
+
+static callgraph_t cg_topdecls(fndefns_t fds, callgraph_t cg, list_t<decl_t> ds) {
+  let mt = Set::empty(fndecl_cmp);
+
+  for (let ds = ds; ds != NULL; ds = ds->tl)
+    switch (ds->hd->r) {
+      case &Fn_d(fd):
+        cg = Graph::add_edges(cg, fd, cg_stmt(fds, fd->body, mt));
+        break;
+      case &Using_d(_, ds):
+        fallthru(ds);
+      case &Namespace_d(_, ds):
+        cg = cg_topdecls(fds, cg, ds);
+        break;
+      default:
+        break;
+    }
+  return cg;
+}
+
+// build the map from qvars to fndecls.
+static callgraph_t enter_fndecls(fndefns_t fds, callgraph_t cg, list_t<decl_t> ds) {
+  for (let ds = ds; ds != NULL; ds = ds->tl)
+    switch (ds->hd->r) {
+      case &Fn_d(f):
+        Hashtable::insert(fds, f->name, f);
+        cg = Graph::add_node(cg, f);
+        break;
+      case &Using_d(_, ds):
+        fallthru(ds);
+      case &Namespace_d(_, ds):
+        cg = enter_fndecls(fds, cg, ds);
+        break;
+      default:
+        break;
+    }
+  return cg;
+}
+
+callgraph_t compute_callgraph(list_t<decl_t> ds) {
+  // build a map from qvars to function declarations
+  fndefns_t fd   = Hashtable::create(51, qvar_cmp, hash_qvar);
+  callgraph_t cg = enter_fndecls(fd, Graph::empty(fndecl_cmp), ds);
+
+  // compute the callgraph
+  cg = cg_topdecls(fd, cg, ds);
+  return cg;
+}
+
+static void print_fndecl(FILE @f, fndecl_t fd) {
+  fprintf(f, "%s ", Absynpp::qvar2string(fd->name));
+}
+
+void print_callgraph(FILE @f, callgraph_t cg) { Graph::print(f, cg, print_fndecl); }

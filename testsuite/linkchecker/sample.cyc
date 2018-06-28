@@ -1,0 +1,11 @@
+typedef const char ?@aqual(`q) `r string_t<`r, `q::Q>;
+datatype exn  { Invalid_argument(string_t) };
+datatype exn { Failure(string_t) };
+datatype exn  { Impossible(string_t) };
+datatype exn  { Not_found };
+datatype exn.Not_found Not_found_val = Not_found;
+datatype exn  { Unreachable(string_t) };
+
+extern int foo(void);
+
+int main(void) { return foo() == 1234 ? 0 : 1; }

@@ -1,0 +1,11 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "compress42",
+    srcs = [
+        "compress42.cyc",
+        "patchlevel.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std"],
+)

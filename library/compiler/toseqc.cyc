@@ -1,0 +1,571 @@
+/* Force left-to-right evaluation order.
+   Copyright (C) 2004 Michael Hicks, Dan Grossman
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the Free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+#include <string.h>
+#include "tcutil.h"
+#include "toc.h"
+#include "toseqc.h"
+#include "warn.h"
+using Absyn;
+using Core;
+using List;
+namespace Toseqc;
+
+// NoEffect refers to pure expressions, ExnEffect refers to functions that
+// could throw exceptions but are otherwise pure; AnyEffect is everything else.
+static enum SideEffect { Const, NoEffect, ExnEffect, AnyEffect };
+
+static enum SideEffect join_side_effect(enum SideEffect e1, enum SideEffect e2) {
+  switch ($(e1, e2)) {
+    case $(AnyEffect, _):
+    case $(_, AnyEffect):
+      return AnyEffect;
+      // Two ExnEffects mean that order matters, so we promote to AnyEffect
+    case $(ExnEffect, ExnEffect):
+      return AnyEffect;
+    case $(ExnEffect, _):
+    case $(_, ExnEffect):
+      return ExnEffect;
+    case $(NoEffect, _):
+    case $(_, NoEffect):
+      return NoEffect;
+    case $(Const, Const):
+      return Const;
+    default:
+      Warn::impos2("join_side_effect");
+  }
+}
+
+/* These functions have no side-effects whatsoever */
+static string_t pure_funs[] = {"_get_fat_size",
+                               "_tag_fat",
+                               "_get_zero_arr_size_char",
+                               "_get_zero_arr_size_short",
+                               "_get_zero_arr_size_int",
+                               "_get_zero_arr_size_float",
+                               "_get_zero_arr_size_double",
+                               "_get_zero_arr_size_longdouble",
+                               "_get_zero_arr_size_voidstar"};
+/* These functions might throw exceptions but have no other side-effects */
+static string_t exn_effect_funs[] = {
+    "_check_null",          "_check_known_subscript_null", "_check_known_subscript_notnull",
+    "_check_fat_subscript", "_check_fat_at_base",          "_untag_fat_ptr",
+    "_region_malloc"};
+static enum SideEffect fun_effect(qvar_t qv) {
+  switch (qv) {
+    case &$({.Loc_n = _}, fn):
+      for (int i = 0; i < numelts(pure_funs); i++)
+        if (!strcmp(pure_funs[i], *fn))
+          return NoEffect;
+      for (int i = 0; i < numelts(exn_effect_funs); i++)
+        if (!strcmp(exn_effect_funs[i], *fn))
+          return ExnEffect;
+      return AnyEffect;
+    default:
+      return AnyEffect;
+  }
+}
+
+static enum SideEffect exp_effect(exp_t);
+static enum SideEffect stmt_effect(stmt_t);
+static enum SideEffect exps_effect(list_t<exp_t> es) {
+  enum SideEffect res = Const;
+  for (; es != NULL && res != AnyEffect; es = es->tl)  // stop early on AnyEffect
+    res = join_side_effect(exp_effect(es->hd), res);
+  return res;
+}
+
+static `a unexpected_form(exp_t e) __attribute__((noreturn)) {
+  string_t bad_form;
+  switch (e->r) {
+    case &Pragma_e(...):
+      bad_form = "Pragma_e";
+      break;
+    case &Throw_e(...):
+      bad_form = "Throw_e";
+      break;
+    case &New_e(...):
+      bad_form = "New_e";
+      break;
+    case &CompoundLit_e(...):
+      bad_form = "CompoundLit_e";
+      break;
+    case &Array_e(...):
+      bad_form = "Array_e";
+      break;
+    case &Comprehension_e(...):
+      bad_form = "Comprehension_e";
+      break;
+    case &ComprehensionNoinit_e(...):
+      bad_form = "ComprehensionNoinit_e";
+      break;
+    case &Aggregate_e(...):
+      bad_form = "Aggregate_e";
+      break;
+    case &AnonStruct_e(...):
+      bad_form = "AnonStruct_e";
+      break;
+    case &Datatype_e(...):
+      bad_form = "Datatype_e";
+      break;
+    case &Malloc_e(...):
+      bad_form = "Malloc_e";
+      break;
+    case &Swap_e(...):
+      bad_form = "Swap_e";
+      break;
+    case &Tagcheck_e(...):
+      bad_form = "Tagcheck_e";
+      break;
+    case &Valueof_e(...):
+      bad_form = "Valueof_e";
+      break;
+    case &Assert_e(...):
+      bad_form = "Assert_e";
+      break;
+    default:
+      bad_form = "huh??? Unexpected-form";
+      break;
+  }
+  Warn::impos2("bad exp form ", bad_form, " (exp=|", e, "|) after xlation to C");
+}
+
+// FIX: could use is_const_exp in Tcutil to better effect?
+static enum SideEffect exp_effect(exp_t e) {
+  string_t bad_form;
+  switch (e->r) {
+    case &Const_e(_):
+    case &Sizeofexp_e(_):  // DJG: exp is irrelevant
+    case &Sizeoftype_e(_):
+    case &Offsetof_e(_, _):
+    case &AnonEnum_e(...):
+    case &Enum_e(...):
+      return Const;
+    case &Var_e(_):
+      return NoEffect;
+
+    case &AssignOp_e(...):
+    case &Asm_e(...):
+      return AnyEffect;
+
+    case &FnCall_e(e, ...):
+      switch (e->r) {
+        case &Var_e(&Funname_b(d)):
+          return fun_effect(d->name);
+        case &Var_e(&Global_b(vd)):
+          return fun_effect(vd->name);
+        case &Var_e(&Unresolved_b(v)):
+          return fun_effect(v);
+        default:
+          return AnyEffect;
+      }
+
+    case &UnresolvedMem_e(_, dles):
+      fallthru(map(snd, dles));
+    case &Primop_e(_, es):
+      return exps_effect(es);
+
+    case &Conditional_e(e1, e2, e3):
+      return exps_effect(list(e1, e2, e3));
+
+    case &Subscript_e(e1, e2):
+      fallthru(e1, e2);
+    case &And_e(e1, e2):
+      fallthru(e1, e2);
+    case &Or_e(e1, e2):
+      fallthru(e1, e2);
+    case &SeqExp_e(e1, e2):
+      return exps_effect(list(e1, e2));
+
+    case &Extension_e(e1):
+      fallthru(e1);
+    case &NoInstantiate_e(e1):
+      fallthru(e1);
+    case &Instantiate_e(e1, _):
+      fallthru(e1);
+    case &Cast_e(_, e1, _, _):
+      fallthru(e1);
+    case &Address_e(e1):
+      fallthru(e1);
+    case &Deref_e(e1):
+      fallthru(e1);
+    case &AggrMember_e(e1, ...):
+      fallthru(e1);
+    case &AggrArrow_e(e1, ...):
+      fallthru(e1);
+    case &Increment_e(e1, _):
+      return exp_effect(e1);
+
+    case &StmtExp_e(s):
+      return stmt_effect(s);
+
+    default:
+      unexpected_form(e);
+  }
+}
+static enum SideEffect stmt_effect(stmt_t s) {
+  enum SideEffect res = Const;
+  while (true)
+    switch (s->r) {
+      case &Skip_s:
+        return res;
+      case &Exp_s(e):
+        return join_side_effect(res, exp_effect(e));
+
+      case &Label_s(_, s2):
+        s = s2;
+        continue;
+      case &Seq_s(s1, s2):
+        res = join_side_effect(res, stmt_effect(s1));
+        s   = s2;
+        continue;
+
+      case &Decl_s(d, s1):
+        switch (d->r) {
+          case &Var_d(vd):
+            if (vd->initializer)
+              res = join_side_effect(res, exp_effect((exp_t)vd->initializer));
+            s = s1;
+            continue;
+          default:
+            return AnyEffect;
+        }
+
+      case &Break_s:
+      case &Continue_s:
+      case &Goto_s(_):
+      case &Return_s(_):
+      case &IfThenElse_s(...):
+      case &While_s(...):
+      case &For_s(...):
+      case &Do_s(...):
+      case &Switch_s(...):
+        return AnyEffect;
+      default:
+        Warn::impos2("bad stmt after xlation to C");
+    }
+}
+
+/* Runtime system functions introduced in toc.cyc are unresolved bindings;
+   these are constants, and so do not need to be sequenced. */
+static bool is_toc_var(exp_t e) {
+  switch (e->r) {
+    case &Var_e(&Unresolved_b(v)):
+      return true;
+    default:
+      return false;
+  }
+}
+
+static void stmt_to_seqc(stmt_t);
+static void exp_to_seqc(exp_t);
+
+/* This takes a list of expressions [es] and reorders them to ensure
+   left-to-right evaluation order.  This works by (1) creating a new
+   compound statement that declares fresh local variables initializes
+   them to the generated code for each; and (2) updates the original
+   expressions in place to refer to the new variables.  The generated
+   statement is returned, along with a pointer to the innermost
+   statement, that should be replaced by the caller with the relevant
+   expression/statement.
+
+   As a small optimization, we don't bother generating code
+   (i.e. creating new fresh variables) for constants and variables.
+   We could extend this optimization to all effect-free expressions.
+   If the optimization results in no locals being declared, we don't
+   return any statement.
+*/
+static stmt_opt_t exps_to_seqc(exp_t e, list_t<exp_t> es) {
+  // Convert each of the expressions
+  List::iter(exp_to_seqc, es);
+
+  // See if we need to fix the order of the current expressions
+  if (List::length(es) <= 1 || exps_effect(es) != AnyEffect)
+    return NULL;
+
+  // Create local declarations for each expression.  Note that we
+  // don't have to do this for the last expression in the list or for
+  // constant expressions.
+  stmt_t stmt         = exp_stmt(copy_exp(e), e->loc);
+  stmt_opt_t laststmt = stmt;
+  bool did_skip       = false;
+  bool did_convert    = false;
+  for (_ x = List::rev(es); x != NULL; x = x->tl) {
+    let e1 = x->hd;
+    // Don't bother translating any constant expressions.  Note that if
+    // this is an assignment, the lhs will never be constant.
+    if (Tcutil::is_const_exp(e1) || is_toc_var(e1))
+      continue;
+
+    // Since we reversed the list, we skip the first non-constant expression,
+    // since this will be the last to be evaluated in the generated code.
+    // If this is an assignment, it should be an lvalue
+    if (!did_skip) {
+      did_skip = true;
+      continue;
+    }
+    did_convert = true;
+
+    // Variable expression
+    let v  = Toc::temp_var();
+    let ve = var_exp(v, e1->loc);
+
+    // Add to the declaration
+    let e2    = new_exp(e1->r, e1->loc);
+    e2->annot = e1->annot;
+    e2->topt  = e1->topt;
+
+    type_t t = (e2->topt == NULL) ? new TypeofType(e2) : Toc::typ_to_c((type_t)e2->topt);
+    stmt     = declare_stmt(v, t, e2, stmt, e->loc);
+
+    // Update the expression to be the variable
+    e1->r = ve->r;
+  }
+
+  // Turn the original expression into a statement expression if we converted
+  if (did_convert) {
+    e->r = stmt_exp(stmt, e->loc)->r;
+    return laststmt;
+  }
+  return NULL;
+}
+
+static void exp_to_seqc(exp_t e) {
+  switch (e->r) {
+    case &Const_e(_):
+    case &Var_e(_):
+      return;
+
+    case &FnCall_e(e1, es, ...):
+      fallthru(new List(e1, es));
+    case &Primop_e(_, es):
+      exps_to_seqc(e, es);
+      return;
+    case &Subscript_e(e1, e2):
+      exps_to_seqc(e, list(e1, e2));
+      return;
+
+    case &AssignOp_e(e1, p, e2):
+      if (p == NULL)
+        switch (e1->r) {
+          case &Var_e(_):
+            exp_to_seqc(e2);
+            return;
+          default:
+            break;
+        }
+      // we do assignment statements right to left
+      exps_to_seqc(e, list(e2, e1));
+      return;
+
+    case &Conditional_e(e1, e2, e3):
+      exp_to_seqc(e3);
+      fallthru(e1, e2);
+    case &And_e(e1, e2):
+      fallthru(e1, e2);
+    case &Or_e(e1, e2):
+      fallthru(e1, e2);
+    case &SeqExp_e(e1, e2):
+      exp_to_seqc(e2);
+      fallthru(e1);
+
+    case &Extension_e(e1):
+      fallthru(e1);
+    case &NoInstantiate_e(e1):
+      fallthru(e1);
+    case &Instantiate_e(e1, _):
+      fallthru(e1);
+    case &Cast_e(_, e1, _, _):
+      fallthru(e1);
+    case &Address_e(e1):
+      fallthru(e1);
+    case &Sizeofexp_e(e1):
+      fallthru(e1);
+    case &Deref_e(e1):
+      fallthru(e1);
+    case &AggrMember_e(e1, ...):
+      fallthru(e1);
+    case &AggrArrow_e(e1, ...):
+      fallthru(e1);
+    case &Increment_e(e1, _):
+      exp_to_seqc(e1);
+      return;
+
+    case &Sizeoftype_e(_):
+    case &Offsetof_e(_, _):
+    case &AnonEnum_e(...):
+    case &Enum_e(...):
+      return;
+
+    case &UnresolvedMem_e(_, dles):
+      exps_to_seqc(e, map(snd, dles));
+      return;
+
+    case &StmtExp_e(s):
+      stmt_to_seqc(s);
+      return;
+
+    case &Asm_e(...):
+      return;
+    default:
+      unexpected_form(e);
+  }
+}
+
+static void stmt_to_seqc(stmt_t s) {
+  // This is just the recursive descent; we are not under a StmtExp.
+  while (true)
+    switch (s->r) {
+      case &Skip_s:
+      case &Break_s:
+      case &Continue_s:
+      case &Goto_s(_):
+        return;
+      case &Label_s(_, s2):
+        s = s2;
+        continue;
+      case &Return_s(eopt):
+        if (eopt == NULL)
+          return;
+        fallthru(eopt);
+      case &Exp_s(e):
+        exp_to_seqc(e);
+        // Compress out extra indirection if we create a statement expression
+        //       switch (e->r) {
+        //       case &StmtExp_e(s2):
+        // 	s->r = s2->r;
+        // 	break;
+        //       default: break;
+        //       }
+        return;
+      case &IfThenElse_s(e, s1, s2):
+        exp_to_seqc(e);
+        fallthru(s1, s2);
+      case &Seq_s(s1, s2):
+        stmt_to_seqc(s1);
+        s = s2;
+        continue;
+      case &Do_s(s2, $(e, _)):
+        fallthru(e, s2);
+      case &While_s($(e, _), s2):
+        exp_to_seqc(e);
+        s = s2;
+        continue;
+      case &For_s(e1, $(e2, _), $(e3, _), s2):
+        exp_to_seqc(e1);
+        exp_to_seqc(e2);
+        exp_to_seqc(e3);
+        s = s2;
+        continue;
+      case &Switch_s(e, scs, _):
+        // most switches have been translated away -- only C switches remain.
+        // there should be no where clauses, so ignore them.
+        exp_to_seqc(e);
+        for (; scs != NULL; scs = scs->tl)
+          stmt_to_seqc(scs->hd->body);
+        return;
+      case &Decl_s(d, s2):
+        switch (d->r) {
+          case &Var_d(vd):
+            if (vd->initializer != NULL)
+              // DJG: the aggregate-removal phase could make this unnecessary,
+              // but it's unclear if that's the best thing to do
+              switch (vd->initializer->r) {
+                // need to handle struct, array initialization specially so that
+                //   let v = { e1, e2 }
+                // gets translated to be
+                //   let x1 = e1 in
+                //   let x2 = e2 in
+                //   let v = { x1, x2 }
+                // rather than
+                //   let v = ({ let x1 = e1 in
+                //              let x2 = e2 in
+                //              {e1,e2} })
+                // this form causes gcc to barf.
+                case &UnresolvedMem_e(_, dles):
+                  let laststmt = exps_to_seqc((exp_t)vd->initializer, map(snd, dles));
+                  // If nothing needed to be translated, then we're done
+                  if (laststmt == NULL)
+                    break;
+                  // Otherwise, vd->initializer is now of the form
+                  // ({ let x1 = e1 ...
+                  //    let xn = en in
+                  //    initexp[x1/e1...xn/en] })
+                  // and the laststmt is the initexp[...] as an Exp_Stmt
+                  switch (laststmt->r) {
+                    case &Exp_s(initexp):
+                      switch (vd->initializer->r) {
+                        case &StmtExp_e(s3):
+                          vd->initializer = initexp;
+                          laststmt->r     = s->r;
+                          s->r            = s3->r;
+                          break;
+                        default:
+                          Warn::impos2("exps_to_seqc updated to non-stmt-exp |",
+                                       (exp_t)vd->initializer, "|");
+                      }
+                      break;
+                    default:
+                      Warn::impos2("exps_to_seqc returned non-exp-stmt |", laststmt, "|");
+                  }
+                  break;
+                default:
+                  // not an array, struct, etc., so do the standard thing
+                  exp_to_seqc((exp_t)vd->initializer);
+                  break;
+              }
+            s = s2;
+            continue;
+          default:
+            break;
+        }
+        fallthru;
+      default:
+        Warn::impos2("bad stmt after xlation to C");
+    }
+}
+
+list_t<decl_t> toseqc(list_t<decl_t,`H> ds) {
+  for (let old_ds = ds; old_ds != NULL; old_ds = old_ds->tl)
+    switch (old_ds->hd->r) {
+      case &Fn_d(fd):
+        if (fd->orig_scope != ExternC)
+          stmt_to_seqc(fd->body);
+        break;
+      case &Var_d(_):
+      case &Aggr_d(_):
+      case &Enum_d(_):
+      case &Typedef_d(_):
+        break;
+      case &Datatype_d(_):
+      case &Let_d(...):
+      case &Letv_d(_):
+      case &Region_d(...):
+      case &Namespace_d(...):
+      case &Using_d(...):
+      case &ExternC_d(_):
+      case &ExternCinclude_d(...):
+      case &Porton_d:
+      case &Portoff_d:
+      case &Tempeston_d:
+      case &Tempestoff_d:
+        Warn::impos2("unexpected toplevel decl in toseqc");
+    }
+  return ds;
+}

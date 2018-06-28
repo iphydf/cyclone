@@ -1,0 +1,141 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 1999-2001 Greg Morrisett, Dan Grossman, AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+// Parts have been ported from Objective Caml:
+/***********************************************************************)
+(*                                                                     *)
+(*                           Objective Caml                            *)
+(*                                                                     *)
+(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
+(*                                                                     *)
+(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
+(*  en Automatique.  All rights reserved.  This file is distributed    *)
+(*  under the terms of the GNU Library General Public License.         *)
+(*                                                                     *)
+(***********************************************************************/
+
+// Run-time library for files created by cyclex
+
+#include "lexing.h"
+#include "string.h"
+using Core;
+namespace Lexing;
+
+// AUX_SIZE should be half BUFFER_SIZE
+#define BUFFER_SIZE 8192
+#define AUX_SIZE 4096
+
+datatype exn{Error(string_t)};
+struct lexbuf<`a::B> {  // use `a for state that refill_buff might need
+  void(@refill_buff)(struct lexbuf<`a> @);
+  `a refill_state;
+
+  mstring_t lex_buffer;
+  int lex_buffer_len;
+  int lex_abs_pos;
+  int lex_start_pos;
+  int lex_curr_pos;
+  int lex_last_pos;
+  int lex_last_action;
+  bool lex_eof_reached;
+};
+
+struct function_lexbuf_state<`b> {
+  // instantiation for using function to read
+  int(@read_fun)(mstring_t, int,`b);
+  `b read_fun_state;
+};
+
+struct lex_tables {
+  // for space this should probably be shorts, but who cares
+  int ? lex_base;
+  int ? lex_backtrk;
+  int ? lex_default;
+  int ? lex_trans;
+  int ? lex_check;
+};
+
+static char aux_buffer_v[1] @zeroterm = {'\0'};
+static char ? aux_buffer              = aux_buffer_v;
+
+void lex_refill(Lexbuf<Function_lexbuf_state> lexbuf) {
+  if (numelts(aux_buffer) == 1)
+    aux_buffer = new_string(AUX_SIZE + 1);
+  int read = lexbuf->refill_state->read_fun(aux_buffer, numelts(aux_buffer) - 1,
+                                            lexbuf->refill_state->read_fun_state);
+  int n    = read > 0 ? read : (lexbuf->lex_eof_reached = true, 0);
+  if (lexbuf->lex_start_pos < n) {
+    int oldlen = lexbuf->lex_buffer_len;
+    int newlen = oldlen * 2;
+
+    mstring_t newbuf = new_string(newlen + 1);
+    zstrncpy((char ? @nozeroterm)newbuf+oldlen, lexbuf->lex_buffer, oldlen);
+    lexbuf->lex_buffer     = newbuf;
+    lexbuf->lex_buffer_len = newlen;
+    lexbuf->lex_abs_pos    = lexbuf->lex_abs_pos - oldlen;
+    lexbuf->lex_curr_pos   = lexbuf->lex_curr_pos + oldlen;
+    lexbuf->lex_start_pos  = lexbuf->lex_start_pos + oldlen;
+    lexbuf->lex_last_pos   = lexbuf->lex_last_pos + oldlen;
+  }
+  zstrncpy((char ?  @nozeroterm)lexbuf->lex_buffer,
+                   lexbuf->lex_buffer + n,
+                   lexbuf->lex_buffer_len-n);
+  zstrncpy((char ?  @nozeroterm)(lexbuf->lex_buffer+(lexbuf->lex_buffer_len-n)),
+                   aux_buffer, n);
+  lexbuf->lex_abs_pos   = lexbuf->lex_abs_pos + n;
+  lexbuf->lex_curr_pos  = lexbuf->lex_curr_pos - n;
+  lexbuf->lex_start_pos = lexbuf->lex_start_pos - n;
+  lexbuf->lex_last_pos  = lexbuf->lex_last_pos - n;
+}
+
+Lexbuf<Function_lexbuf_state<`b>> from_function(
+    int(@`H read_fun)(mstring_t<`H>, int,`b), `b read_fun_state) {
+  return new lexbuf(lex_refill,  // @ <`b>,
+                    new function_lexbuf_state(read_fun, read_fun_state),
+                    new_string(BUFFER_SIZE + 1), BUFFER_SIZE, -BUFFER_SIZE, BUFFER_SIZE,
+                    BUFFER_SIZE, BUFFER_SIZE, 0, false);
+}
+
+static int read_from_file(mstring_t aux, int n, FILE @f) { return file_string_read(f, aux, 0, n); }
+
+// corresponds to ocaml's from_channel
+Lexbuf<Function_lexbuf_state<FILE @`r>> from_file(FILE @`r f) {
+  return from_function(read_from_file, f);
+}
+
+static void set_eof(Lexbuf lbuf) { lbuf->lex_eof_reached = true; }
+
+Lexbuf<bool> from_string(mstring_t s) {
+  return new lexbuf(set_eof,
+                    false,      // ignored but can't instantiate with void
+                    strdup(s),  // copy to keep lexer shielded from updates
+                    numelts(s), 0, 0, 0, 0, 0, true);
+}
+
+mstring_t<`r> rlexeme(region_t<`r> r, Lexbuf lbuf) {
+  int len     = lbuf->lex_curr_pos - lbuf->lex_start_pos;
+  mstring_t s = rnew_string(r, len + 1);
+   zstrncpy((char ? @nozeroterm)s, lbuf->lex_buffer + lbuf->lex_start_pos, len);
+   s[len] = '\000';
+   return s;
+}
+
+mstring_t lexeme(Lexbuf lbuf) { return rlexeme(heap_region, lbuf); }
+char lexeme_char(Lexbuf lbuf, int i) { return lbuf->lex_buffer[lbuf->lex_start_pos + i]; }
+int lexeme_start(Lexbuf lbuf) { return lbuf->lex_abs_pos + lbuf->lex_start_pos; }
+int lexeme_end(Lexbuf lbuf) { return lbuf->lex_abs_pos + lbuf->lex_curr_pos; }

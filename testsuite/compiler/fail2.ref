@@ -1,0 +1,10 @@
+
+cyclone/testsuite/compiler/fail2.cyc:3: goto enters local scope or exception handler
+cyclone/testsuite/compiler/fail2.cyc:9: goto enters local scope or exception handler
+cyclone/testsuite/compiler/fail2.cyc:14: jump has no target
+cyclone/testsuite/compiler/fail2.cyc:19: jump has no target
+cyclone/testsuite/compiler/fail2.cyc:27: break causes outer switch to implicitly fallthru
+cyclone/testsuite/compiler/fail2.cyc:34: label L undefined
+cyclone/testsuite/compiler/fail2.cyc:39: repated label
+
+COMPILATION FAILED!

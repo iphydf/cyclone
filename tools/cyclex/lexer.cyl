@@ -1,0 +1,273 @@
+{
+
+// Port of ocamllex to Cyclone, with enormous debt to INRIA:
+/*
+(***********************************************************************)
+(*                                                                     *)
+(*                           Objective Caml                            *)
+(*                                                                     *)
+(*            Xavier Leroy, projet Cristal, INRIA Rocquencourt         *)
+(*                                                                     *)
+(*  Copyright 1996 Institut National de Recherche en Informatique et   *)
+(*  en Automatique.  All rights reserved.  This file is distributed    *)
+(*  under the terms of the Q Public License version 1.0.               *)
+(*                                                                     *)
+(***********************************************************************)
+*/
+
+  // FIX: We do not have the luxury of tail-call optimization but we act
+  // as though we do!
+
+#include "cyclone/library/std/core.h"
+#include "stdio.h"
+#include "string.h"
+#include "cyclone/library/std/lexing.h"
+
+#include "cyclone/tools/cyclex/syntax.h"
+#include "cyclone/tools/cyclex/parser.h"
+
+using Core;
+using Lexing;
+using Parser;
+
+namespace Lexer {
+int line_num       = 1;
+int line_start_pos = 0;
+}
+
+void yyerror(string_t<`H> s) {
+  fprintf(stderr, "%s, line:%d", s, Lexer::line_num);
+  fflush(stderr);
+  throw new Parser_error(s);
+}
+
+namespace Lexer {
+
+datatype exn { Lexical_error(string_t,int,int); };
+
+static string_t          token_string = "";
+static int                     token_char   = (int)'D';
+static struct Syntax::Location dummy_loc    = {0,0,0,0};
+static Syntax::location_t      token_action = &dummy_loc;
+
+static int brace_depth   = 0;
+static int comment_depth = 0;
+
+static char string_buff_v[38]@zeroterm;
+static mstring_t string_buff  = (mstring_t)string_buff_v;
+static int    string_index = 0;
+
+  //typedef int lexfun_t <`a>(Lexing::Lexbuf<`a>;{});
+
+#define SHRINK_THRESHOLD 16384
+void reset_string_buffer() {
+  if(numelts(string_buff) > SHRINK_THRESHOLD)
+    string_buff = (mstring_t)string_buff_v;
+  string_index = 0;
+}
+
+void store_string_char(char c) {
+  if(string_index + 1 >= numelts(string_buff)) {
+    mstring_t new_buff = new_string(numelts(string_buff)*2);
+    strncpy((char ?@nozeroterm)new_buff, string_buff, numelts(string_buff));
+    string_buff = new_buff;
+  }
+  string_buff[string_index++] = c;
+}
+
+mstring_t get_stored_string() {
+  return substring(string_buff,0,string_index);
+}
+
+char char_for_backslash(char c) {
+  switch (c) {
+  case 'a': return '\a';
+  case 'b': return '\b';
+  case 'f': return '\f';
+  case 'n': return '\n';
+  case 'r': return '\r';
+  case 't': return '\t';
+  case 'v': return '\v';
+  default:  return c;
+  }
+}
+
+char char_for_octal_code(Lexbuf<`a> lbuf, int i) {
+  return (char)(64 * (((int) lexeme_char(lbuf,i))   - '0') +
+		 8 * (((int) lexeme_char(lbuf,i+1)) - '0') +
+		     (((int) lexeme_char(lbuf,i+2)) - '0'));
+}
+
+static int handle_lexical_error(int fn(Lexing::Lexbuf<`a>),
+                                Lexbuf<`a>lbuf) {
+  int line = line_num;
+  int column = lexeme_start(lbuf) - line_start_pos;
+  try return fn(lbuf);
+  catch { case &Lexical_error(msg,_,_): throw new Lexical_error(msg,line,column); }
+}
+
+// Forward declarations of lexing functions
+  //extern lexfun_t lexmain, action, strng, comment;
+extern int lexmain(Lexing::Lexbuf<`a>);
+extern int action(Lexing::Lexbuf<`a>);
+extern int strng(Lexing::Lexbuf<`a>);
+extern int comment(Lexing::Lexbuf<`a>);
+
+
+} // namespace Lexer
+
+// for parser -- must not be prefixed
+int yylex() {
+  int ans = Lexer::lexmain(lbuf->v);
+  switch (ans) {
+  case TIDENT:  yylval = YYSTYPE{.String_tok = Lexer::token_string};   break;
+  case TSTRING: yylval = YYSTYPE{.String_tok = Lexer::token_string};   break;
+  case TCHAR:   yylval = YYSTYPE{.Char_tok = (char)Lexer::token_char}; break;
+  case TACTION: yylval = YYSTYPE{.Location_tok = Lexer::token_action}; break;
+  default: break;
+  }
+  return ans;
+}
+
+namespace Lexer;
+
+}
+
+rule lexmain = parse
+  [' ' '\r' '\t' '\f']+ { return lexmain(lexbuf); }
+| '\n' { line_start_pos = lexeme_end(lexbuf);
+         ++line_num;
+         return lexmain(lexbuf); }
+| "/*" { comment_depth = 1;
+         handle_lexical_error(comment,lexbuf);
+         return lexmain(lexbuf); }
+| ['A'-'Z' 'a'-'z'] ['A'-'Z' 'a'-'z' '\'' '_' '0'-'9'] *
+  { mstring_t s = lexeme(lexbuf);
+    if     (strcmp(s,"rule")  == 0) return TRULE;
+    else if(strcmp(s,"parse") == 0) return TPARSE;
+    else if(strcmp(s,"and")   == 0) return TAND;
+    else if(strcmp(s,"eof")   == 0) return TEOF;
+    else if(strcmp(s,"let")   == 0) return TLET;
+    else { token_string = s; return TIDENT; }
+  }
+| '"' { reset_string_buffer();
+        int line = line_num;
+        int column = lexeme_start(lexbuf) - line_start_pos;
+        try
+          while (strng(lexbuf))
+            ; /* skip */
+        catch { case &Lexical_error(msg,_,_):
+          throw new Lexical_error(msg,line,column); }
+	token_string = get_stored_string();
+	return TSTRING;
+      }
+| "'" [^ '\\'] "'"
+    { token_char = (int)lexeme_char(lexbuf,1);
+      return TCHAR; }
+| "'" '\\' ['a' 'b' 'f' 'n' 'r' 't' 'v' '\\' '\'' '?'] "'"
+    { token_char = (int)char_for_backslash(lexeme_char(lexbuf,2));
+      return TCHAR; }
+| "'" '\\' ['0'-'7'] ['0'-'7'] ['0'-'7'] "'"
+    { token_char = (int)char_for_octal_code(lexbuf,2);
+      return TCHAR; }
+| '{'
+    {
+     int n1 = lexeme_end(lexbuf);
+     int l1 = line_num;
+     int s1 = line_start_pos;
+     brace_depth = 1;
+     int n2 = handle_lexical_error(action,lexbuf);
+     token_action = new Syntax::Location(n1,n2,l1,n1-s1);
+     return TACTION;
+   }
+| '=' { return TEQUAL; }
+| '|' { return TOR; }
+| '_' { return TUNDERSCORE; }
+| '[' { return TLBRACKET; }
+| ']' { return TRBRACKET; }
+| '*' { return TSTAR; }
+| '?' { return TMAYBE; }
+| '+' { return TPLUS; }
+| '(' { return TLPAREN; }
+| ')' { return TRPAREN; }
+| '^' { return TCARET; }
+| '-' { return TDASH; }
+| eof { return -1; }
+| _ { throw new Lexical_error(aprintf("illegal character %s", lexeme(lexbuf)),
+			      line_num,
+			      lexeme_start(lexbuf) - line_start_pos); }
+
+and action = parse
+  '{' { ++brace_depth; return action(lexbuf); }
+| '}' { --brace_depth;
+        if(brace_depth == 0) return lexeme_start(lexbuf);
+	else return action(lexbuf); }
+| '"' { reset_string_buffer();
+        while (strng(lexbuf))
+          ; /* skip */
+        reset_string_buffer();
+        return action(lexbuf);
+      }
+| "'" [^ '\\'] "'"
+    { return action(lexbuf); }
+| "'" '\\' ['\\' '\'' 'n' 't' 'b' 'r'] "'"
+    { return action(lexbuf); }
+| "'" '\\' ['0'-'7'] ['0'-'7'] ['0'-'7'] "'"
+    { return action(lexbuf); }
+| "/*" { comment_depth = 1; /* FIX: Add // style too! */
+         comment(lexbuf);
+         return action(lexbuf);
+       }
+| eof  { throw new Lexical_error("unterminated action", 0, 0); }
+| '\n' { line_start_pos = lexeme_end(lexbuf);
+         ++line_num;
+         return action(lexbuf);
+       }
+| [^ '{' '}' '"' '\'' '/' '\n'] + { return action(lexbuf); }
+| _ { return action(lexbuf); }
+
+and strng = parse
+  '"' { return 0; }
+| '\\' [' ' '\r' '\t' '\f'] * '\n' [' ' '\r' '\t' '\f'] *
+  { line_start_pos = lexeme_end(lexbuf);
+    ++line_num;
+    return 1;
+  }
+| '\\' ['a' 'b' 'f' 'n' 'r' 't' 'v' '\\' '"' '?']
+  { store_string_char(char_for_backslash(lexeme_char(lexbuf,1)));
+    return 1; }
+| '\\' ['0'-'7'] ['0'-'7'] ['0'-'7']
+  { store_string_char(char_for_octal_code(lexbuf,1));
+    return 1; }
+| eof
+  { throw new Lexical_error("unterminated string", 0, 0); }
+| '\n'
+  { store_string_char('\n');
+    line_start_pos = lexeme_end(lexbuf);
+    ++line_num;
+    return 1;
+  }
+| _ { store_string_char(lexeme_char(lexbuf,0)); return 1; }
+
+and comment = parse
+  "/*" { ++comment_depth; return comment(lexbuf); /* should we nest? */ }
+| "*/" { --comment_depth; return ((comment_depth == 0) ? 0 : comment(lexbuf)); }
+| '"'  { reset_string_buffer();
+         while (strng(lexbuf))
+           ; /* skip */
+         reset_string_buffer();
+         return comment(lexbuf);
+       }
+| "''"                                    { return comment(lexbuf); }
+| "'" [^ '\\' '\''] "'"                   { return comment(lexbuf); }
+| "'\\" ['\\' '\'' 'n' 't' 'b' 'r'] "'"   { return comment(lexbuf); }
+| "'\\" ['0'-'7'] ['0'-'7'] ['0'-'7'] "'" { return comment(lexbuf); }
+| eof { throw new Lexical_error("unterminated comment", 0, 0); }
+| '\n' { line_start_pos = lexeme_end(lexbuf);
+         ++line_num;
+         return comment(lexbuf);
+       }
+| _ { return comment(lexbuf); }
+
+{
+}

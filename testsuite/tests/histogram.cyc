@@ -1,0 +1,97 @@
+#include "cyclone/library/std/core.h"
+#include <string.h>
+#include "cyclone/library/std/hashtable.h"
+#include <stdio.h>
+#include <stdlib.h>
+// A little histogram program.
+// Usage:  histogram [filename]
+// The file (or stdin if no file is specified) should be a text file,
+// and consist of a list of newline separated records, with no extraneous
+// whitespace.  The first field in a record should start in the first
+// column and consists of anything but a tab.  The second field should
+// follow immediately and be an integer.  The output, which is sent to
+// stdout just prints the sum totals for the unique elements in the
+// first field.
+using Core;
+using Hashtable;
+
+
+char buf[81]@zeroterm;
+
+void print_results(stringptr_t pos, $(int,int) @totals) {
+  let &$(byte_count, call_count) = totals;
+  printf("%d\t%s\n",byte_count,*pos);
+}
+
+bool eof = false;
+
+void skip_whitespace(FILE @f) {
+  int c = getc(f);
+  while (c == ' ' || c == '\t' || c == '\n')
+    c = getc(f);
+  ungetc(c,f);
+}
+
+
+bool gettoken(FILE @f) {
+  int i = 0;
+  int c;
+  skip_whitespace(f);
+  c = getc(f);
+  if (c == EOF) return false;
+  while (c != EOF && c != ' ' && c != '\t' && c != '\n') {
+    buf[i++] = (char)c;
+    c = getc(f);
+  }
+  buf[i] = '\0';
+  ungetc(c,f);
+  return true;
+}
+
+void snarfline(FILE @f) {
+  int c = getc(f);
+  while (c != '\n' && c != EOF) c = getc(f);
+  ungetc(c,f);
+}
+
+int main(int argc, string_t ?argv) {
+  FILE @f;
+  if (argc < 2) {
+    f = stdin;
+  } else {
+    f = (FILE @)fopen(argv[1],"r");
+  }
+  table_t<stringptr_t<`H,`H>,$(int,int)@`H> table =
+      create(101, strptrcmp, hash_stringptr);
+
+  // get the program point
+  while (gettoken(f)) {
+    string_t @s = new ((string_t)strdup(buf));
+    // get the allocation amount
+    if (!gettoken(f)) {
+      fprintf(stderr,"missing allocation amount for %s\n",*s); return -1;
+    }
+    int count;
+    try {
+      count = atoi(buf);
+    } catch {
+    default: fprintf(stderr,"bad integer %s\n",buf); return -1;
+    }
+    // skip the rest of the info on the line
+    try {
+      snarfline(f);
+    } catch {
+    default: fprintf(stderr,"snarfline failed\n"); break;
+    }
+    try {
+      let &$(*byte_count,*call_count) = lookup(table, s);
+      *byte_count = *byte_count + count;
+      *call_count = *call_count + 1;
+    } catch {
+    case &Not_found:
+      insert(table, s, new $(count,1)); break;
+    }
+  }
+  iter(print_results, table);
+  return 0;
+}

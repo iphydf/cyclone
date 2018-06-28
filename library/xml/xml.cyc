@@ -1,0 +1,194 @@
+/* This file is part of the Cyclone Library.
+   Copyright (C) 2001 AT&T
+
+   This library is free software; you can redistribute it and/or it
+   under the terms of the GNU Lesser General Public License as
+   published by the Free Software Foundation; either version 2.1 of
+   the License, or (at your option) any later version.
+
+   This library is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+   Lesser General Public License for more details.
+
+   You should have received a copy of the GNU Lesser General Public
+   License along with this library; see the file COPYING.LIB.  If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place, Suite
+   330, Boston, MA 02111-1307 USA. */
+
+#define _XML_CYC
+#include "cyclone/library/xml/xml.h"
+#include <string.h>
+#include <ctype.h>
+#include <stdio.h>
+
+namespace Xml;
+
+using Core;
+using List;
+
+/* [getElemData(doc,tag)] checks that the document [doc] is a single
+   element with tag [tag], and returns the contents and attributes of
+   that element.  On error, a [parseConfigFailed] exception is thrown.  */
+$(list_t<content_t<`r>,`r>,list_t<attribute_t<`r>,`r>)
+getElemData(content_t<`r> doc, string_t tagname)
+{
+  switch (doc) {
+  case &Element(e):
+    _ elem;
+    switch (e) {
+    case &StartEnd(nm,atrs,content):
+      if (!strcmp(nm,tagname)) {
+	return $(content,atrs);
+      }
+      elem = nm;
+      break;
+    case &Empty(nm,attrs):
+      if (!strcmp(nm,tagname)) {
+	return $(NULL,attrs);
+      }
+      elem = nm;
+    }
+    throw new
+      procXMLdocFailed
+      (strconcat
+       (strconcat
+	(strconcat
+	 ((string_t)"getElemData: tag = ",tagname),
+	 (string_t)" != "),
+	elem));
+
+  case &Chardata(c):
+    throw new
+      procXMLdocFailed(strconcat((string_t)"Chardata is not Elem ",tagname));
+  case &Reference(_):
+    throw new
+      procXMLdocFailed(strconcat((string_t)"Reference is not Elem ",tagname));
+  case &Cdsect(_):
+    throw new
+      procXMLdocFailed(strconcat((string_t)"Cdsect is not Elem ",tagname));
+  case &Pi(_):
+    throw new
+      procXMLdocFailed(strconcat((string_t)"Pi is not Elem ",tagname));
+  case &Comment(_):
+    throw new
+      procXMLdocFailed(strconcat((string_t)"Comment is not Elem ",tagname));
+  }
+}
+
+
+/** [getAttribute(a,n)] returns the attribute value from [a] that
+    whose name matches [n]; throws [procXMLdocFailed]
+    if not found. **/
+attvalue_t<`r> getAttribute(list_t<attribute_t<`r>> atrs, name nm)
+{
+  while (atrs != NULL) {
+    let &$(anm,val) = atrs->hd;
+    if (!strcmp(anm,nm))
+      return val;
+    atrs = atrs->tl;
+  }
+  throw new
+    procXMLdocFailed(strconcat((string_t)"Attribute not found: ",nm));
+}
+
+/** [getAttributes(a,n)] returns the attribute values from [a] that
+    match the names in [n], returned in the order the names appear in
+    [n].  If a name is missing, a NULL is inserted instead.  Order
+    does not matter.  **/
+list_t<attvalue_t<`s> *,`r>
+getAttributes(region_t<`r> r,
+	      list_t<attribute_t<`s>> atrs,list_t<name @> names)
+{
+  list_t<attvalue_t *`H,`r> res = NULL;
+  while (names != NULL) {
+    try {
+      let v = getAttribute(atrs,*(names->hd));
+      res = rnew (r) List(new v,res);
+    } catch {
+    default:
+      res = rnew (r) List(NULL, res);
+      break;
+    }
+    names = names->tl;
+  }
+  return imp_rev(res);
+}
+
+
+/* [matchAttributes(a,n)] returns the attribute values from [a] that
+   match the names in [n].  The lists must match up exactly
+   (i.e. order matters).  If order shouldn't matter, you can sort both
+   lists first.  */
+list_t<attvalue_t<`s>,`r>
+matchAttributes(region_t<`r> r,
+		list_t<attribute_t<`s>> atrs,list_t<name @> names)
+{
+  list_t<attvalue_t,`r> res = NULL;
+  while (names != NULL) {
+    if (atrs != NULL) {
+      let &$(nm,val) = atrs->hd;
+      if (!strcmp(nm,*(names->hd))) {
+	res = rnew (r) List(val,res);
+      }
+      else
+	throw new procXMLdocFailed
+	  (strconcat((string_t)"Failed to match attribute ",*(names->hd)));
+    }
+    else
+      throw new procXMLdocFailed
+	(strconcat((string_t)"Attribute is missing: ",*(names->hd)));
+    names = names->tl;
+    atrs = atrs->tl;
+  }
+  return imp_rev(res);
+}
+
+/* [matchAttribute(atr,nm)] returns the value associated with attribute
+   [atr] if it has name [nm]; throws [procXMLdocFailed] if not.  */
+attvalue_t<`r> matchAttribute(attribute_t<`r> atr, name nm) {
+  let &$(anm,aval) = atr;
+  if (!strcmp(anm,nm))
+    return aval;
+  else
+    throw new procXMLdocFailed
+      (strconcat((string_t)"Failed to match attribute ",nm));
+}
+
+/* [clearWhitespaceContent(d)] removes all Chardata doc's that
+   are sub-docs of [d] that consist only of whitespace.
+   Modifies the tree in-place. */
+list_t<content_t<`r>,`r> clearWhitespaceContent(list_t<content_t<`r>,`r> docs) {
+  if (docs != NULL) {
+    switch (docs->hd) {
+    case &Element(elem):
+      switch (elem) {
+      case &StartEnd(nm,atts,*subdocs):
+	let res_subdocs = clearWhitespaceContent(*subdocs);
+	*subdocs = res_subdocs;
+	break;
+      default:
+	break;
+      }
+      break;
+
+    case &Chardata(s):
+      bool hasNonSpace = false;
+      int len = strlen(s);
+      for (int i = 0; i<len && !hasNonSpace; i++)
+	if (isspace(s[i]) == 0) hasNonSpace = true;
+      if (!hasNonSpace)
+	return clearWhitespaceContent(docs->tl);
+      break;
+
+    case &Reference(_):
+    case &Cdsect(_):
+    case &Pi(_):
+    case &Comment(_):
+      break;
+    }
+    let tl = clearWhitespaceContent(docs->tl);
+    docs->tl = tl;
+  }
+  return docs;
+}

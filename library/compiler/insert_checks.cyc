@@ -1,0 +1,882 @@
+/* Check insertion
+   Copyright (C) 2004 Dan Grossman, AT&T
+   This file is part of the Cyclone compiler.
+
+   The Cyclone compiler is free software; you can redistribute it
+   and/or modify it under the terms of the GNU General Public License
+   as published by the free Software Foundation; either version 2 of
+   the License, or (at your option) any later version.
+
+   The Cyclone compiler is distributed in the hope that it will be
+   useful, but WITHOUT ANY WARRANTY; without even the implied warranty
+   of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with the Cyclone compiler; see the file COPYING. If not,
+   write to the Free Software Foundation, Inc., 59 Temple Place -
+   Suite 330, Boston, MA 02111-1307, USA. */
+
+// Use the results of flow analysis to indicate compile-time errors and
+// where the translation to C must insert run-time checks.
+// We used to do this during translation to C, which dispersed where
+// errors were detected and required the translation to know about
+// representation details of the analysis and type system.
+
+// TO DO:
+// * use flow-analysis info uniformly in Cast_e and zeroterm-assign cases
+// * move tagged-union nonsense over to here??
+// * move zeroterm nonsense over to here??
+// * consider null-check elimination on patterns??
+
+#include "insert_checks.h"
+
+#include "absynpp.h"
+#include "callgraph.h"
+#include "cf_flowinfo.h"
+#include "evexp.h"
+#include "flags.h"
+#include "pratt_prover.h"
+#include "tcutil.h"
+#include "vcgen.h"
+#include "warn.h"
+
+#include "cyclone/library/std/graph.h"
+
+#define TIMING_DEBUG 0
+#define BCE_DEBUG 0
+
+#define NO_FUN_PRECOND 1
+
+using Absyn;
+using Absynpp;
+using Core;
+using Warn;
+
+namespace InsertChecks;
+
+@extensible datatype Absyn::AbsynAnnot {
+  NoCheck;
+  NullOnly;
+  NullAndFatBound;
+  FatBound;
+  NullAndThinBound(exp_t);  // exp must be a C constant expression
+  ThinBound(exp_t);         // exp must be a C constant expression
+};
+datacon(Absyn::AbsynAnnot, NoCheck);
+datacon(Absyn::AbsynAnnot, NullOnly);
+datacon(Absyn::AbsynAnnot, NullAndFatBound);
+datacon(Absyn::AbsynAnnot, FatBound);
+typedef absyn_annot_t annot_t;
+
+// counters for statistics
+static unsigned total_bounds_checks                  = 0;
+static unsigned types_eliminated_bounds_checks       = 0;
+static unsigned simple_eliminated_bounds_checks      = 0;
+static unsigned constraints_eliminated_bounds_checks = 0;
+
+static unsigned total_null_checks                  = 0;
+static unsigned types_eliminated_null_checks       = 0;
+static unsigned flow_eliminated_null_checks        = 0;
+static unsigned simple_eliminated_null_checks      = 0;
+static unsigned constraints_eliminated_null_checks = 0;
+
+static void reset_counters() {
+  total_bounds_checks                  = 0;
+  types_eliminated_bounds_checks       = 0;
+  simple_eliminated_bounds_checks      = 0;
+  constraints_eliminated_bounds_checks = 0;
+
+  total_null_checks                  = 0;
+  types_eliminated_null_checks       = 0;
+  flow_eliminated_null_checks        = 0;
+  simple_eliminated_null_checks      = 0;
+  constraints_eliminated_null_checks = 0;
+}
+
+static exp_t shared_zero_exp() {
+  static exp_opt_t ans = NULL;
+
+  if (!ans)
+    ans = uint_exp(0, 0);
+  return (exp_t)ans;
+}
+
+static struct Env {
+  JumpAnalysis::jump_anal_res_t tables;
+  Vcgen::assn_info_t assn_info;
+  Vcgen::fn_precond_info_t fn_precond_info;
+  unsigned int pass_counter;
+  bool use_precond : 1;
+  bool in_sizeof : 1;
+  bool at_toplevel : 1;
+  bool vcgen_r : 1;
+};
+
+typedef struct Env env_t;  // not a pointer
+
+static int hash_ptr(`a s) { return (int)s; }
+
+static env_t toplevel_env(JumpAnalysis::jump_anal_res_t tables, bool do_vcgen) {
+  let fn_precond_info = Hashtable::create(313, Absyn::qvar_cmp, Absyn::hash_qvar);
+
+  return Env(tables, NULL, fn_precond_info,
+             1,      // first pass
+             false,  // do not use_precond
+             false,  // not in sizeof
+             true,   // at top level
+             do_vcgen);
+}
+
+static env_t fn_body_env(env_t nv) {
+  return Env(nv.tables, nv.assn_info, nv.fn_precond_info, nv.pass_counter, nv.use_precond, false,
+             false, nv.vcgen_r);
+}
+
+static env_t enter_sizeof(env_t nv) {
+  return Env(nv.tables, nv.assn_info, nv.fn_precond_info, nv.pass_counter, nv.use_precond, true,
+             nv.at_toplevel, nv.vcgen_r);
+}
+
+// return bds_ck and null_ck based on the annotation of exp
+static $(bool, bool) need_bound_null_check_annot(exp_t e) {
+  bool bds_ck, null_ck;
+
+  switch (e->annot) {
+    case &NoCheck:
+      bds_ck  = false;
+      null_ck = false;
+      break;
+    case &FatBound:
+      bds_ck  = true;
+      null_ck = false;
+      break;
+    case &ThinBound(_):
+      bds_ck  = true;
+      null_ck = false;
+      break;
+    case &NullOnly:
+      bds_ck  = false;
+      null_ck = true;
+      break;
+    default:
+      bds_ck  = true;
+      null_ck = true;
+  }
+  return $(bds_ck, null_ck);
+}
+
+// for warning and statistics purposes, call need_*_check, only if true
+// result _will_ cause an inserted check
+static bool need_null_check(env_t nv, exp_t e, exp_t e0) {
+  // this is not the first pass any more,
+  // we've lost the flow info in our annotation.
+  // we will not do any check elimination with flow info
+  if (nv.pass_counter > 1) {
+    let $(_, null_ck) = need_bound_null_check_annot(e0);
+    return null_ck;
+  }
+  if (nv.in_sizeof)
+    return false;
+  // check the type, though if the analysis is good, this should be redundant
+  ++total_null_checks;
+  switch (compress((type_t)e->topt)) {
+    case &PointerType(PtrInfo(_, _, PtrAtts(_, n, ...))):
+      if (!Tcutil::force_type2bool(false, n)) {
+        ++types_eliminated_null_checks;
+        return false;
+      }
+      break;
+    default:
+      impos_loc(e->loc, "need_null_check: non-pointer type");
+  }
+  switch (e->annot) {
+    case &CfFlowInfo::UnknownZ:
+      break;
+    case &CfFlowInfo::NotZero:
+      ++flow_eliminated_null_checks;
+      return false;
+    case &CfFlowInfo::IsZero:
+      err(e->loc, "NULL pointer check will definitely fail");
+      return false;
+    // DJG: this next case used to be true, but false seems fine to me
+    case &EmptyAnnot:
+      ++flow_eliminated_null_checks;
+      return false;  // unreachable (e.g., under sizeof)
+    default:
+      impos_loc(e->loc, "need_null_check: unexpected annotation");
+  }
+  if (nv.at_toplevel) {
+    err(e->loc, "cannot perform NULL-pointer check at toplevel");
+    return false;
+  }
+#if 0
+  if (Flags::warn_all_null_deref)
+    warn (e->loc, "inserted null check");
+#endif
+  return true;
+}
+
+// just gets the common case that i is a constant and a's size is constant
+static bool simple_need_bounds_check(env_t nv, exp_t a, exp_t i) {
+  if (nv.in_sizeof)
+    return false;
+  ++total_bounds_checks;
+  if (nv.at_toplevel)  // may change if allow fat-to-thin at toplevel
+    impos_loc(a->loc, "InsertChecks: memory read at top-level");
+#if BCE_DEBUG
+  fprintf(stderr, "bounds check on %s:%s and %s\n", exp2string(a), typ2string((type_t)a->topt),
+          exp2string(i));
+#endif
+  // if a's type is T*{e}, T@{e}, or T[e] then e may be a good rop_bd
+  exp_opt_t bound_opt = Tcutil::get_type_bound((type_t)a->topt);
+  // no luck -- it's a fat pointer.
+  if (bound_opt == NULL)
+    return true;
+  let bound = (exp_t)bound_opt;
+  // if the bound or index aren't constant, we lose.
+  if (!Tcutil::is_const_exp(bound) || !Tcutil::is_const_exp(i))
+    return true;
+  let $(b, b_known) = Evexp::eval_const_uint_exp(bound);
+  let $(i, i_known) = Evexp::eval_const_uint_exp(i);
+  // if we can't evaluate them at compile-time, or i >= b, we lose.
+  if (!b_known || !i_known || i >= b)
+    return true;
+  // hooray -- we can eliminate the check
+  ++types_eliminated_bounds_checks;
+  return false;
+}
+
+static void do_stmt(env_t, stmt_t);
+static void do_exp(env_t, exp_t);
+
+static void do_exp_opt(env_t nv, exp_opt_t eo) {
+  if (eo != NULL)
+    do_exp(nv, eo);
+}
+
+static bool need_null_check_vcgen(env_t nv, exp_t a) {
+  let ec   = Vcgen::exp2ctxt_checks(nv.assn_info, a);
+  bool res = AssnDef::simple_prove(ec->ctxt.assn, ec->null_check);
+
+  if (res)
+    ++simple_eliminated_null_checks;
+  else {
+    res = PrattProver::constraint_prove(ec->ctxt.assn, ec->null_check);
+    if (res)
+      ++constraints_eliminated_null_checks;
+  }
+  return !res;
+}
+
+static bool need_bounds_check_vcgen(env_t nv, exp_t a) {
+  let ec   = Vcgen::exp2ctxt_checks(nv.assn_info, a);
+  bool res = AssnDef::simple_prove(ec->ctxt.assn, ec->bounds_check);
+
+  if (res)
+    ++simple_eliminated_bounds_checks;
+  else {
+    res = PrattProver::constraint_prove(ec->ctxt.assn, ec->bounds_check);
+    if (res)
+      ++constraints_eliminated_bounds_checks;
+  }
+  return !res;
+}
+
+static void do_exp(env_t nv, exp_t e) {
+  switch (e->r) {
+    case &Asm_e(...):  // can do better -- check input expressions initialized
+    case &Const_e(...):
+    case &Var_e(...):
+    case &Pragma_e(...):
+      e->annot = &NoCheck_val;
+      break;
+
+    case &Datatype_e(es, ...):
+      fallthru(es);
+    case &Primop_e(_, es):  // even Numelts and pointer-arith have nothing here
+      e->annot = &NoCheck_val;
+      for (; es != NULL; es = es->tl)
+        do_exp(nv, es->hd);
+      break;
+
+    // actually nothing to do here, though Toc::zeroterm_assign_to_c must
+    // add the right annotation for the (different) assignment it generates
+    case &AssignOp_e(e1, _, e2):
+      fallthru(e1, e2);
+    case &SeqExp_e(e1, e2):
+      fallthru(e1, e2);
+    case &And_e(e1, e2):
+      fallthru(e1, e2);
+    case &Or_e(e1, e2):
+      e->annot = &NoCheck_val;
+      do_exp(nv, e1);
+      do_exp(nv, e2);
+      break;
+    case &Conditional_e(e1, e2, e3):
+      e->annot = &NoCheck_val;
+      do_exp(nv, e1);
+      do_exp(nv, e2);
+      do_exp(nv, e3);
+      break;
+
+    case &Increment_e(e2, incr):
+      // do we need a null check?
+      // * thin non-zt pointer: no, this never would have type-checked
+      // * fat-pointer: no, out-of-bounds is okay (affects curr, not base)
+      // * thin zt pointer: yes! (and toc.cyc also always checks for *e2 != 0)
+      if (e->annot != &NoCheck_val && Tcutil::get_type_bound((type_t)e2->topt) != NULL &&
+          Tcutil::is_zeroterm_pointer_type((type_t)e2->topt) && need_null_check(nv, e2, e) &&
+          need_null_check_vcgen(nv, e2)) {
+        if (Flags::warn_all_null_deref)
+          warn(e->loc, "inserted null check");
+        e->annot = &NullOnly_val;
+      } else
+        e->annot = &NoCheck_val;
+      do_exp(nv, e2);
+      break;
+
+    case &FnCall_e(e1, es, _, _):  // e1 must not be NULL
+      // DJG: I think e1 is always a pointer type
+      if (need_null_check(nv, e1, e) && need_null_check_vcgen(nv, e1))
+        e->annot = &NullOnly_val;
+      else
+        e->annot = &NoCheck_val;
+      do_exp(nv, e1);
+      for (; es != NULL; es = es->tl)
+        do_exp(nv, es->hd);
+      break;
+
+    case &Cast_e(t, e1, user_inserted,
+                 coercion):  // FIX? move zerterm nonsense here?
+      // casts to integral types never need checks;
+      // casts from non-pointers to pointers are rejected by type-checker
+      switch ($(compress((type_t)e1->topt), compress(t))) {
+        case $(&PointerType(p1), &PointerType(p2)):
+          let n1 = Tcutil::force_type2bool(false, p1.ptr_atts.nullable);
+          let n2 = Tcutil::force_type2bool(false, p2.ptr_atts.nullable);
+          let b1 = Tcutil::get_bounds_exp_constrain(bounds_one(), p1.ptr_atts.bounds, true);
+          let b2 = Tcutil::get_bounds_exp_constrain(bounds_one(), p2.ptr_atts.bounds, true);
+          // if both pointers have dynamic bounds then its ok to ignore the
+          // coercion annotation
+          if (n1 && !n2 && coercion != Null_to_NonNull && (b1 || b2))
+            impos_loc(e->loc, "null-check conversion mis-classified");
+          else if (b1 && !b2 && coercion == Null_to_NonNull)
+            impos_loc(e->loc, "conversion mis-classified as null-check");
+          switch ($(b1, b2)) {
+            case $(&_,
+                   &_):  // neither fat -- bound check is static (in type-checker)
+              if (!Evexp::lte_const_exp((exp_t)b2, (exp_t)b1))
+                impos_loc(e->loc, "InsertChecks: cast to maybe-shorter pointer type");
+              // FIX: accounting for null-checks
+              if (n1 && !n2 && need_null_check(nv, e1, e) && need_null_check_vcgen(nv, e1)) {
+                if (!user_inserted)
+                  warn(e->loc,
+                       "inserted null check due to implicit "
+                       "cast from * to @ type");
+                e->annot = &NullOnly_val;
+              } else
+                e->annot = &NoCheck_val;
+              break;
+            case $(&_, NULL):  // cast to fat -- must know size; null is fine
+              // FIX: shouldn't the type-checker catch this? Does it?
+              if (!Evexp::c_can_eval((exp_t)b1))
+                err(e->loc, "cannot perform coercion: numelts is statically unknown");
+              e->annot = &NoCheck_val;
+              break;
+            case $(NULL, &_):  // cast to thin -- may need checks
+              if (nv.at_toplevel)
+                err(e->loc, "cannot coerce fat-pointer to thin-pointer at toplevel");
+              // FIX: shouldn't the type-checker catch this? Does it?
+
+              // check if we have eliminated the bound check in earlier pass
+              let $(bds_ck, null_ck) = need_bound_null_check_annot(e);
+              if (bds_ck)
+                bds_ck = need_bounds_check_vcgen(nv, e1);
+              // only if we do need bounds check we will ensure the
+              // bound is statically known
+              if (bds_ck)
+                if (!Evexp::c_can_eval((exp_t)b2))
+                  err(e->loc, "cannot perform coercion: numelts is statically unknown");
+              // otherwise we can get away with statically unknown numelts
+              if (null_ck && !n2 && need_null_check(nv, e1, e) && need_null_check_vcgen(nv, e)) {
+                if (!user_inserted)
+                  warn(e->loc,
+                       "inserted null check due to implicit "
+                       "cast from *@fat (?) to @ type");
+                e->annot = bds_ck ? (annot_t)&NullAndFatBound_val : &NullOnly_val;
+              } else
+                e->annot = bds_ck ? (annot_t)&FatBound_val : &NoCheck_val;
+              break;
+            case $(NULL, NULL):
+              e->annot = &NoCheck_val;
+              break;
+          }
+          break;
+        default:
+          e->annot = &NoCheck_val;
+          break;
+      }
+      do_exp(nv, e1);
+      break;
+
+    case &AggrArrow_e(e1, ...):
+      fallthru(e1);  // later do tagged-union stuff?
+    case &Deref_e(e1):
+      fallthru(e1, shared_zero_exp());
+    case &Subscript_e(e1, e2):
+      switch (compress((type_t)e1->topt)) {
+        case &PointerType(PtrInfo(ta, tq, PtrAtts(rgn, n, b, zt, _, _, _))):
+          let $(bds_ck, null_ck) = need_bound_null_check_annot(e);
+          // bds_ck  = need_bounds_check(nv,get_relns(e1),e1,e2);
+          // try to eliminate the bounds check by just looking for constants.
+          if (bds_ck)
+            bds_ck = simple_need_bounds_check(nv, e1, e2);
+          if (bds_ck && nv.vcgen_r)
+            // try to eliminate the check using the vcgen.
+            bds_ck = need_bounds_check_vcgen(nv, e1);
+          if (bds_ck && Flags::warn_bounds_checks)
+            warn(e1->loc, "inserted bounds check at %s", Absynpp::exp2string(e));
+          exp_opt_t bd = Tcutil::get_bounds_exp_constrain(bounds_one(), b, true);
+          bool fat_ptr = (bd == NULL);
+          // FIX:  I'm not sure this is right anymore!
+          // we do not need to do a null check if e1 is a fat pointer
+          // and we were able to prove that e2 is in bounds.
+          if (null_ck) {
+#if 0
+              if (fat_ptr && !bds_ck)
+                null_ck = false;
+              else
+                {
+#endif
+            null_ck = need_null_check(nv, e1, e) && need_null_check_vcgen(nv, e1);
+            if (null_ck && Flags::warn_all_null_deref)
+              warn(e->loc, "inserted null check");
+#if 0
+                }
+#endif
+          }
+          if (bds_ck) {
+            if (bd)  // thin pointer
+            {
+              if (!Evexp::c_can_eval(bd)) {
+#if BCE_DEBUG
+                fprintf(stderr, "bd is %s\n", Absynpp::exp2string(bd));
+#endif
+                let ec = Vcgen::exp2ctxt_checks(nv.assn_info, e1);
+                err(e->loc, aprintf("cannot determine subscript is in bounds (%s)",
+                                    AssnDef::assn2string(ec->bounds_check)));
+                fprintf(stderr, "[all that I can prove is %s", AssnDef::assnmap2string(ec->ctxt));
+                fprintf(stderr, "]\n");
+              }
+              e->annot = null_ck ? (annot_t)(new NullAndThinBound(bd)) : new ThinBound(bd);
+            } else  // fat pointer
+              e->annot = null_ck ? (annot_t)&NullAndFatBound_val : &FatBound_val;
+          } else if (null_ck)
+            e->annot = &NullOnly_val;
+          else
+            e->annot = &NoCheck_val;
+          break;
+        default:
+          impos_loc(e->loc, "InsertChecks: non-pointer-type on dereference");
+      }
+      do_exp(nv, e1);
+      do_exp(nv, e2);
+      break;
+
+    case &Sizeofexp_e(e1):  // no checks -- e1 is not evaluated
+      e->annot = &NoCheck_val;
+      do_exp(enter_sizeof(nv), e1);
+      break;
+
+    case &New_e(rgnopt, e1, qualopt):
+      e->annot = &NoCheck_val;
+      do_exp_opt(nv, rgnopt);
+      do_exp_opt(nv, qualopt);
+      do_exp(nv, e1);
+      break;
+    case &Malloc_e(MallocInfo(_, rgnopt, aqopt, _, sizeexp, _, _)):
+      // FIX: we shouldn't be able to calloc a zero-terminated array of size
+      // < 1.
+      e->annot = &NoCheck_val;
+      do_exp_opt(nv, rgnopt);
+      do_exp_opt(nv, aqopt);
+      do_exp(nv, sizeexp);
+      break;
+
+    case &Assert_e(e1, ...):
+      fallthru(e1);
+    case &Extension_e(e1):
+      fallthru(e1);
+    case &Throw_e(e1, _):
+      fallthru(e1);
+    case &NoInstantiate_e(e1):
+      fallthru(e1);
+    case &Instantiate_e(e1, _):
+      fallthru(e1);
+    case &Address_e(e1):
+      fallthru(e1);
+    case &Assert_false_e(e1):
+      e->annot = &NoCheck_val;
+      do_exp(nv, e1);
+      break;
+    case &Enum_e(...):
+    case &AnonEnum_e(...):
+    case &Sizeoftype_e(_):
+    case &Offsetof_e(...):
+      e->annot = &NoCheck_val;
+      break;
+    case &AggrMember_e(e1, ...):
+      fallthru(e1);  // later do tagged-union stuff?
+    case &Tagcheck_e(e1, ...):
+      fallthru(e1);  // later do tagged-union stuff?
+    case &ComprehensionNoinit_e(e1, ...):
+      e->annot = &NoCheck_val;
+      do_exp(nv, e1);
+      break;
+    case &Comprehension_e(_, e1, e2, _):
+      fallthru(e1, e2);
+    case &Swap_e(e1, e2):  // both lvalues (no dereference)
+      e->annot = &NoCheck_val;
+      do_exp(nv, e1);
+      do_exp(nv, e2);
+      break;
+    case &Array_e(dles):
+      fallthru(dles);
+    case &Aggregate_e(_, _, dles, _):
+      fallthru(dles);
+    case &AnonStruct_e(_, _, dles):
+      e->annot = &NoCheck_val;
+      for (; dles != NULL; dles = dles->tl)
+        do_exp(nv, (*dles->hd)[1]);
+      break;
+    case &StmtExp_e(s):
+      e->annot = &NoCheck_val;
+      do_stmt(nv, s);
+      break;
+    case &Valueof_e(_):
+      e->annot = &NoCheck_val;
+      break;
+    case &UnresolvedMem_e(_, _):
+    case &CompoundLit_e(_, _):
+      impos_loc(e->loc, "InsertChecks, unexpected exp form");
+  }
+}
+
+static void do_fndecl(env_t env, fndecl_t fd) {
+  // if we are doing a round that uses preconditions
+  // we don't do anything if the function escapes
+  if (fd->escapes && env.use_precond)
+    return;
+  else {
+    let nv       = fn_body_env(env);
+    nv.assn_info = new Hashtable::create(57, Core::ptrcmp, hash_ptr);
+    if (nv.vcgen_r) {
+#if TIMING_DEBUG
+#if 0
+          relations_eliminated_check = 0;
+          vcgen_eliminated_check = 0;
+#endif
+      struct timeval start, end;
+      gettimeofday(&start, NULL);
+#endif
+      if (env.use_precond && env.pass_counter <= 1)
+        impos("Trying to use preconditions in vcgen at the first pass\n");
+      Vcgen::vcgen_fundecl(0, nv.tables, fd, nv.assn_info, nv.fn_precond_info, nv.use_precond);
+#if TIMING_DEBUG
+      gettimeofday(&end, NULL);
+      end.tv_sec -= start.tv_sec;
+      end.tv_usec -= start.tv_usec;
+      if (end.tv_usec < 0) {
+        end.tv_usec += 1000000;
+        --end.tv_sec;
+      }
+      fprintf(stderr, "vcgen for %s:  %d.%06d secs\n", Absynpp::qvar2string(fd->name), end.tv_sec,
+              end.tv_usec);
+#endif
+    }
+#if TIMING_DEBUG
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
+#endif
+    do_stmt(nv, fd->body);
+    AssnDef::reset_hash_cons_table();
+#if TIMING_DEBUG
+    gettimeofday(&end, NULL);
+    end.tv_sec -= start.tv_sec;
+    end.tv_usec -= start.tv_usec;
+    if (end.tv_usec < 0) {
+      end.tv_usec += 1000000;
+      --end.tv_sec;
+    }
+#if 0
+      fprintf (stderr, "insert checks for %s:  %d.%06d secs\n",
+               Absynpp::qvar2string (fd->name), end.tv_sec, end.tv_usec);
+#endif
+#endif
+  }
+}
+
+static void do_decl(env_t nv, decl_t d) {
+  switch (d->r) {
+    case &Var_d(vd):
+      do_exp_opt(nv, vd->initializer);
+      break;
+    case &Fn_d(fd):
+      break;  // forgets if in sizeof
+    case &Let_d(_, _, e, _):
+      do_exp(nv, e);
+      break;
+    case &Letv_d(_):
+      break;
+    case &Region_d(_, _, eo):
+      do_exp_opt(nv, eo);
+      break;  // key for open can't be NULL
+    case &Aggr_d(...):
+    case &Datatype_d(...):
+    case &Enum_d(...):
+    case &Typedef_d(...):
+    case &Porton_d:
+    case &Portoff_d:
+    case &Tempeston_d:
+    case &Tempestoff_d:
+    case &ExternCinclude_d(...):
+      break;
+    case &ExternC_d(ds):
+      fallthru(ds);
+    case &Using_d(_, ds):
+      fallthru(ds);
+    case &Namespace_d(_, ds):
+      for (; ds != NULL; ds = ds->tl)
+        do_decl(nv, ds->hd);
+  }
+}
+
+static void do_scs(env_t nv, List::list_t<switch_clause_t> scs) {
+  // FIX? This is so simple because pattern-compilation uses separate machinery
+  //      for inserting checks; it does not use the flow analysis
+  for (; scs != NULL; scs = scs->tl) {
+    if (scs->hd->where_clause != NULL)
+      do_exp(nv, (exp_t)scs->hd->where_clause);
+    do_stmt(nv, scs->hd->body);
+  }
+}
+
+static void do_stmt(env_t nv, stmt_t s) {
+  switch (s->r) {
+    case &Skip_s:
+      break;
+    case &Exp_s(e):
+      do_exp(nv, e);
+      break;
+    case &Seq_s(s1, s2):
+      do_stmt(nv, s1);
+      do_stmt(nv, s2);
+      break;
+    case &Return_s(eopt):
+      if (eopt)
+        do_exp(nv, eopt);
+      break;
+    case &IfThenElse_s(e, s1, s2):
+      do_exp(nv, e);
+      do_stmt(nv, s1);
+      do_stmt(nv, s2);
+      break;
+    case &Do_s(s1, $(e, _)):
+      fallthru(e, s1);
+    case &While_s($(e, _), s1):
+      do_exp(nv, e);
+      do_stmt(nv, s1);
+      break;
+    case &For_s(e1, $(e2, _), $(e3, _), s1):
+      do_exp(nv, e1);
+      do_exp(nv, e2);
+      do_exp(nv, e3);
+      do_stmt(nv, s1);
+      break;
+    case &Break_s:
+    case &Continue_s:
+    case &Goto_s(_):
+      return;
+    case &Fallthru_s(es, _):
+      for (; es != NULL; es = es->tl)
+        do_exp(nv, es->hd);
+      break;
+    case &Label_s(_, s1):
+      do_stmt(nv, s1);
+      break;
+    case &Decl_s(d, s1):
+      do_decl(nv, d);
+      do_stmt(nv, s1);
+      break;
+    case &Switch_s(e, scs, _):
+      do_exp(nv, e);
+      do_scs(nv, scs);
+      break;
+    case &TryCatch_s(s1, scs, _):
+      do_stmt(nv, s1);
+      do_scs(nv, scs);
+      break;
+  }
+}
+
+float percent(int i, int total) {
+  float ans = (float)1;
+
+  if (total != 0)
+    ans = (float)i / (float)total;
+  return ans * 100;
+}
+
+static bool visit_esc_fn_exp(Hashtable::table_t<exp_t, exp_t> env, exp_t e) {
+  switch (e->r) {
+    case &Var_e(&Funname_b(fd)):
+      // not a function call position expression
+      // fn escapes
+      if (!Hashtable::lookup_opt(env, e))
+        fd->escapes = true;
+      break;
+    case &FnCall_e(e1, ...):
+      switch (e1->r) {
+        case &NoInstantiate_e(f):
+          fallthru(f);
+        case &Instantiate_e(f, _):
+          Hashtable::insert(env, f, f);
+          break;
+        default:
+          Hashtable::insert(env, e1, e1);
+          break;
+      }
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
+static bool visit_esc_fn_stmt(Hashtable::table_t<exp_t, exp_t> env, stmt_t s) { return true; }
+
+static void mark_escaped_fns(List::list_t<decl_t> ds) {
+  for (; ds != NULL; ds = ds->tl) {
+    let table = Hashtable::create(313, Core::ptrcmp, hash_ptr);
+    switch (ds->hd->r) {
+      case &Var_d(vd):
+        if (vd->initializer != NULL)
+          Absyn::visit_exp(visit_esc_fn_exp, visit_esc_fn_stmt, table, vd->initializer);
+        break;
+      case &Fn_d(fd):
+        // if function is not static, it could be called from other files
+        if (fd->sc != Static)
+          fd->escapes = true;
+        Absyn::visit_stmt(visit_esc_fn_exp, visit_esc_fn_stmt, table, fd->body);
+        break;
+      case &Let_d(_, _, e, _):
+        Absyn::visit_exp(visit_esc_fn_exp, visit_esc_fn_stmt, table, e);
+        break;
+      case &Letv_d(_):
+        break;
+      case &Region_d(_, _, eo):
+        if (eo != NULL)
+          Absyn::visit_exp(visit_esc_fn_exp, visit_esc_fn_stmt, table, eo);
+        break;
+      case &Aggr_d(...):
+      case &Datatype_d(...):
+      case &Enum_d(...):
+      case &Typedef_d(...):
+      case &Porton_d:
+      case &Portoff_d:
+      case &Tempeston_d:
+      case &Tempestoff_d:
+      case &ExternCinclude_d(...):
+        break;
+      case &ExternC_d(ds):
+        fallthru(ds);
+      case &Using_d(_, ds):
+        fallthru(ds);
+      case &Namespace_d(_, ds):
+        mark_escaped_fns(ds);
+    }
+  }
+}
+
+void insert_checks(List::list_t<decl_t, `H> tds, JumpAnalysis::jump_anal_res_t tables,
+                   bool do_vcgen) {
+  reset_counters();
+
+  let nv = toplevel_env(tables, do_vcgen);
+  // start processing toplevel declarations in insert_checks
+  // we would like to reorder the declarations so that
+  // we process function callees first and the callers
+  // so that we can use summary from functions
+  let cg = Callgraph::compute_callgraph(tds);
+#if 0
+  Callgraph::print_callgraph (stderr, cg);
+#endif
+
+  // go through every decls in the file
+  // and find out if a function escapes
+  mark_escaped_fns(tds);
+
+  // this round we do not do any analysis with functions
+  for (; tds != NULL; tds = tds->tl)
+    do_decl(nv, tds->hd);
+
+  // sort the functions
+  let cg_fds = Graph::tsort(cg);
+
+  // analyze the functions (use summaries)
+  // also collecting all caller's information for
+  // a non-escaping function
+  for (let fds = List::rev(cg_fds); fds != NULL; fds = fds->tl)
+    do_fndecl(nv, fds->hd);
+
+    // this time only analyze functions that
+    // do not escape, use collected caller info
+    // in previous round
+#if !NO_FUN_PRECOND
+  nv.use_precond = true;
+  nv.pass_counter++;
+  for (let fds = cg_fds; fds != NULL; fds = fds->tl)
+    do_fndecl(nv, fds->hd);
+#endif
+
+  if (Flags::verbose) {
+    let eliminated_bounds_checks = types_eliminated_bounds_checks +
+                                   simple_eliminated_bounds_checks +
+                                   constraints_eliminated_bounds_checks;
+    let eliminated_null_checks = types_eliminated_null_checks + flow_eliminated_null_checks +
+                                 simple_eliminated_null_checks + constraints_eliminated_null_checks;
+    fprintf(stderr, "****INSERT CHECKS***********************************\n");
+    fprintf(stderr, "eliminated %d out of a total of %d checks (%g%%).\n",
+            eliminated_bounds_checks + eliminated_null_checks,
+            total_bounds_checks + total_null_checks,
+            percent(eliminated_bounds_checks + eliminated_null_checks,
+                    total_bounds_checks + total_null_checks));
+    fprintf(stderr, "eliminated %d out of a total of %d bounds checks (%g%%).\n",
+            eliminated_bounds_checks, total_bounds_checks,
+            percent(eliminated_bounds_checks, total_bounds_checks));
+    fprintf(stderr, "\tbounds checks eliminated by types            : %d (%g%%)\n",
+            types_eliminated_bounds_checks,
+            percent(types_eliminated_bounds_checks, total_bounds_checks));
+    fprintf(stderr, "\tbounds checks eliminated by simple prover    : %d (%g%%)\n",
+            simple_eliminated_bounds_checks,
+            percent(simple_eliminated_bounds_checks, total_bounds_checks));
+    fprintf(stderr, "\tbounds checks eliminated by constraint solver: %d (%g%%)\n",
+            constraints_eliminated_bounds_checks,
+            percent(constraints_eliminated_bounds_checks, total_bounds_checks));
+    fprintf(stderr, "eliminated %d out of a total of %d null checks (%g%%).\n",
+            eliminated_null_checks, total_null_checks,
+            percent(eliminated_null_checks, total_null_checks));
+    fprintf(stderr, "\tnull checks eliminated by types              : %d (%g%%)\n",
+            types_eliminated_null_checks, percent(types_eliminated_null_checks, total_null_checks));
+    fprintf(stderr, "\tnull checks eliminated by flow analysis      : %d (%g%%)\n",
+            flow_eliminated_null_checks, percent(flow_eliminated_null_checks, total_null_checks));
+    fprintf(stderr, "\tnull checks eliminated by simple prover      : %d (%g%%)\n",
+            simple_eliminated_null_checks,
+            percent(simple_eliminated_null_checks, total_null_checks));
+    fprintf(stderr, "\tnull checks eliminated by constraint solver  : %d (%g%%)\n",
+            constraints_eliminated_null_checks,
+            percent(constraints_eliminated_null_checks, total_null_checks));
+    fprintf(stderr, "****************************************************\n");
+  }
+}

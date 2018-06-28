@@ -1,0 +1,3 @@
+typedef int *intptr;
+
+intptr null3 () { return (int)0; }

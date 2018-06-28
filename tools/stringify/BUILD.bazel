@@ -1,0 +1,8 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "stringify",
+    srcs = ["stringify.cyc"],
+    visibility = ["//visibility:public"],
+    deps = ["//cyclone/library/std"],
+)

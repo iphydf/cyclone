@@ -1,0 +1,246 @@
+#include <stdio.h>
+#include "cyclone/library/std/list.h"
+
+//  extern int rand();
+//  extern void g(int,int);
+int rand() { return 7; }
+void g(int x, int y) {}
+
+// make sure we don't needlessly consume things
+void f() {
+  int *`U x = malloc(sizeof(int));
+  if (!x) fprintf(stderr,"malloc failed!\n");
+  else *x = 3;
+}
+
+#ifdef ONE
+int outoforder() {
+  int d = 0;
+  int *`U x = new 3;
+  int *`U y;
+  while (!d || (y = x)) {
+    if (rand())
+      d = 1;
+  }
+  return x;
+}
+#endif
+
+struct s1 {
+  int x; int y;
+};
+
+// just checks basic variable stuff
+
+int *`U h(int b) {
+  int *`U x = new 3;
+  int *`U y = new 4;
+  int *`U z = new 5;
+
+  let a1 = new { x, y };  // consumed = { x, y }
+
+  x = new 3; // consumed = { y }
+  y = new 3; // consumed = { }
+  int ok = 1;
+  int ?`U a2 = new { (ok = rand(), (int)z), (ok ? (int)x : (int)y) }; // consumed = { x, y, z }
+
+//    a2++; // consumed = { x, y, z }
+  int yy = ((int)(int *`H)a2) * 1; // consumed = { x, y, z }
+//    a2 = a2 + 1; // consumed = { x, y, z }
+
+  y = new 4; // consumed = { x, z }
+  try {
+    z = new 5; // consumed = { x }
+  } catch {
+  case &Core::Not_found:
+    x = y; // consumed = { y, z }
+    break;
+  }
+  // @join: consumed = { x, y, z }
+  x = new 3; // consumed = { y, z }
+  int *`H h = (int *`H)x; // consumed = { x, y, z }
+
+  struct s1 *`U ps1 = new s1(1,2);
+  int i;
+  i = (*ps1).x;
+  i = (*ps1).y;
+
+  x = new 5; // consumed = { y, z }
+  y = new 4; // consumed = { z }
+  struct s1 ls1 = { (int)x, (int)y }; // consumed = { x, y, z }
+
+  x = new 3; // consumed = { y, z }
+
+  g(*x,*x);
+  i = *x;
+  i = x[0];
+  i = x[(x[0],0)];
+
+  y = new 3; // consumed = { z }
+
+  switch (b) {
+  case 1:
+    z = x; // consumed = { x }
+    fallthru;
+  case 2:
+    z = y; // consumed = { x, y }
+    break;
+  default:
+    z = new 7; // consumed = { }
+    break;
+  }
+  // @join: consumed = { x, y }
+
+ retry:
+  x = z; // consumed = { y, z }
+  if (b) {
+    z = new 7; // consumed = { y }
+    b = rand();
+    b = 0;
+    goto retry;
+  }
+  // @join: consumed = { y, z }
+
+  y = new 1; // consumed = { z }
+
+  int zz;
+  // zz = ({ z; *y; y; }); // consumed = { y, z }
+
+  y = (z = new 4, new 1); // consumed = { }
+
+  while (i < 5) {
+    x = y; // consumed = { y }
+    y = x; // consumed = { x }
+    i++;
+  }
+  // @join: consumed = { x }
+
+  do { // consumed = { x, z }
+    z = y; // consumed = { x, y }
+    y = z; // consumed = { x, z }
+    i--;
+  } while ((x = new 4) && (i > 0));
+  // @join: consumed = { z }
+
+  for (i=0, y = x /* consumed = { z, x } */; i<5; i++) {
+    z = y; // consumed = { x, y }
+    break;
+  }
+  // @join: consumed = { x, y, z }
+
+  if (b) // b is 0 due to above test, so first clause not invoked
+    y = z;
+  else
+    y = new 5; // consumed = { x, z }
+  // @join: consumed = { x, z }
+
+  Core::ufree(y);
+
+  y = new 7;
+  return y;
+}
+
+// for testing unique dynamic-sized pointers
+struct another {
+  int *`U x;
+  int *y;
+};
+void arr() {
+  struct another *`U?`U arr = new { for i < 5 : new another(new i, new (i+1)) };  int *`U x = NULL;
+  arr[0] :=: arr[1];
+  struct another *`U x = NULL;
+  struct another *`U y = new another(new 1, new 2);
+  arr[1] :=: x;
+  Core::ufree(x);
+  arr[1] = y;
+}
+
+// can be parameterized by either kind of region
+struct Mylist<`a,`r::TR> {
+  `a hd;
+  struct Mylist<`a,`r> *`r tl;
+};
+typedef struct Mylist<`a,`r> *`r mylist_u_t<`a,`r>;
+
+#if 0
+// this checks paths, etc.
+void p(int b) {
+  struct Mylist<int,`U> e = Mylist(1,NULL);
+  e.tl = new Mylist(3,NULL);
+//    mylist_u_t l = e.tl;
+}
+#endif
+
+// for testing aggregates
+
+struct foo {
+  int *`U x;
+  int *`U y;
+};
+
+void f2(int b) {
+  struct foo f = { new 1, new 2 };
+  struct foo g;
+  g = f; // this should consume f.0 and f.1
+//   Core::ufree(f.x); // not allowed
+  Core::ufree(g.x);
+  g.x = NULL;
+  struct foo @ h = new foo(new 1, new 2);
+  g.x :=: h->x;
+  $(int *`U, int *`U) tup = $(g.x, g.y);
+  g.x = tup[0];
+  g.y = tup[1];
+}
+
+struct g { int *`U x; int *`U y; };
+struct f { int *`U x; struct g y; };
+
+void f3(int b) {
+  struct f z;
+  z.y.x = new 1;
+  z.y.y = new 2;
+  struct g zg = z.y;
+  Core::ufree(zg.x);
+  zg.x = NULL;
+  struct f @pf = new f(new 1, g(NULL,new 2));
+  zg.x :=: (pf->y).x;
+  (pf->y).x = NULL;
+}
+
+int *`U vary = NULL;
+int *`H varh = NULL;
+
+// for testing polymorphism
+
+// Return the length of a list.
+int poly_length(List::list_t<`a::TB> x) {
+  int i = 0;
+
+  while (x != NULL) {
+    ++i;
+    x = x->tl;
+  }
+  return i;
+}
+
+void poly() {
+  List::list_t<int *`U> l = new List::List(unew 1,NULL);
+//   let l1 = List::length(l); // fails
+  let l2 = poly_length(l);
+}
+
+typedef struct List::List<`a,`U> *`U llist_t<`a>;
+
+#if 0
+llist_t<`a> append(llist_t<`a> x, llist_t<`a> y) {
+  if (x == NULL) return y;
+  x->tl = append(x->tl,y);
+  return x;
+}
+#endif
+
+int main() {
+  int *`U v = h(1);
+  Core::ufree(v);
+  return 0;
+}

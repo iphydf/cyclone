@@ -1,0 +1,171 @@
+
+#include "cyclone/library/std/core.h"
+#include "output.h"
+#include <stdio.h>
+
+namespace Output;
+
+static mstring_t copy_buffer = NULL; // initialized in output_lexdef
+
+/*void copy_chars(FILE @ ic, FILE @ oc, int start, int stop) {
+  int n = stop - start;
+  while(n > 0) {
+    int m = f_string_read(ic, copy_buffer, 0, (n < 1024 ? n : 1024));
+    f_string_write(oc, copy_buffer, 0, m);
+    n -= m;
+  }
+  }*/
+void copy_chars(FILE @ ic, FILE @oc, int start, int stop) {
+  for(int i = start; i < stop; ++i) {
+    char c = (char)fgetc(ic);
+    if(c != '\r')
+      fprintf(oc, "%c", c);
+  }
+}
+
+void copy_chunk(string_t sourcename, FILE @ ic, FILE @ oc, Syntax::location_t loc){
+  if(loc->start_pos < loc->end_pos) {
+    fprintf(oc, "#line %d \"%s\"\n", loc->start_line, sourcename);
+    for(int i=1; i <= loc->start_col; ++i)
+      fprintf(oc, "%c", ' ');
+    fseek(ic, loc->start_pos, SEEK_SET);
+    copy_chars(ic, oc, loc->start_pos, loc->end_pos);
+  }
+}
+
+void output_array(FILE @ oc, int ?v) { // Doesn't work for really short arrays?
+  fprintf(oc, "{");
+  for(int i=0; i < numelts(v)-1; ++i)
+    fprintf(oc, "%d,", v[i]);
+  fprintf(oc, "%d}", v[numelts(v)-1]);
+}
+
+void output_tables(FILE @oc, Compact::lex_tables_t tbl) {
+  fprintf(oc, "const int lex_base[] = ");       output_array(oc, tbl->base);
+  fprintf(oc, ";\nconst int lex_backtrk[] = "); output_array(oc, tbl->backtrk);
+  fprintf(oc, ";\nconst int lex_default[] = "); output_array(oc, tbl->defaultX);
+  fprintf(oc, ";\nconst int lex_trans[] = ");   output_array(oc, tbl->trans);
+  fprintf(oc, ";\nconst int lex_check[] = ");   output_array(oc, tbl->check);
+  fprintf(oc, ";\n");
+  // we make a new engine every time for cheaper array-bounds checks:
+  fprintf(oc,
+"     int lex_engine(int start_state, Lexbuf<`a> lbuf) {\n"
+"\n"
+"       int state, base, backtrk;\n"
+"       int c;\n"
+"       state = start_state;\n"
+"\n"
+"       if (state >= 0) {\n"
+"	 // First entry\n"
+"	 lbuf->lex_last_pos = lbuf->lex_start_pos = lbuf->lex_curr_pos;\n"
+"	 lbuf->lex_last_action = -1;\n"
+"       } else {\n"
+"	 // Reentry after refill\n"
+"	 state = -state-1;\n"
+"       }\n"
+"       while (true) {\n"
+"	 base = lex_base[state];\n"
+"	 if (base < 0) return -base-1;\n"
+"	 // See if it's a backtrack point\n"
+"	 backtrk = lex_backtrk[state];\n"
+"	 if (backtrk >= 0) {\n"
+"	   lbuf->lex_last_pos    = lbuf->lex_curr_pos;\n"
+"	   lbuf->lex_last_action = backtrk;\n"
+"	 }\n"
+"	 // See if we need a refill\n"
+"	 if (lbuf->lex_curr_pos >= lbuf->lex_buffer_len) {\n"
+"	   if (!lbuf->lex_eof_reached)\n"
+"	     return -state-1;\n"
+"	   else\n"
+"	     c = 256;\n"
+"	 } else {\n"
+"	   // Read next input char\n"
+"	   c = (int) (lbuf->lex_buffer[lbuf->lex_curr_pos++]);\n"
+"	   if (c==EOF) c=256;\n"
+"           // Deal with non-ascii characters\n"
+"          else if (c < 0) c = 256 + c;\n"
+"	 }\n"
+"	 // Determine next state\n"
+"	 if (lex_check[base+c]==state)\n"
+"	   state = lex_trans[base+c];\n"
+"	 else\n"
+"	   state = lex_default[state];\n"
+"	 // If no transition on this char, return to last backtrack point\n"
+"	 if (state < 0) {\n"
+"	   lbuf->lex_curr_pos = lbuf->lex_last_pos;\n"
+"	   if (lbuf->lex_last_action == -1)\n"
+"	     throw new Error(\"empty token\");\n"
+"	   else {\n"
+"	     return lbuf->lex_last_action;\n"
+"	   }\n"
+"	 } else {\n"
+"	   // Erase the EOF condition only if the EOF pseudo-character was\n"
+"	   // consumed by the automaton (i.e., there was no backtrack above)\n"
+"	   if (c == 256) lbuf->lex_eof_reached = false;\n"
+"	 }\n"
+"       }\n"
+"  }\n"
+	  );
+}
+
+void output_entry(string_t sourcename, FILE @ ic, FILE @ oc,
+		  Lexgen::automata_entry_t e) {
+  string_t extra_formal = "";
+  string_t extra_actual = "";
+  if (e->extra_arg != NULL) {
+    extra_actual = aprintf(", %s", (*e->extra_arg)[1]);
+    extra_formal = aprintf(", %s %s", (*e->extra_arg)[0], (*e->extra_arg)[1]);
+  }
+  fprintf(oc, "%s %s_rec(Lexbuf<`a> lexbuf, int lexstate%s) {\n",
+	  (e->type != NULL)?(buffer_t)e->type:(buffer_t)"int",
+ 	   e->name,
+           extra_formal);
+  // save new state, then switch on it, so default case can use it.
+  // (int switch can't get the value being switched on??)
+  fprintf(oc, "  lexstate = lex_engine(lexstate,lexbuf);\n");
+  fprintf(oc, "  switch (lexstate) {\n");
+  for(let actions=e->actions; actions!=NULL; actions=actions->tl) {
+    let &$(num,loc) = actions->hd;
+    fprintf(oc, "\ncase %d: \n", num);
+    copy_chunk(sourcename, ic, oc, loc);
+  }
+  fprintf(oc,
+          " default:\n"
+          "   lexbuf->refill_buff(lexbuf);\n"
+          "   return %s_rec(lexbuf, lexstate%s);\n",
+	  e->name,
+          extra_actual);
+  fprintf(oc, "  }\n throw new Error(\"some action didn't return!\");\n}\n");
+  fprintf(oc, "%s %s(Lexbuf<`a> lexbuf%s) { return %s_rec(lexbuf,%d%s); }\n",
+	  (e->type != NULL)?(buffer_t)e->type:(buffer_t)"int",
+          e->name, extra_formal,
+          e->name, e->initial_state, extra_actual);
+}
+
+datatype exn { Table_overflow(int) };
+
+void output_lexdef(string_t sourcename,
+		   FILE @ ic,
+		   FILE @ oc,
+		   Syntax::location_t    header,
+		   Compact::lex_tables_t tables,
+		   List::list_t<Lexgen::automata_entry_t> entry_points,
+		   Syntax::location_t    trailer) {
+  copy_buffer = Core::new_string(1024);
+  fprintf(stderr, "%d states, %d transitions, table size %d bytes\n",
+	  numelts(tables->base),
+	  numelts(tables->trans),
+	  2 * (numelts(tables->base) + numelts(tables->backtrk)
+	       + numelts(tables->defaultX) + numelts(tables->trans)
+	       + numelts(tables->check)));
+  if(numelts(tables->trans) > 0x8000)
+    throw new Table_overflow(0);
+  copy_chunk(sourcename, ic, oc, header);
+  fprintf(oc, "using Lexing {\n\n");
+  output_tables(oc, tables);
+  for(; entry_points != NULL; entry_points = entry_points->tl)
+    output_entry(sourcename, ic, oc, entry_points->hd);
+  fprintf(oc, "\n}\n");
+  copy_chunk(sourcename, ic, oc, trailer);
+}
+
