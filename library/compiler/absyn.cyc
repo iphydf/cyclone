@@ -1483,9 +1483,12 @@ bool type2bool(bool def, type_t t) {
 // they put their own result in env
 void visit_exp(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
            `a env, exp_t e) {
+  bool resume = true;
   do {
-    if (!f1(env, e))
+    resume = false;
+    if (!f1(env, e)) {
       break;
+    }
 
     switch (e->r) {
       case &Const_e(...):
@@ -1528,6 +1531,7 @@ void visit_exp(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
         fallthru(e1);
       case &AggrArrow_e(e1, ...):
         e = e1;
+        resume = true;
         continue;
 
       case &AssignOp_e(e1, _, e2):
@@ -1545,18 +1549,21 @@ void visit_exp(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
       case &Comprehension_e(_, e1, e2, _):
         visit_exp(f1, f2, env, e1);
         e = e2;
+        resume = true;
         continue;
 
       case &Conditional_e(e1, e2, e3):
         visit_exp(f1, f2, env, e1);
         visit_exp(f1, f2, env, e2);
         e = e3;
+        resume = true;
         continue;
 
       case &FnCall_e(e1, lexp, ...):
         for (; lexp != NULL; lexp = lexp->tl)
           visit_exp(f1, f2, env, lexp->hd);
         e = e1;
+        resume = true;
         continue;
 
       case &Array_e(ldt):
@@ -1589,6 +1596,7 @@ void visit_exp(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
         if (e3 != NULL)
           visit_exp(f1, f2, env, e3);
         e = e2;
+        resume = true;
         continue;
 
       case &StmtExp_e(s):
@@ -1602,7 +1610,7 @@ void visit_exp(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),
           visit_exp(f1, f2, env, (*sl2->hd)[1]);
         break;
     }
-  } while (false);
+  } while (resume);
 }
 
 static void visit_scs(bool(@f1)(`a, exp_t), bool(@f2)(`a, stmt_t),

@@ -38,7 +38,11 @@ static int pr(const char ? fmt, ... inject parg_t ap)
   else
     return 0;
 }
-static int flush() { return fflush(stderr); }
+
+static void ice(string_t msg) {
+  pr("Internal Compiler Error: %s\n", msg);
+  Core::print_stacktrace();
+}
 
 static list_t<seg_t> warning_segs       = NULL;
 static list_t<stringptr_t> warning_msgs = NULL;
@@ -83,7 +87,6 @@ void flush_warnings() {
     warning_msgs = warning_msgs->tl;
   }
   pr("**************\n");
-  flush();
 }
 
 static bool error_b = false;
@@ -104,7 +107,6 @@ void post_error(Position::error_t e) {
   if (!print_warnings)
     return;
   error_b = true;
-  fflush(stdout);
   if (first_error) {
     fprintf(stderr, "\n");
     first_error = false;  // FIX: not reset to true for each file!
@@ -115,7 +117,6 @@ void post_error(Position::error_t e) {
             Position::get_desc(e));
   if (num_errors == max_errors)
     fprintf(stderr, "Too many error messages!\n");
-  fflush(stderr);
   num_errors++;
 }
 
@@ -130,8 +131,7 @@ void err(seg_t loc, string_t fmt, ... inject parg_t ap) __attribute__((format(pr
 `a vimpos(string_t fmt, parg_t ? ap) __attribute__((noreturn)) {
   string_t msg = vrprintf(Core::heap_region, fmt, ap);
   if (!error_p()) {
-    pr("Compiler Error: %s\n", msg);
-    flush();
+    ice(msg);
   }
   throw new Core::Impossible(msg);
 }
@@ -142,7 +142,7 @@ void err(seg_t loc, string_t fmt, ... inject parg_t ap) __attribute__((format(pr
 
 `a vimpos_loc(seg_t loc, string_t fmt, parg_t ? ap) __attribute__((noreturn)) {
   if (!error_p()) {
-    pr("Compiler Error: \n");
+    ice("");
     verr(loc, fmt, ap);
   }
   throw new Core::Impossible("Compiler Error");
@@ -229,8 +229,7 @@ void warn2(seg_t loc, ... inject warg_t args) { vwarn2(loc, args); }
 `a vimpos2(warg_t ? args) __attribute__((noreturn)) {
   let msg = args2string(args);
   if (!error_p()) {
-    pr("Compiler Error: %s\n", msg);
-    flush();
+    ice(msg);
   }
   throw new Core::Impossible(msg);
 }
@@ -238,9 +237,8 @@ void warn2(seg_t loc, ... inject warg_t args) { vwarn2(loc, args); }
 `a vimpos_loc2(Position::seg_t loc,warg_t ? args) __attribute__((noreturn)) {
   let msg = args2string(args);
   if (!error_p()) {
-    pr("Compiler Error: \n");
+    ice("");
     verr2(loc, args);
-    flush();
   }
   throw new Core::Impossible(msg);
 }

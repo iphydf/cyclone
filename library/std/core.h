@@ -332,6 +332,8 @@ __noinference__ {
   /** if an exception is thrown, then you can use @get_exn_lineno@ to
       determine what source line caused the exception. */
 
+  void print_stacktrace();
+
   // JGM: I have to define this using a typedef here because
   // valueof(-) is not considered a Cyclone keyword.
   typedef `a::A * { valueof(`i) }

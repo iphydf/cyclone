@@ -26,6 +26,8 @@ namespace Tc {
   using Absyn;
   using Tcenv;
 
+  extern bool debug;
+
   void tc(tenv_t, bool var_default_init, List::list_t<decl_t,`H>);
 
   // if called, must be after tc is called

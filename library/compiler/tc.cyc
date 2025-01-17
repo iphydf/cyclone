@@ -45,6 +45,8 @@ using Tctyp;
 using Tcutil;
 namespace Tc;
 
+bool debug = false;
+
 // used for the error messages of tcdecl
 static string_t tc_msg_c = "";
 static string_t *tc_msg  = &tc_msg_c;
@@ -65,11 +67,10 @@ static bool export_member(qvar_t x, list_t<$(seg_t, qvar_t, bool) @> exports) {
 static void tcVardecl(tenv_t te, seg_t loc, vardecl_t vd, bool check_var_init, bool in_cinclude,
                       list_t<$(seg_t, qvar_t, bool) @> *exports) {
   let &Vardecl(sc, q, _, _, t, initializer, _, atts, _, *is_proto, _) = vd;
-#ifdef DEBUG
-  fprintf(stderr, "type-checking vardecl_t %s, type %s\n", *((*q)[1]),
-          Absynpp::typ2string(vd->type));
-  fflush(stderr);
-#endif
+  if (debug) {
+    fprintf(stderr, "type-checking vardecl_t %s, type %s\n", *((*q)[1]),
+            Absynpp::typ2string(vd->type));
+  }
 
   // if it's an array or string, fill in the size on the type
   switch (compress(t)) {
@@ -178,10 +179,9 @@ static void tcVardecl(tenv_t te, seg_t loc, vardecl_t vd, bool check_var_init, b
 
 static void tcFndecl(tenv_t te, seg_t loc, fndecl_t fd, list_t<$(seg_t, qvar_t, bool) @> *exports) {
   qvar_t q = fd->name;
-#ifdef DEBUG
-  fprintf(stderr, "type-checking fndecl %s\n", *((*q)[1]));
-  fflush(stderr);
-#endif
+  if (debug) {
+    fprintf(stderr, "type-checking fndecl %s\n", *((*q)[1]));
+  }
   if (fd->sc == ExternC && !te->in_extern_c_include)
     Warn::err2(loc, "extern \"C\" functions cannot be implemented in Cyclone");
 
@@ -374,10 +374,9 @@ static void tcOneTypedef(tenv_t te, seg_t loc, typedefdecl_t td) {
 
 static void tcTypedefdecl(tenv_t te, seg_t loc, typedefdecl_t td) {
   qvar_t q = td->name;
-#ifdef DEBUG
-  fprintf(stderr, "type-checking typedefdecl %s", *((*q)[1]));
-  fflush(stderr);
-#endif
+  if (debug) {
+    fprintf(stderr, "type-checking typedefdecl %s", *((*q)[1]));
+  }
   // redeclaration is ok, if it can be parsed properly, and if the types are
   // compatible
   switch (Dict::lookup_opt(te->ae->typedefs, q)) {
@@ -538,10 +537,9 @@ static void rule_out_mem_and_qual(seg_t loc, qvar_t q, list_t<tvar_t> tvs) {
 
 void tcAggrdecl(tenv_t te, seg_t loc, aggrdecl_t ad) {
   let q = ad->name;
-#ifdef DEBUG
-  fprintf(stderr, "type-checking type decl %s\n", *((*q)[1]));
-  fflush(stderr);
-#endif
+  if (debug) {
+    fprintf(stderr, "type-checking type decl %s\n", *((*q)[1]));
+  }
   // allow only packed and aligned attributes
   Atts::check_field_atts(loc, (*q)[1], ad->attributes);
 
@@ -680,10 +678,9 @@ static list_t<datatypefield_t> tcDatatypeFields(tenv_t te, seg_t loc, string_t<`
 void tcDatatypedecl(tenv_t te, seg_t loc, datatypedecl_t tud) {
   qvar_t q     = tud->name;
   string_t obj = tud->is_extensible ? "@extensible datatype" : "datatype";
-#ifdef DEBUG
-  fprintf(stderr, "type-checking %sdecl %s\n", obj, *((*q)[1]));
-  fflush(stderr);
-#endif
+  if (debug) {
+    fprintf(stderr, "type-checking %sdecl %s\n", obj, *((*q)[1]));
+  }
   list_t<tvar_t> tvs = tud->tvs;
   // disallow MemKinds and set unconstrained kinds to BoxKind
   // reject ill-formed type
@@ -764,10 +761,9 @@ void tcDatatypedecl(tenv_t te, seg_t loc, datatypedecl_t tud) {
 
 void tcEnumdecl(tenv_t te, seg_t loc, enumdecl_t ed) {
   qvar_t q = ed->name;
-#ifdef DEBUG
-  fprintf(stderr, "type-checking enumdecl %s", *((*q)[1]));
-  fflush(stderr);
-#endif
+  if (debug) {
+    fprintf(stderr, "type-checking enumdecl %s", *((*q)[1]));
+  }
   // check the fields.
   if (ed->fields != NULL) {
     region uprev_rgn;

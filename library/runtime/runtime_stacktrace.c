@@ -1,46 +1,85 @@
-#include "runtime_internal.h"
-
+#define _GNU_SOURCE
+#include <ctype.h>
 #include <dlfcn.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libunwind.h>
 
-_Cyc_Stacktrace *_cyc_get_stacktrace(void) {
-    _Cyc_Stacktrace *stacktrace = malloc(sizeof(_Cyc_Stacktrace));
-    stacktrace->size = 0;
+#include "backtrace.h"
 
-    unw_cursor_t cursor;
-    unw_context_t context;
+// Demangles Cyclone symbol names.
+//
+// Example:
+//    Cyc_Core_print_stacktrace -> Core::print_stacktrace
+//    Cyc_Tcexp_List_tcNew -> Tcexp::List::tcNew
+//    main -> main
+//    Cyc_main -> ::main
+static void cyc_print_symbol(const char *name) {
+  if (name == NULL) {
+    fputs("<unknown>", stderr);
+    return;
+  }
 
-    unw_getcontext(&context);
-    unw_init_local(&cursor, &context);
+  // If it doesn't start with Cyc_, then it's not a Cyclone symbol.
+  if (strncmp(name, "Cyc_", 4) != 0) {
+    fputs(name, stderr);
+    return;
+  }
 
-    while (unw_step(&cursor) > 0) {
-        unw_word_t offset, pc;
-        unw_get_reg(&cursor, UNW_REG_IP, &pc);
-        char name[256];
-        unw_get_proc_name(&cursor, name, sizeof(name), &offset);
+  // Skip the "Cyc_" prefix.
+  name += 4;
 
-        size_t name_size = strlen(name) + 1;
-        char *name_copy = malloc(name_size);
-        if (name_copy == NULL) {
-            break;
-        }
-        memcpy(name_copy, name, name_size);
+  if (islower(name[0])) {
+    fprintf(stderr, "::%s", name);
+    return;
+  }
 
-        stacktrace->frames[stacktrace->size] = name_copy;
-        stacktrace->size++;
+  while (*name) {
+    if (*name == '_') {
+      fputs("::", stderr);
+      if (islower(name[1])) {
+        ++name;
+        break;
+      }
+    } else {
+      fputc(*name, stderr);
     }
+    ++name;
+  }
 
-    return stacktrace;
+  fputs(name, stderr);
 }
 
-void _cyc_free_stacktrace(_Cyc_Stacktrace *stacktrace) {
-    if (stacktrace == NULL) {
-        return;
-    }
-    for (int i = 0; i < stacktrace->size; i++) {
-        free(stacktrace->frames[i]);
-    }
-    free(stacktrace);
+static int cyc_backtrace_full_callback(void *data, uintptr_t pc, const char *filename, int lineno,
+                                       const char *function) {
+  Dl_info info;
+  if (dladdr((void *)pc, &info) != 0) {
+    pc -= (uintptr_t)info.dli_fbase;
+  }
+
+  const char proc_dir[] = "/proc/self/cwd/";
+  if (filename != NULL && strncmp(filename, proc_dir, sizeof(proc_dir) - 1) == 0) {
+    filename += sizeof(proc_dir) - 1;
+  }
+
+  fprintf(stderr, "    0x%lx: ", (unsigned long)pc);
+  cyc_print_symbol(function);
+  fprintf(stderr, " (%s:%d)\n", filename, lineno);
+
+  return 0;
+}
+
+static void cyc_backtrace_error_callback(void *data, const char *msg, int errnum) {
+  fprintf(stderr, "Error: %s (%d)\n", msg, errnum);
+}
+
+void Cyc_Core_print_stacktrace(void) {
+  struct backtrace_state *state = backtrace_create_state(NULL, 0, NULL, NULL);
+  if (state == NULL) {
+    fputs("Failed to create backtrace state\n", stderr);
+    return;
+  }
+
+  backtrace_full(state, 1, cyc_backtrace_full_callback, cyc_backtrace_error_callback, NULL);
 }

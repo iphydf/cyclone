@@ -35,6 +35,8 @@ def _cyc_compile_impl(ctx):
 
     cyclone = ctx.executable.cyclone
 
+    per_file_cycopts = ctx.attr.per_file_cycopts
+
     if ctx.attr.stage != None:
         for_boot = " [stage %s]" % ctx.attr.stage
         stage_defs = ["-DCYC_STAGE=%d" % ctx.attr.stage]
@@ -98,7 +100,7 @@ def _cyc_compile_impl(ctx):
             inputs = [cyp_file],
             tools = [cyclone],
             executable = cyclone.path,
-            arguments = [
+            arguments = per_file_cycopts.get(src.basename, []) + [
                 # Instantiate type vars instead of introducing new ones.
                 "--cifc-inst-tvar",
 
@@ -135,28 +137,30 @@ _cyc_compile = rule(
             ".cyc",
             ".h",
         ]),
-        "deps": attr.label_list(),
-        "stage": attr.int(),
-        "cycopts": attr.string_list(),
         "cyclone": attr.label(
             executable = True,
             cfg = "exec",
             allow_single_file = True,
         ),
+        "cycopts": attr.string_list(),
+        "per_file_cycopts": attr.string_list_dict(),
+        "stage": attr.int(),
+        "deps": attr.label_list(),
     },
     fragments = ["cpp"],
     implementation = _cyc_compile_impl,
     toolchains = use_cc_toolchain(),
 )
 
-def _cyc_build(cc_rule, name, srcs = [], csrcs = [], deps = [], cdeps = [], cycopts = [], linkopts = [], stage = None, **kwargs):
+def _cyc_build(cc_rule, name, srcs = [], csrcs = [], deps = [], cdeps = [], cycopts = [], linkopts = [], stage = None, per_file_cycopts = {}, **kwargs):
     srcs_name = "%s_srcs" % name
     _cyc_compile(
         name = srcs_name,
         srcs = srcs,
-        stage = stage,
         cyclone = _tool("cyclone", stage),
         cycopts = cycopts,
+        per_file_cycopts = per_file_cycopts,
+        stage = stage,
         deps = deps,
     )
 

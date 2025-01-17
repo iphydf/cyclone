@@ -1014,7 +1014,7 @@ static void dumpexp_prec(int inprec, exp_t e) {
       dumpexp_prec(myprec, e1);
       if (popt != NULL)
         dump(Absynpp::prim2str(popt->v));
-      dump_nospace("=");
+      dump_nospace("= ");
       dumpexp_prec(myprec, e2);
       break;
 
