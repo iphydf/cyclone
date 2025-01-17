@@ -1,18 +1,15 @@
 load("//cyclone:build_defs.bzl", "cyc_binary", "cyclex", "cycyacc")
 
-cyclex(
-    name = "lexer",
-    stage = "boot",
+exports_files(
+    srcs = [
+        "lexer.cyl",
+        "parser.cyy",
+    ],
+    visibility = ["//cyclone/stage1:__subpackages__"],
 )
 
-cycyacc(
-    name = "parser_tab",
-    src = "parser.cyy",
-    stage = "boot",
-)
-
-cyc_binary(
-    name = "cyclex",
+filegroup(
+    name = "sources",
     srcs = [
         "compact.cyc",
         "compact.h",
@@ -25,8 +22,26 @@ cyc_binary(
         "parser.h",
         "syntax.cyc",
         "syntax.h",
+    ],
+    visibility = ["//cyclone/stage1:__subpackages__"],
+)
+
+cyclex(
+    name = "lexer",
+    stage = 2,
+)
+
+cycyacc(
+    name = "parser_tab",
+    src = "parser.cyy",
+)
+
+cyc_binary(
+    name = "cyclex",
+    srcs = [
         ":lexer",
         ":parser_tab",
+        ":sources",
     ],
     visibility = ["//visibility:public"],
     deps = ["//cyclone/library/std"],

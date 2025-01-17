@@ -1,0 +1,9 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "errorgen",
+    srcs = ["//cyclone/tools/errorgen:srcs"],
+    stage = 1,
+    visibility = ["//cyclone/stage1/library/compiler:__pkg__"],
+    deps = ["//cyclone/stage1/library/std"],
+)

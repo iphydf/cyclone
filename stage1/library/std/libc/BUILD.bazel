@@ -1,0 +1,10 @@
+load("//cyclone:build_defs.bzl", "buildlib")
+load("//cyclone/library/std/libc:libc.bzl", "LIBC_HEADERS")
+
+buildlib(
+    name = "libc",
+    src = "//cyclone/library/std/libc:libc.cys",
+    hdrs = LIBC_HEADERS,
+    stage = 1,
+    visibility = ["//cyclone/stage1/library/std:__pkg__"],
+)

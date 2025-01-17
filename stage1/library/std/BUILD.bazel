@@ -1,0 +1,26 @@
+load("//cyclone:build_defs.bzl", "cyc_library", "cyclex")
+
+cyclex(
+    name = "lineno",
+    src = "//cyclone/library/std:lineno.cyl",
+    stage = 1,
+)
+
+cyc_library(
+    name = "std",
+    srcs = [
+        ":lineno",
+        "//cyclone/library/std:headers",
+        "//cyclone/library/std:sources",
+        "//cyclone/stage1/library/std/libc",
+    ],
+    hdrs = ["//cyclone/library/std:headers"],
+    copts = ["-D_POSIX_C_SOURCE=200809L"],
+    csrcs = [
+        "//cyclone/library/std:boot_cstubs.c",
+        "//cyclone/stage1/library/std/libc",
+    ],
+    linkopts = ["-lpthread"],
+    stage = 1,
+    visibility = ["//cyclone/stage1:__subpackages__"],
+)

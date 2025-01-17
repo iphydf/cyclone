@@ -2,13 +2,13 @@ load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("//cyclone:build_defs.bzl", "MACHINE")
 
 cc_binary(
-    name = "bison",
+    name = "cyclex",
     srcs = glob(["*.c"]),
     copts = [MACHINE],
     linkopts = [MACHINE],
-    visibility = ["//visibility:public"],
+    visibility = ["//cyclone/stage1:__subpackages__"],
     deps = [
-        "//cyclone/boot/library/std",
         "//cyclone/library/runtime",
+        "//cyclone/stage0/library/compiler",
     ],
 )

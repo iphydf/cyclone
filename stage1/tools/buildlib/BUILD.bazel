@@ -1,0 +1,16 @@
+load("//cyclone:build_defs.bzl", "cyc_binary", "cyclex")
+
+cyclex(
+    name = "buildlib_lex",
+    src = "//cyclone/tools/buildlib:buildlib.cyl",
+    out = "buildlib.cyc",
+    stage = 2,
+)
+
+cyc_binary(
+    name = "buildlib",
+    srcs = [":buildlib_lex"],
+    stage = 1,
+    visibility = ["//cyclone/library/std/libc:__pkg__"],
+    deps = ["//cyclone/stage1/library/compiler"],
+)

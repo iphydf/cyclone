@@ -1,26 +1,18 @@
 load("//cyclone:build_defs.bzl", "cyc_binary")
 
-cyc_binary(
-    name = "cyclone.build",
+filegroup(
+    name = "srcs",
     srcs = [
         "cyclone.cyc",
         "cyclone.h",
     ],
-    stage = "boot",
-    visibility = ["//visibility:public"],
-    deps = [
-        "//cyclone/library/compiler:compiler.build",
-        "//cyclone/library/std",
-    ],
+    visibility = ["//cyclone/stage1/tools/cyclone:__pkg__"],
 )
 
 cyc_binary(
     name = "cyclone",
-    srcs = [
-        "cyclone.cyc",
-        "cyclone.h",
-    ],
-    stage = "build",
+    srcs = [":srcs"],
+    stage = 2,
     visibility = ["//visibility:public"],
     deps = [
         "//cyclone/library/compiler",

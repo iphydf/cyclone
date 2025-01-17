@@ -6,10 +6,10 @@ cc_binary(
     srcs = ["buildlib.c"],
     copts = [MACHINE],
     linkopts = [MACHINE],
-    visibility = ["//visibility:public"],
+    visibility = ["//cyclone/stage1:__subpackages__"],
     deps = [
-        "//cyclone/boot/library/compiler",
-        "//cyclone/boot/library/std",
         "//cyclone/library/runtime",
+        "//cyclone/stage0/library/compiler",
+        "//cyclone/stage0/library/std",
     ],
 )

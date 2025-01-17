@@ -1,5 +1,10 @@
 load("//cyclone:build_defs.bzl", "cyc_binary", "cyclex")
 
+exports_files(
+    srcs = ["buildlib.cyl"],
+    visibility = ["//cyclone/stage1/tools/buildlib:__pkg__"],
+)
+
 cyclex(
     name = "buildlib_lex",
     src = "buildlib.cyl",

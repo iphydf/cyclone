@@ -1,0 +1,17 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "cyclone",
+    srcs = ["//cyclone/tools/cyclone:srcs"],
+    stage = 1,
+    visibility = [
+        "//cyclone/library/compiler:__pkg__",
+        "//cyclone/library/std:__pkg__",
+        "//cyclone/tools/cyclone:__pkg__",
+        "//cyclone/tools/errorgen:__pkg__",
+    ],
+    deps = [
+        "//cyclone/stage1/library/compiler",
+        "//cyclone/stage1/library/std",
+    ],
+)

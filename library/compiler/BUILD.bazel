@@ -1,6 +1,37 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("//cyclone:build_defs.bzl", "MACHINE", "cyc_library", "cyclex", "cycyacc", "errorgen")
 
+exports_files(
+    srcs = [
+        "lex.cyl",
+        "parse.cyy",
+        "parse_errors.err.cyc",
+    ],
+    visibility = ["//cyclone/stage1/library/compiler:__pkg__"],
+)
+
+filegroup(
+    name = "srcs",
+    srcs = glob(
+        [
+            "*.cyc",
+            "*.h",
+        ],
+        exclude = [
+            "*.err.cyc",
+            "bansheeif_stub.cyc",
+            "rgnorder.cyc",
+        ],
+    ),
+    visibility = ["//cyclone/stage1/library/compiler:__pkg__"],
+)
+
+filegroup(
+    name = "hdrs",
+    srcs = glob(["*.h"]),
+    visibility = ["//cyclone/stage1/library/compiler:__pkg__"],
+)
+
 cc_binary(
     name = "make-config",
     srcs = ["make-config.c"],
@@ -26,71 +57,31 @@ cc_library(
 )
 
 cyclex(
-    name = "lex.boot",
-    src = "lex.cyl",
-    stage = "boot",
-)
-
-cyclex(
     name = "lex",
+    stage = 2,
 )
 
 cycyacc(
     name = "parse_tab",
     src = "parse.cyy",
-    stage = "boot",
+    stage = 2,
 )
 
 errorgen(
     name = "parse_errors",
-)
-
-cyc_library(
-    name = "compiler.build",
-    srcs = [
-        ":lex.boot",
-        ":parse_errors",
-        ":parse_tab",
-    ] + glob(
-        [
-            "*.cyc",
-            "*.h",
-        ],
-        exclude = [
-            "*.err.cyc",
-            "bansheeif_stub.cyc",
-            "rgnorder.cyc",
-        ],
-    ),
-    hdrs = glob(["*.h"]),
-    stage = "boot",
-    visibility = ["//visibility:public"],
-    deps = [
-        ":config",
-        "//cyclone/library/compiler/inference",
-        "//cyclone/library/std",
-    ],
+    stage = 2,
 )
 
 cyc_library(
     name = "compiler",
     srcs = [
-        ":lex.boot",
+        ":lex",
         ":parse_errors",
         ":parse_tab",
-    ] + glob(
-        [
-            "*.cyc",
-            "*.h",
-        ],
-        exclude = [
-            "*.err.cyc",
-            "bansheeif_stub.cyc",
-            "rgnorder.cyc",
-        ],
-    ),
-    hdrs = glob(["*.h"]),
-    stage = "build",
+        ":srcs",
+    ],
+    hdrs = [":hdrs"],
+    stage = 2,
     visibility = ["//visibility:public"],
     deps = [
         ":config",

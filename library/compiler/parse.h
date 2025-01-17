@@ -88,8 +88,8 @@ using Core {
       }  // namespace Parse
 #ifndef IS_PARSE_Y
       using Parse {
-#ifdef CYC_BOOT
-#include "cyclone/library/compiler/parse_tab.boot.h"
+#if defined(CYC_STAGE) && CYC_STAGE == 1
+#include "cyclone/stage1/library/compiler/parse_tab.h"
 #else
 #include "cyclone/library/compiler/parse_tab.h"
 #endif

@@ -1,5 +1,11 @@
 load("//cyclone:build_defs.bzl", "cyc_binary")
 
+filegroup(
+    name = "sources",
+    srcs = ["stringify.cyc"],
+    visibility = ["//cyclone/stage1:__subpackages__"],
+)
+
 cyc_binary(
     name = "stringify",
     srcs = ["stringify.cyc"],

@@ -1,0 +1,37 @@
+load("//cyclone:build_defs.bzl", "cyc_library", "cyclex", "cycyacc", "errorgen")
+
+cyclex(
+    name = "lex",
+    src = "//cyclone/library/compiler:lex.cyl",
+    stage = 1,
+)
+
+cycyacc(
+    name = "parse_tab",
+    src = "//cyclone/library/compiler:parse.cyy",
+    stage = 1,
+)
+
+errorgen(
+    name = "parse_errors",
+    src = "//cyclone/library/compiler:parse_errors.err.cyc",
+    stage = 1,
+)
+
+cyc_library(
+    name = "compiler",
+    srcs = [
+        ":lex",
+        ":parse_errors",
+        ":parse_tab",
+        "//cyclone/library/compiler:srcs",
+    ],
+    hdrs = ["//cyclone/library/compiler:hdrs"],
+    stage = 1,
+    visibility = ["//cyclone/stage1/tools:__subpackages__"],
+    deps = [
+        "//cyclone/library/compiler:config",
+        "//cyclone/library/compiler/inference",
+        "//cyclone/stage1/library/std",
+    ],
+)

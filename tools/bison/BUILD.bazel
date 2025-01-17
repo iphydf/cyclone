@@ -1,19 +1,25 @@
 load("//cyclone:build_defs.bzl", "cyc_binary")
 
-genrule(
-    name = "cycbison_simple_cyc",
-    srcs = ["cycbison_simple"],
-    outs = ["cycbison_simple.string.cyc"],
-    cmd = "$(location //cyclone/tools/stringify) $< > $@",
-    tools = ["//cyclone/tools/stringify"],
-)
-
-cyc_binary(
-    name = "bison",
+filegroup(
+    name = "sources",
     srcs = ["cycbison_simple.string.cyc"] + glob([
         "*.cyc",
         "*.h",
     ]),
+    visibility = ["//cyclone/stage1:__subpackages__"],
+)
+
+genrule(
+    name = "cycbison_simple_cyc",
+    srcs = ["cycbison_simple"],
+    outs = ["cycbison_simple.string.cyc"],
+    cmd = "$(location //cyclone/stage1/tools/stringify) $< > $@",
+    tools = ["//cyclone/stage1/tools/stringify"],
+)
+
+cyc_binary(
+    name = "bison",
+    srcs = [":sources"],
     visibility = ["//visibility:public"],
     deps = ["//cyclone/library/std"],
 )

@@ -1,5 +1,25 @@
 load("//cyclone:build_defs.bzl", "cyc_library", "cyclex")
 
+exports_files(
+    srcs = [
+        "boot_cstubs.c",
+        "lineno.cyl",
+    ],
+    visibility = ["//cyclone/stage1:__subpackages__"],
+)
+
+filegroup(
+    name = "sources",
+    srcs = glob(["*.cyc"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "headers",
+    srcs = glob(["*.h"]),
+    visibility = ["//visibility:public"],
+)
+
 genrule(
     name = "std_doc",
     srcs = glob(["*.h"]) + [
@@ -20,25 +40,24 @@ genrule(
 
 cyclex(
     name = "lineno",
-    stage = "boot",
+    stage = 2,
 )
 
 cyc_library(
     name = "std",
     srcs = [
+        ":headers",
         ":lineno",
+        ":sources",
         "//cyclone/library/std/libc",
-    ] + glob([
-        "*.cyc",
-        "*.h",
-    ]),
-    hdrs = glob(["*.h"]),
+    ],
+    hdrs = [":headers"],
     copts = ["-D_POSIX_C_SOURCE=200809L"],
     csrcs = [
         "boot_cstubs.c",
         "//cyclone/library/std/libc",
     ],
     linkopts = ["-lpthread"],
-    stage = "boot",
+    stage = 2,
     visibility = ["//visibility:public"],
 )

@@ -1,0 +1,30 @@
+load("//cyclone:build_defs.bzl", "cyc_binary", "cyclex", "cycyacc")
+
+cyclex(
+    name = "lexer",
+    src = "//cyclone/tools/cyclex:lexer.cyl",
+    stage = 1,
+)
+
+cycyacc(
+    name = "parser_tab",
+    src = "//cyclone/tools/cyclex:parser.cyy",
+    stage = 1,
+)
+
+cyc_binary(
+    name = "cyclex",
+    srcs = [
+        ":lexer",
+        ":parser_tab",
+        "//cyclone/tools/cyclex:sources",
+    ],
+    stage = 1,
+    visibility = [
+        "//cyclone/library/compiler:__pkg__",
+        "//cyclone/library/std:__pkg__",
+        "//cyclone/stage1:__subpackages__",
+        "//cyclone/tools/cyclex:__pkg__",
+    ],
+    deps = ["//cyclone/stage1/library/std"],
+)

@@ -1,0 +1,9 @@
+load("//cyclone:build_defs.bzl", "cyc_binary")
+
+cyc_binary(
+    name = "stringify",
+    srcs = ["//cyclone/tools/stringify:sources"],
+    stage = 1,
+    visibility = ["//cyclone/tools/bison:__pkg__"],
+    deps = ["//cyclone/stage1/library/std"],
+)

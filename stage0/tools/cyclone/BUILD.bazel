@@ -6,9 +6,9 @@ cc_binary(
     srcs = ["cyclone.c"],
     copts = [MACHINE],
     linkopts = [MACHINE],
-    visibility = ["//visibility:public"],
+    visibility = ["//cyclone/stage1:__subpackages__"],
     deps = [
-        "//cyclone/boot/library/compiler",
         "//cyclone/library/runtime",
+        "//cyclone/stage0/library/compiler",
     ],
 )

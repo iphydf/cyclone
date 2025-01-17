@@ -1,5 +1,5 @@
 #!/bin/sh
 
-for i in $(find cyclone/boot -type f | grep -o '.*/' | sort -u); do
-  cp bazel-bin/$(echo $i | sed -e 's|/boot/|/|')*.c $i
+for i in $(find cyclone/stage0 -type f | grep -o '.*/' | sort -u); do
+  cp bazel-bin/$(echo $i | sed -e 's|/stage0/|/|')*.c $i
 done

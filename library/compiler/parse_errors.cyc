@@ -14,7 +14,11 @@ namespace ParseErrors {
   };
 
   static struct ParseState msg_table[] = {
+#if defined(CYC_STAGE) && CYC_STAGE == 1
+#include "cyclone/stage1/library/compiler/parse_errors_gen.h"
+#else
 #include "cyclone/library/compiler/parse_errors_gen.h"
+#endif
   };
 }  // namespace ParseErrors
 using ParseErrors;

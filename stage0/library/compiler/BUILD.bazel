@@ -6,12 +6,12 @@ cc_library(
     srcs = glob(["*.c"]),
     copts = [MACHINE],
     linkopts = [MACHINE],
-    visibility = ["//visibility:public"],
+    visibility = ["//cyclone/stage0/tools:__subpackages__"],
     deps = [
-        "//cyclone/boot/library/compiler/inference",
-        "//cyclone/boot/library/std",
         "//cyclone/library/compiler:config",
+        "//cyclone/library/compiler/inference",
         "//cyclone/library/runtime",
         "//cyclone/library/std/cyc-lib",
+        "//cyclone/stage0/library/std",
     ],
 )
