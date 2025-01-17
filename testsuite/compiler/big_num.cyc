@@ -1,0 +1,2 @@
+# 2 "big_num.cyc"
+long long big = 0x7FFFFFFFFFFFFFFFll;

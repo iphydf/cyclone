@@ -1,0 +1,7 @@
+# 1 "printing.cyc"
+
+extern datatype exn{extern Error(const char ?)};
+
+int main() {
+  throw new Error("empty token");
+}

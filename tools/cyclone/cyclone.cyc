@@ -421,10 +421,8 @@ static void process_file(string_t<`H> filename) {
   if (!compile_failure && Flags::stop_after_pass >= Flags::LabelRemoval)
     tds = do_stage("unused label removal", tds, do_removelabs, true, tds);
     // Translation to left-to-right evaluation order
-#if 0
   if (!compile_failure && toseqc_r && Flags::stop_after_pass >= Flags::EvalOrder)
     tds = do_stage ("L-to-R evaluation order", tds, do_toseqc, true, tds);
-#endif
   // Clean up state common to last three passes
   if (!compile_failure && Flags::stop_after_pass >= Flags::Toc)
     Toc::finish();

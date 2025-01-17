@@ -109,6 +109,7 @@ def _cyc_compile_impl(ctx):
 
                 # Do not lower the C code.
                 # "--no-lower",
+                # "-no-seq-c",
 
                 # Don't expand typedefs in pretty printing.
                 # "-noexpandtypedefs",

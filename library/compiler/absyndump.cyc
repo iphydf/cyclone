@@ -574,7 +574,7 @@ static void dumpntyp(type_t t) {
       dump(")");
       return;
     case &TypeofType(e):
-      dump("typeof(");
+      dump("__typeof__(");
       dumpexp(e);
       dump(")");
       return;

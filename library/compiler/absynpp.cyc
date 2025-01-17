@@ -324,18 +324,27 @@ static bool special(string_t s) {
   return false;
 }
 
+static int append_char(mstring_t s, int j, ...char c) {
+  for (int i = 0; i < numelts(c); i++) {
+    s[j] = c[i];
+    j++;
+  }
+  return j;
+}
+
 string_t string_escape(string_t<`H> s) {
   if (!special(s))
     return s;
 
   int n = numelts(s) - 1;
   // Check for the expected NUL terminator of a string constant
-  if (n > 0 && s[n] == '\000')
+  if (n > 0 && s[n] == '\000') {
     n--;
+  }
 
   // determine length
   int len = 0;
-  for (int i = 0; i <= n; i++)
+  for (int i = 0; i <= n; i++) {
     switch (s[i]) {
       case '\a':
       case '\b':
@@ -355,62 +364,55 @@ string_t string_escape(string_t<`H> s) {
           len += 4;
         break;
     }
+  }
 
   // build the escaped string
   mstring_t t = new_string(len + 1);
   int j       = 0;
-  for (int i = 0; i <= n; i++)
+  for (int i = 0; i <= n; i++) {
     switch (s[i]) {
       case '\a':
-        t[j++] = '\\';
-        t[j++] = 'a';
+        j = append_char(t, j, '\\', 'a');
         break;
       case '\b':
-        t[j++] = '\\';
-        t[j++] = 'b';
+        j = append_char(t, j, '\\', 'b');
         break;
       case '\f':
-        t[j++] = '\\';
-        t[j++] = 'f';
+        j = append_char(t, j, '\\', 'f');
         break;
       case '\n':
-        t[j++] = '\\';
-        t[j++] = 'n';
+        j = append_char(t, j, '\\', 'n');
         break;
       case '\r':
-        t[j++] = '\\';
-        t[j++] = 'r';
+        j = append_char(t, j, '\\', 'r');
         break;
       case '\t':
-        t[j++] = '\\';
-        t[j++] = 't';
+        j = append_char(t, j, '\\', 't');
         break;
       case '\v':
-        t[j++] = '\\';
-        t[j++] = 'v';
+        j = append_char(t, j, '\\', 'v');
         break;
       case '\\':
-        t[j++] = '\\';
-        t[j++] = '\\';
+        j = append_char(t, j, '\\', '\\');
         break;
       case '"':
-        t[j++] = '\\';
-        t[j++] = '"';
+        j = append_char(t, j, '\\', '"');
         break;
       case c:
-        if (c >= ' ' && c <= '~')
-          t[j++] = c;
-        else {
+        if (c >= ' ' && c <= '~') {
+          j = append_char(t, j, c);
+        } else {
           unsigned char uc = c;  // NB: typechecker declares c to have type char, might not be
                                  // unsigned, and this makes a difference to the calculations
                                  // below when the high bit is set
-          t[j++] = '\\';
-          t[j++] = (char)('0' + ((uc >> 6) & 7));
-          t[j++] = (char)('0' + ((uc >> 3) & 7));
-          t[j++] = (char)('0' + ((uc >> 0) & 7));
+          j = append_char(t, j, '\\',
+                          '0' + ((uc >> 6) & 7),
+                          '0' + ((uc >> 3) & 7),
+                          '0' + ((uc >> 0) & 7));
         }
         break;
     }
+  }
 
   return t;
 }
@@ -1206,7 +1208,7 @@ doc_t ntyp2doc(type_t t) {
       return cat(text("valueof_t("), exp2doc(e), text(")"));
 
     case &TypeofType(e):
-      return cat(text("typeof("), exp2doc(e), text(")"));
+      return cat(text("__typeof__("), exp2doc(e), text(")"));
 
     case &AppType(&BuiltinCon(t, _), _):
       return text(t);
@@ -1980,8 +1982,9 @@ string_t longlong2string(unsigned long long i) {
   x[23]     = '0';
   int index = 23;
   while (i != 0) {
-    x[index--] = (char)('0' + (i % 10));
-    i          = i / 10;
+    x[index] = (char)('0' + (i % 10));
+    i        = i / 10;
+    --index;
   }
   return x + index + 1;
 }
