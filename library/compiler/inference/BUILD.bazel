@@ -1,6 +1,12 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//cyclone:build_defs.bzl", "MACHINE")
 
+filegroup(
+    name = "sources",
+    srcs = glob(["*.c", "*.h"]),
+    visibility = ["//cyclone/boot:__subpackages__"],
+)
+
 cc_library(
     name = "inference",
     srcs = ["cycinf.c"],

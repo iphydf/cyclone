@@ -7,6 +7,28 @@ load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cpp_toolchain", "use_cc_toolch
 # Set to -m32 if you run into 64 bit issues.
 MACHINE = "-m64"
 
+STAGE_BOOT = "boot"
+STAGE_BUILD = "build"
+STAGE_FINAL = "final"
+
+def _stage_suffix(stage):
+    if stage == STAGE_BOOT:
+        return ".boot"
+    if stage == STAGE_BUILD:
+        return ".build"
+    if stage == STAGE_FINAL:
+        return ""
+    fail("Unknown stage: %s" % stage)
+
+def _tool(tool, stage):
+    if stage == STAGE_BOOT:
+        return "//cyclone/boot/tools/%s:%s" % (tool, tool)
+    if stage == STAGE_BUILD:
+        return "//cyclone/tools/%s:%s.build" % (tool, tool)
+    if stage == STAGE_FINAL:
+        return "//cyclone/tools/%s:%s" % (tool, tool)
+    fail("Unknown stage: %s" % stage)
+
 def _filter_srcs(files, suffixes):
     return [
         src
@@ -30,10 +52,14 @@ def _cyc_compile_impl(ctx):
 
     cyclone = ctx.executable.cyclone
 
-    if ctx.attr.boot:
-        for_boot = " [boot]"
+    if ctx.attr.stage != STAGE_FINAL:
+        for_boot = " [%s]" % ctx.attr.stage
+        suffix = _stage_suffix(ctx.attr.stage)
+        stage_defs = ["-DCYC_BOOT=1"]
     else:
         for_boot = ""
+        suffix = ""
+        stage_defs = []
 
     srcs = _filter_srcs(ctx.attr.srcs, [".cyc"])
     hdrs = _filter_srcs(ctx.attr.srcs, [".h"])
@@ -49,8 +75,8 @@ def _cyc_compile_impl(ctx):
 
     for src in srcs:
         basename = src.basename[:-4]
-        c_file = ctx.actions.declare_file("%s.c" % basename)
-        cyp_file = ctx.actions.declare_file("%s-pp.cyc" % basename)
+        c_file = ctx.actions.declare_file("%s%s.c" % (basename, suffix))
+        cyp_file = ctx.actions.declare_file("%s-pp%s.cyc" % (basename, suffix))
         outs.extend([
             c_file,
             cyp_file,
@@ -62,7 +88,7 @@ def _cyc_compile_impl(ctx):
             inputs = hdrs + dep_hdrs + [src],
             tools = [cyclone],
             executable = c_compiler_path,
-            arguments = [
+            arguments = stage_defs + [
                 "-xc",
                 "-E",
                 "-CC",
@@ -124,7 +150,7 @@ _cyc_compile = rule(
             ".h",
         ]),
         "deps": attr.label_list(),
-        "boot": attr.bool(mandatory = True),
+        "stage": attr.string(mandatory = True, values = [STAGE_BOOT, STAGE_BUILD, STAGE_FINAL]),
         "cycopts": attr.string_list(),
         "cyclone": attr.label(
             executable = True,
@@ -137,30 +163,25 @@ _cyc_compile = rule(
     toolchains = use_cc_toolchain(),
 )
 
-def _tool(tool, boot):
-    if boot:
-        return "//cyclone/boot/tools/%s" % tool
-    else:
-        return "//cyclone/tools/%s" % tool
+def _cyc_build(cc_rule, name, srcs = [], csrcs = [], deps = [], cdeps = [], cycopts = [], linkopts = [], stage = STAGE_FINAL, **kwargs):
+    renamed = name + _stage_suffix(stage)
 
-def _cyc_build(cc_rule, name, srcs = [], csrcs = [], boot_srcs = [], deps = [], cdeps = [], cycopts = [], linkopts = [], boot = False, **kwargs):
-    if srcs:
-        _cyc_compile(
-            name = name + "_srcs",
-            srcs = srcs,
-            boot = boot,
-            cyclone = _tool("cyclone", boot),
-            cycopts = cycopts,
-            deps = deps,
-        )
-
-        boot_srcs = boot_srcs + [":%s_srcs" % name]
+    srcs_name = "%s_srcs" % renamed
+    _cyc_compile(
+        name = srcs_name,
+        srcs = srcs,
+        stage = stage,
+        cyclone = _tool("cyclone", stage),
+        cycopts = cycopts,
+        deps = deps,
+    )
 
     kwargs["copts"] = kwargs.get("copts", []) + [MACHINE]
 
     if csrcs:
+        clib_name = "%s_clib" % renamed
         cc_library(
-            name = name + "_clib",
+            name = clib_name,
             srcs = csrcs,
             copts = kwargs["copts"],
             linkopts = linkopts + [MACHINE],
@@ -169,13 +190,11 @@ def _cyc_build(cc_rule, name, srcs = [], csrcs = [], boot_srcs = [], deps = [], 
             ],
         )
 
-        deps = deps + [":%s_clib" % name]
-
-    kwargs["copts"].append("-w")
+        deps = deps + [":" + clib_name]
 
     cc_rule(
         name = name,
-        srcs = boot_srcs,
+        srcs = [":" + srcs_name],
         linkopts = linkopts + [MACHINE],
         deps = deps + [
             "//cyclone/library/runtime",
@@ -193,27 +212,31 @@ def cyc_library(**kwargs):
 def cyc_test(**kwargs):
     _cyc_build(cc_test, **kwargs)
 
-def cyclex(name, src = None, out = None):
+def cyclex(name, src = None, out = None, stage = STAGE_FINAL):
+    tool = _tool("cyclex", stage)
     src = src or name + ".cyl"
-    out = out or name + ".cyc"
+    out = out or "%s%s.cyc" % (name, _stage_suffix(stage))
     native.genrule(
         name = name,
         srcs = [src],
         outs = [out],
-        cmd = "$(location //cyclone/boot/tools/cyclex) $< $@",
-        tools = ["//cyclone/boot/tools/cyclex"],
+        cmd = "$(location %s) $< $@" % tool,
+        tools = [tool],
     )
 
-def cycyacc(name, src):
+def cycyacc(name, src, stage = STAGE_FINAL):
+    tool = _tool("bison", stage)
+    out_cyc = "%s%s.cyc" % (name, _stage_suffix(stage))
+    out_hdr = "%s%s.h" % (name, _stage_suffix(stage))
     native.genrule(
         name = name,
         srcs = [src],
         outs = [
-            name + ".cyc",
-            name + ".h",
+            out_cyc,
+            out_hdr,
         ],
-        cmd = "$(location //cyclone/boot/tools/bison) -v -d $< -o $(location %s.cyc)" % name,
-        tools = ["//cyclone/boot/tools/bison"],
+        cmd = "$(location %s) -v -d $< -o $(location %s)" % (tool, out_cyc),
+        tools = [tool],
     )
 
 def errorgen(name):
@@ -234,8 +257,8 @@ def errorgen(name):
         ],
     )
 
-def buildlib(name, src, hdrs, boot = False, visibility = None, deps = [], includes = []):
-    buildlib = _tool("buildlib", boot)
+def buildlib(name, src, hdrs, stage = STAGE_FINAL, visibility = None, deps = [], includes = []):
+    buildlib = _tool("buildlib", stage)
 
     native.genrule(
         name = name,

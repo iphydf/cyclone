@@ -1,12 +1,15 @@
-load("//cyclone:build_defs.bzl", "cyc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load("//cyclone:build_defs.bzl", "MACHINE")
 
-cyc_binary(
+cc_binary(
     name = "buildlib",
-    boot_srcs = ["buildlib.c"],
-    data = ["//cyclone/library/std/cyc-lib:cycspecs"],
+    srcs = ["buildlib.c"],
+    copts = [MACHINE],
+    linkopts = [MACHINE],
     visibility = ["//visibility:public"],
     deps = [
         "//cyclone/boot/library/compiler",
         "//cyclone/boot/library/std",
+        "//cyclone/library/runtime",
     ],
 )

@@ -1,12 +1,20 @@
-load("//cyclone:build_defs.bzl", "cyc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//cyclone:build_defs.bzl", "MACHINE")
 
-cyc_library(
+cc_library(
     name = "std",
-    boot_srcs = glob([
+    srcs = glob([
         "*.c",
         "libc/*.c",
     ]),
-    copts = ["-D_POSIX_C_SOURCE=199309L"],
-    linkopts = ["-lpthread"],
+    copts = [
+        "-D_POSIX_C_SOURCE=199309L",
+        MACHINE,
+    ],
+    linkopts = [MACHINE],
     visibility = ["//visibility:public"],
+    deps = [
+        "//cyclone/library/runtime",
+        "//cyclone/library/std/cyc-lib",
+    ],
 )

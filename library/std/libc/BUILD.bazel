@@ -88,6 +88,6 @@ buildlib(
         "wctype.h",
         "wordexp.h",
     ],
-    boot = True,
+    stage = "boot",
     visibility = ["//visibility:public"],
 )

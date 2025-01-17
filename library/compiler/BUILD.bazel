@@ -1,5 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-load("//cyclone:build_defs.bzl", "cyc_library", "cyclex", "cycyacc", "errorgen", "MACHINE")
+load("//cyclone:build_defs.bzl", "MACHINE", "cyc_library", "cyclex", "cycyacc", "errorgen")
 
 cc_binary(
     name = "make-config",
@@ -26,12 +26,19 @@ cc_library(
 )
 
 cyclex(
+    name = "lex.boot",
+    src = "lex.cyl",
+    stage = "boot",
+)
+
+cyclex(
     name = "lex",
 )
 
 cycyacc(
     name = "parse_tab",
     src = "parse.cyy",
+    stage = "boot",
 )
 
 errorgen(
@@ -39,11 +46,11 @@ errorgen(
 )
 
 cyc_library(
-    name = "compiler",
+    name = "compiler.build",
     srcs = [
-        ":lex",
-        ":parse_tab",
+        ":lex.boot",
         ":parse_errors",
+        ":parse_tab",
     ] + glob(
         [
             "*.cyc",
@@ -56,7 +63,34 @@ cyc_library(
         ],
     ),
     hdrs = glob(["*.h"]),
-    boot = True,
+    stage = "boot",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":config",
+        "//cyclone/library/compiler/inference",
+        "//cyclone/library/std",
+    ],
+)
+
+cyc_library(
+    name = "compiler",
+    srcs = [
+        ":lex.boot",
+        ":parse_errors",
+        ":parse_tab",
+    ] + glob(
+        [
+            "*.cyc",
+            "*.h",
+        ],
+        exclude = [
+            "*.err.cyc",
+            "bansheeif_stub.cyc",
+            "rgnorder.cyc",
+        ],
+    ),
+    hdrs = glob(["*.h"]),
+    stage = "build",
     visibility = ["//visibility:public"],
     deps = [
         ":config",

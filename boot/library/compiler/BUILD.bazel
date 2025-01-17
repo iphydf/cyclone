@@ -1,12 +1,17 @@
-load("//cyclone:build_defs.bzl", "cyc_library")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//cyclone:build_defs.bzl", "MACHINE")
 
-cyc_library(
+cc_library(
     name = "compiler",
-    boot_srcs = glob(["*.c"]),
+    srcs = glob(["*.c"]),
+    copts = [MACHINE],
+    linkopts = [MACHINE],
     visibility = ["//visibility:public"],
     deps = [
         "//cyclone/boot/library/compiler/inference",
         "//cyclone/boot/library/std",
         "//cyclone/library/compiler:config",
+        "//cyclone/library/runtime",
+        "//cyclone/library/std/cyc-lib",
     ],
 )

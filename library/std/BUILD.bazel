@@ -14,30 +14,31 @@ genrule(
         " ".join(["$(location %s)" % hdr for hdr in glob(["*.h"])]),
         "> $@",
     ]),
-    tools = ["//cyclone/tools/cycdoc"],
     toolchains = ["@rules_cc//cc:current_cc_toolchain"],
+    tools = ["//cyclone/tools/cycdoc"],
 )
 
 cyclex(
     name = "lineno",
+    stage = "boot",
 )
 
 cyc_library(
     name = "std",
     srcs = [
-        "//cyclone/library/std/libc",
         ":lineno",
+        "//cyclone/library/std/libc",
     ] + glob([
         "*.cyc",
         "*.h",
     ]),
     hdrs = glob(["*.h"]),
-    boot = True,
     copts = ["-D_POSIX_C_SOURCE=200809L"],
     csrcs = [
         "boot_cstubs.c",
         "//cyclone/library/std/libc",
     ],
     linkopts = ["-lpthread"],
+    stage = "boot",
     visibility = ["//visibility:public"],
 )

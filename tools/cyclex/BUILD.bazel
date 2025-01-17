@@ -2,11 +2,13 @@ load("//cyclone:build_defs.bzl", "cyc_binary", "cyclex", "cycyacc")
 
 cyclex(
     name = "lexer",
+    stage = "boot",
 )
 
 cycyacc(
     name = "parser_tab",
     src = "parser.cyy",
+    stage = "boot",
 )
 
 cyc_binary(

@@ -16,7 +16,7 @@ extern lexer_definition_t parse_file(FILE @f);
 extern opt_t<Lexbuf<Function_lexbuf_state<FILE@>>> lbuf;
 extern datatype exn {extern Parser_error(string_t)};
 }
-#include "cyclone/tools/cyclex/parser_tab.h"
+#include "cyclone/tools/cyclex/parser_tab.boot.h"
 }}}}
 
 #endif
