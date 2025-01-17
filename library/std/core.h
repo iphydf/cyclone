@@ -68,9 +68,6 @@ __noinference__ {
 #define true ((bool)1)
 #endif
 
-  typedef long intptr_t;
-  typedef unsigned long uintptr_t;
-
   /*** The rest of the declarations are in namespace Core. */
 
 #ifndef _CYC_GENERATE_PRECORE_C_

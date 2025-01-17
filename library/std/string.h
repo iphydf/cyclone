@@ -23,6 +23,8 @@ __noinference__ {
 #include "cycboot.h"  // for size_t
 #include "list.h"
 
+#include <stdint.h>
+
   // A string is a char[?].  Most functions consider a zero (NUL)
   // character as an end of string marker, so we may have
   // strlen(s) < size(s).  Functions that do not follow this convention
