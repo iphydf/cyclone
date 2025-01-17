@@ -2280,7 +2280,7 @@ static void exp_to_c(env_t nv, exp_t e) {
       //  it's just an implicit cast to void * (so long as inst type isn't int)
       let tc  = typ_to_c((type_t)old_typ);
       let tc1 = typ_to_c((type_t)e1->topt);
-      if (!Tcutil::typecmp(tc, tc1) == 0) {
+      if (Tcutil::typecmp(tc, tc1) != 0) {
         // // HACK ALERT:
         // // gcc 3.4 refuses to compile a function call ( (t)f )(...)
         // // for types t that we need, so use ({(t)f})(...) instead.

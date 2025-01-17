@@ -72,7 +72,8 @@ void store_string_char(char c) {
     strncpy((char ?@nozeroterm)new_buff, string_buff, numelts(string_buff));
     string_buff = new_buff;
   }
-  string_buff[string_index++] = c;
+  string_buff[string_index] = c;
+  ++string_index;
 }
 
 mstring_t get_stored_string() {

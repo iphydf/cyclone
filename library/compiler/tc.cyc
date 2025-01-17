@@ -52,7 +52,7 @@ static string_t *tc_msg  = &tc_msg_c;
 static bool export_member(qvar_t x, list_t<$(seg_t, qvar_t, bool) @> exports) {
   for (; exports != NULL; exports = exports->tl) {
     let p = exports->hd;
-    if (!qvar_cmp(x, (*p)[1]) == 0)
+    if (qvar_cmp(x, (*p)[1]) != 0)
       continue;
     // set the flag associated with the export to record that the
     // declaration is present and return true

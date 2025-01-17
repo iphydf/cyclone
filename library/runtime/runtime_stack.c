@@ -18,51 +18,18 @@
 
 // This is implements the stack used by exceptions and lexical regions.
 
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "runtime_internal.h"
 
-#ifdef HAVE_THREADS
-static tlocal_key_t _current_frame_key;
-#elif !defined(USE_CYC_TLS)
 static __thread struct _RuntimeStack *_current_frame = NULL;
-#endif
 
-void _init_stack() {
-#ifdef HAVE_THREADS
-  int status;
-  if ((status = create_tlocal_key(&_current_frame_key, NULL)))
-    errquit("Thread local storage key creation failed (%d)", status);
-#endif
-}
+void _init_stack() {}
 
-struct _RuntimeStack *get_current_frame() {
-#ifdef HAVE_THREADS
-  return (struct _RuntimeStack *)get_tlocal(_current_frame_key);
-#elif defined(USE_CYC_TLS)
-  tls_record_t *rec = cyc_runtime_lookup_tls_record();
-  if (rec)
-    return rec->current_frame;
-  errquit("cyc_runtime module failed to return thread local slot -- fatal");
-  return 0;
-#else
-  return _current_frame;
-#endif
-}
+struct _RuntimeStack *get_current_frame() { return _current_frame; }
 
-void set_current_frame(struct _RuntimeStack *frame) {
-#ifdef HAVE_THREADS
-  put_tlocal(_current_frame_key, frame);
-#elif defined(USE_CYC_TLS)
-  tls_record_t *rec = cyc_runtime_lookup_tls_record();
-  if (rec)
-    rec->current_frame = frame;
-  else
-    errquit("cyc_runtime module failed to return thread local slot -- fatal");
-#else
-  _current_frame = frame;
-#endif
-}
+void set_current_frame(struct _RuntimeStack *frame) { _current_frame = frame; }
 
 void _push_frame(struct _RuntimeStack *frame) {
   frame->next = get_current_frame();
@@ -76,7 +43,8 @@ void _npop_frame(unsigned int n) {
   for (i = n; i <= n; i--) {
     struct _RuntimeStack *current_frame = get_current_frame();
     if (current_frame == NULL) {
-      errquit("internal error: empty frame stack\n");
+      fprintf(stderr, "internal error: empty frame stack\n");
+      exit(1);
     }
     if (current_frame->cleanup != NULL)
       current_frame->cleanup(current_frame);
@@ -98,30 +66,7 @@ struct _RuntimeStack *_frame_until(int tag, int do_pop) {
     set_current_frame(current_frame);
   return current_frame;
 }
+
 // set _current_frame to the first frame with the given tag.
 // If no such frame is found, _current_frame is set to NULL.
 struct _RuntimeStack *_pop_frame_until(int tag) { return _frame_until(tag, 1); }
-
-#ifdef USE_CYC_TLS
-static struct tls_record_pair {
-  pthread_t tid;
-  tls_record_t rec;
-} tls_record_map[2000];
-
-tls_record_t *cyc_runtime_lookup_tls_record(void) {
-  size_t i;
-  pthread_t self = pthread_self();
-  if (self == 0)
-    return &tls_record_map[0].rec;
-
-  for (i = 1; i < sizeof tls_record_map / sizeof *tls_record_map; i++) {
-    struct tls_record_pair *pair = tls_record_map + i;
-    if (pair->tid == 0)
-      pair->tid = self;
-    if (pair->tid == self)
-      return &pair->rec;
-  }
-
-  return NULL;
-}
-#endif

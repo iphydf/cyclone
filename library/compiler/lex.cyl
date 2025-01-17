@@ -22,19 +22,18 @@
 // WARNING: lex_init must be called for each source file!
 
 #define ALL_PARSE_H
-#include "cyclone/library/compiler/lex.h"
+#include <stdio.h>
+#include <string.h>
 
 #include "cyclone/library/compiler/binding.h"
 #include "cyclone/library/compiler/flags.h"
+#include "cyclone/library/compiler/lex.h"
 #include "cyclone/library/compiler/parse.h"
 #include "cyclone/library/compiler/tcutil.h"
 #include "cyclone/library/compiler/warn.h"
-
 #include "cyclone/library/std/dict.h"
 #include "cyclone/library/std/lexing.h"
 #include "cyclone/library/std/set.h"
-#include <stdio.h>
-#include <string.h>
 #include "cyclone/library/std/xarray.h"
 
 using Absyn;
@@ -44,973 +43,853 @@ using Parse;
 
 namespace Lex
 {
-  struct Trie<`r::E>;
+struct Trie<`r::E>;
 
-  typedef struct Trie<`r> *`r trie_t<`r>;
+typedef struct Trie<`r> *`r trie_t<`r>;
 
-  @tagged union TrieChildren<`r::E>
-  {
-    int Zero;
-    $(int, trie_t<`r>) One;
-    trie_t<`r> @{65} `r Many;               // enough room for id chars and ` and backslash
-  };
+@tagged union TrieChildren<`r::E> {
+  int Zero;
+  $(int, trie_t<`r>) One;
+  trie_t<`r> @{65} `r Many;  // enough room for id chars and ` and backslash
+};
 
-  static union TrieChildren<`r>
-  Zero ()
-  {
-    return TrieChildren { .Zero = 0 };
+static union TrieChildren<`r> Zero() { return TrieChildren{.Zero = 0}; }
+
+static union TrieChildren<`r> One(int i, trie_t<`r> t) { return TrieChildren{.One = $(i, t)}; }
+
+static union TrieChildren<`r> Many(trie_t<`r> @{65} `r ts) { return TrieChildren{.Many = ts}; }
+
+struct Trie<`r> {
+  union TrieChildren<`r> children;
+  int shared_str;  // meaning depends on which trie -- see below
+};
+struct DynTrie {
+  <`d> uregion_key_t<`d> dyn;
+  trie_t<`d> t;
+};
+typedef struct DynTrie *`U dyn_trie_t;
+struct DynTrieSymbols {
+  <`d> uregion_key_t<`d> dyn;
+  trie_t<`d> t;  // int field is symbol index, 0 for not there
+  Xarray::xarray_t<stringptr_t, `d> symbols;
+};
+typedef struct DynTrieSymbols *`U dyn_trie_symbols_t;
+
+/////////////////////////////// Globals /////////////////////////////
+
+// These must be (re-)initialized in lex_init.
+static int num_kws = 0;
+struct KeyWordInfo {
+  int token_index;
+  bool is_c_keyword;
+};
+static struct KeyWordInfo ? kw_nums = NULL;
+
+static bool expand_specials = false;  // FLAG
+// state for recording whether or not we're parsing C code
+static bool in_extern_c = false;
+static list_t<bool, `H, UNIQUE> prev_extern_c = NULL;
+
+void enter_extern_c() {
+  list_t<bool, `H, UNIQUE> x = NULL;
+  x :=: prev_extern_c;
+  prev_extern_c = qunew List(in_extern_c, x);
+  in_extern_c = true;
+}
+
+void leave_extern_c() {
+  list_t<bool, `H, UNIQUE> x = NULL;
+  x :=: prev_extern_c;
+  in_extern_c = x->hd;
+  prev_extern_c = x->tl;
+  ufree(x);
+}
+
+static dyn_trie_symbols_t ids_trie = NULL;
+static dyn_trie_t typedefs_trie = NULL;  // int field true iff path is a typedef
+
+static int comment_depth = 0;
+
+// These needn't be set by lex_init -- they're set while finding a token.
+static cnst_t token_int = Cnst{.Null_c = 0};
+static string_t bogus_string = "*bogus*";
+static $(nmspace_t, var_t) token_id_pair = $(Nmspace{.Abs_n = NULL}, &bogus_string);
+static char token_char = '\000';
+string_t token_string = "";
+qvar_t token_qvar = &token_id_pair;
+
+static int runaway_start = 0;
+
+static void err(string_t<`H> msg, Lexing::Lexbuf lb) {
+  seg_t s = Lexing::lexeme_start(lb);
+
+  Warn::err(s, msg);
+}
+
+static void runaway_err(string_t<`H> msg, Lexing::Lexbuf lb) {
+  seg_t s = runaway_start;
+
+  Warn::err(s, msg);
+}
+
+static char cnst2char(cnst_t cnst, Lexing::Lexbuf lb) {
+  switch (cnst) {
+    case {.Int_c = $(_, i)}:
+      return (char)i;
+    case {.LongLong_c = $(_, i)}:
+      return (char)i;
+    case {.Char_c = $(_, c)}:
+      return c;
+    default:
+      err("couldn't convert constant to char!", lb);
+      return (char)0;
   }
+}
 
-  static union TrieChildren<`r>
-  One (int i, trie_t<`r> t)
-  {
-    return TrieChildren { .One = $(i, t) };
+// ************************** RESERVED WORDS **************************
+// bool is true when the keyword is a GCC keyword, not just a Cyclone keyword
+static $(string_t, short, bool) rw_array[] = {
+  $("ALIASABLE",            AQ_ALIASABLE,    false),
+  $("alignof",              ALIGNOF,         true ),
+  $("__alignof__",          ALIGNOF,         true ),
+  $("aqual_t",              AQUAL_T,         false),
+  $("aquals",               AQUALS,          false),
+  $("__attribute__",        ATTRIBUTE,       true ),
+  $("__attribute",          ATTRIBUTE,       true ),
+  $("__asm__",              ASM_TOK,         true ),
+  $("__asm",                ASM_TOK,         true ),
+  $("assert",               ASSERT,          false),
+  $("asm",                  ASM_TOK,         true ),
+  $("abstract",             ABSTRACT,        false),
+  $("auto",                 AUTO,            true ),
+  $("break",                BREAK,           true ),
+  $("__builtin_va_list",    BUILTIN_VA_LIST, true ),
+  $("calloc",               CALLOC,          false),
+  $("case",                 CASE,            true ),
+  $("catch",                CATCH,           true ),
+  $("char",                 CHAR,            true ),
+  $("_Complex",             COMPLEX,         true ),
+  $("__complex__",          COMPLEX,         true ),
+  $("const",                CONST,           true ),
+  $("__const__",            CONST,           true ),
+  $("continue",             CONTINUE,        true ),
+  $("cyclone_override",     OVERRIDE,        false),
+  $("datatype",             DATATYPE,        false),
+  $("default",              DEFAULT,         true ),
+  $("do",                   DO,              true ),
+  $("double",               DOUBLE,          true ),
+  $("else",                 ELSE,            true ),
+  $("enum",                 ENUM,            true ),
+  $("export",               EXPORT,          false),
+  $("cyclone_hide",         HIDE,            false),
+  $("__extension__",        EXTENSION,       true ),
+  $("extern",               EXTERN,          true ),
+  $("fallthru",             FALLTHRU,        false),
+  $("float",                FLOAT,           true ),
+  $("_Float128",            FLOAT128,        true ),
+  $("for",                  FOR,             true ),
+  $("goto",                 GOTO,            true ),
+  $("if",                   IF,              true ),
+  $("inline",               INLINE,          true ),
+  $("__inline__",           INLINE,          true ),
+  $("__inline",             INLINE,          true ),
+  $("int",                  INT,             true ),
+  $("__int128_t",           INT128_T,        true ),
+  $("let",                  LET,             false),
+  $("long",                 LONG,            true ),
+  $("malloc",               MALLOC,          false),
+  $("namespace",            NAMESPACE,       false),
+  $("new",                  NEW,             false),
+  $("NULL",                 NULL_kw,         false),
+  $("numelts",              NUMELTS,         false),
+  $("__noinference__",      NOINFERENCE,     false),
+  $("offsetof",             OFFSETOF,        true ),
+  $("__cyclone_port_on__",  PORTON,          false),
+  $("__cyclone_port_off__", PORTOFF,         false),
+  $("__cyclone_pragma__",   PRAGMA,          false),
+  $("qcalloc",              QCALLOC,         false),
+  $("qmalloc",              QMALLOC,         false),
+  $("qnew",                 QNEW,            false),
+  $("rcalloc",              RCALLOC,         false),
+  $("REFCNT",               AQ_REFCNT,       false),
+  $("region_t",             REGION_T,        false),
+  $("region",               REGION,          false),
+  $("regions",              REGIONS,         false),
+  $("register",             REGISTER,        true ),
+  $("restrict",             RESTRICT,        true ),
+  $("__restrict",           RESTRICT,        true ),
+  $("RESTRICTED",           AQ_RESTRICTED,   false),
+  $("return",               RETURN,          true ),
+  $("rmalloc",              RMALLOC,         false),
+  $("rmalloc_inline",       RMALLOC_INLINE,  false),
+  $("rvmalloc",             RVMALLOC,        false),
+  $("rnew",                 RNEW,            false),
+  $("short",                SHORT,           true ),
+  $("signed",               SIGNED,          true ),
+  $("__signed__",           SIGNED,          true ),
+  $("sizeof",               SIZEOF,          true ),
+  $("static",               STATIC,          true ),
+  $("struct",               STRUCT,          true ),
+  $("switch",               SWITCH,          true ),
+  $("tagcheck",             TAGCHECK,        false),
+  $("tagof",                TAGOF,           false),
+  $("tag_t",                TAG_T,           false),
+  $("__tempest_on__",       TEMPESTON,       false),
+  $("__tempest_off__",      TEMPESTOFF,      false),
+  $("throw",                THROW,           false),
+  $("try",                  TRY,             false),
+  $("typedef",              TYPEDEF,         true ),
+  $("typeof",               TYPEOF,          true ),
+  $("__typeof__",           TYPEOF,          true ),
+  $("UNIQUE",               AQ_UNIQUE,       false),
+  $("union",                UNION,           true ),
+  $("unsigned",             UNSIGNED,        true ),
+  $("__unsigned__",         UNSIGNED,        true ),
+  $("using",                USING,           false),
+  $("valueof",              VALUEOF,         false),
+  $("valueof_t",            VALUEOF_T,       false),
+  $("void",                 VOID,            true ),
+  $("volatile",             VOLATILE,        true ),
+  $("__volatile__",         VOLATILE,        true ),
+  $("while",                WHILE,           true ),
+};
+
+static int num_keywords(bool include_cyclone_keywords) {
+  int sum = 0;
+
+  for (unsigned i = 0; i < numelts(rw_array); i++)
+    if (include_cyclone_keywords || rw_array[i][2])
+      sum++;
+  return sum;
+}
+
+////  Qualifiers (with lexbuf hack) /////////////
+/* HACK: If we see @taggedfoo then this should be lexed as '@' 'taggedfoo', not
+ * '@tagged' 'foo' -- so we back up the lexer */
+static int do_possible_qualifier(Lexing::Lexbuf lexbuf) {
+  buffer_t b = lexbuf->lex_buffer + lexbuf->lex_start_pos + 1;
+  unsigned len = lexbuf->lex_curr_pos - (lexbuf->lex_start_pos + 1);
+
+  switch (b[0]) {
+    case 't':
+      if (len == 6 && strncmp(b, "tagged", 6) == 0)
+        return TAGGED_QUAL;
+      if (len == 4 && strncmp(b, "thin", 4) == 0)
+        return THIN_QUAL;
+      if (len == 6 && strncmp(b, "throws", 6) == 0)
+        return THROWS_QUAL;
+      break;
+    case 'n':
+      if (len == 7 && strncmp(b, "notnull", 7) == 0)
+        return NOTNULL_QUAL;
+      if (len == 7 && strncmp(b, "numelts", 7) == 0)
+        return NUMELTS_QUAL;
+      if (len == 8 && strncmp(b, "nullable", 8) == 0)
+        return NULLABLE_QUAL;
+      if (len == 10 && strncmp(b, "nozeroterm", 10) == 0)
+        return NOZEROTERM_QUAL;
+      break;
+    case 'z':
+      if (len == 8 && strncmp(b, "zeroterm", 8) == 0)
+        return ZEROTERM_QUAL;
+      break;
+    case 'e':
+      if (len == 6 && strncmp(b, "effect", 6) == 0)
+        return EFFECT_QUAL;
+      if (len == 7 && strncmp(b, "ensures", 7) == 0)
+        return ENSURES_QUAL;
+      if (len == 10 && strncmp(b, "extensible", 10) == 0)
+        return EXTENSIBLE_QUAL;
+      break;
+    case 'c':
+      if (len == 6 && strncmp(b, "checks", 6) == 0)
+        return CHECKS_QUAL;
+      break;
+    case 'r':
+      if (len == 8 && strncmp(b, "requires", 8) == 0)
+        return REQUIRES_QUAL;
+      if (len == 6 && strncmp(b, "region", 6) == 0)
+        return REGION_QUAL;
+      break;
+    case 'f':
+      if (len == 3 && strncmp(b, "fat", 3) == 0)
+        return FAT_QUAL;
+      break;
+    case 'a':
+      if (len == 5 && strncmp(b, "aqual", 5) == 0)
+        return ALIAS_QUAL;
+      if (len == 6 && strncmp(b, "assert", 6) == 0)
+        return ASSERT_QUAL;
+      if (len == 8 && strncmp(b, "assert__", 8) == 0)
+        return ASSERT_QUAL;
+      if (len == 12 && strncmp(b, "assert_false", 12) == 0)
+        return ASSERT_FALSE_QUAL;
+      if (len == 12 && strncmp(b, "autoreleased", 12) == 0)
+        return AUTORELEASED_QUAL;
+      break;
+    case 's':
+      if (len == 6 && strncmp(b, "subset", 6) == 0)
+        return SUBSET_QUAL;
+      break;
+    default:
+      break;
   }
+  lexbuf->lex_curr_pos = lexbuf->lex_start_pos + 1;  // HACK
+  return '@';
+}
 
-  static union TrieChildren<`r>
-  Many (trie_t<`r> @{65} `r ts)
-  {
-    return TrieChildren { .Many = ts };
-  }
+///////////////////////// Trie manipulation ///////////////////////
+static trie_t<`d> empty_trie(region_t<`d> d, int dummy) { return rnew(d) Trie(Zero(), false); }
 
-  struct Trie<`r>
-  {
-    union TrieChildren<`r> children;
-    int shared_str; // meaning depends on which trie -- see below
-  };
-  struct DynTrie
-  {
-    <`d>
-    uregion_key_t<`d>  dyn;
-    trie_t<`d>         t;
-  };
-  typedef struct DynTrie *`U dyn_trie_t;
-  struct DynTrieSymbols
-  {
-    <`d>
-    uregion_key_t<`d>  dyn;
-    trie_t<`d>         t;  //int field is symbol index, 0 for not there
-    Xarray::xarray_t<stringptr_t, `d> symbols;
-  };
-  typedef struct DynTrieSymbols *`U dyn_trie_symbols_t;
+//     ['0'-'9'] --> [0,9]
+//     ['A'-'Z'] --> [10, 35]
+//     '\' --> 36
+//     ['_'-'z'] --> [37, 64]
+static int trie_char(int c) {
+  // get the legal chars into a narrow range starting at 0
+  if (c == 92)
+    return 37;
+  if (c >= 95)
+    return c - 58;
+  if (c > 64)
+    return c - 55;
+  return c - 48;
+}
 
-  /////////////////////////////// Globals /////////////////////////////
+static trie_t<`r> trie_lookup(region_t<`r> r, trie_t<`r> t, string_t buff, int offset,
+                              unsigned len) {
+  unsigned i = 0;
 
-  // These must be (re-)initialized in lex_init.
-  static int num_kws = 0;
-  struct KeyWordInfo
-  {
-    int token_index;
-    bool is_c_keyword;
-  };
-  static struct KeyWordInfo ?kw_nums = NULL;
-
-  static bool expand_specials = false; // FLAG
-  // state for recording whether or not we're parsing C code
-  static bool in_extern_c = false;
-  static list_t<bool, `H, UNIQUE> prev_extern_c = NULL;
-
-  void
-  enter_extern_c ()
-  {
-    list_t<bool, `H, UNIQUE> x = NULL;
-    x :=: prev_extern_c;
-    prev_extern_c = qunew List (in_extern_c, x);
-    in_extern_c = true;
-  }
-
-  void
-  leave_extern_c ()
-  {
-    list_t<bool, `H, UNIQUE> x = NULL;
-    x :=: prev_extern_c;
-    in_extern_c = x->hd;
-    prev_extern_c = x->tl;
-    ufree (x);
-  }
-
-  static dyn_trie_symbols_t ids_trie  = NULL;
-  static dyn_trie_t typedefs_trie = NULL;//int field true iff path is a typedef
-
-  static int comment_depth = 0;
-
-  // These needn't be set by lex_init -- they're set while finding a token.
-  static cnst_t             token_int     = Cnst { .Null_c = 0 };
-  static string_t           bogus_string  = "*bogus*";
-  static $(nmspace_t,var_t) token_id_pair = $(Nmspace { .Abs_n = NULL }, &bogus_string);
-  static char               token_char    = '\000';
-  string_t                  token_string  = "";
-  qvar_t                    token_qvar    = &token_id_pair;
-
-  static int runaway_start = 0;
-
-  static void
-  err (string_t<`H> msg, Lexing::Lexbuf lb)
-  {
-    seg_t s = Lexing::lexeme_start (lb);
-
-    Warn::err (s, msg);
-  }
-
-  static void
-  runaway_err (string_t<`H> msg, Lexing::Lexbuf lb)
-  {
-    seg_t s = runaway_start;
-
-    Warn::err (s, msg);
-  }
-
-  static char
-  cnst2char (cnst_t cnst, Lexing::Lexbuf lb)
-  {
-    switch (cnst)
-      {
-      case { .Int_c      = $(_, i) }: return (char)i;
-      case { .LongLong_c = $(_, i) }: return (char)i;
-      case { .Char_c     = $(_, c) }: return c;
-      default:
-        err ("couldn't convert constant to char!", lb);
-        return (char)0;
-      }
-  }
-
-  // ************************** RESERVED WORDS **************************
-  // bool is true when the keyword is a GCC keyword, not just a Cyclone keyword
-  static $(string_t, short, bool) rw_array[] = {
-    $("ALIASABLE",            AQ_ALIASABLE,    false),
-    $("alignof",              ALIGNOF,         true ),
-    $("__alignof__",          ALIGNOF,         true ),
-    $("aqual_t",              AQUAL_T,         false),
-    $("aquals",               AQUALS,          false),
-    $("__attribute__",        ATTRIBUTE,       true ),
-    $("__attribute",          ATTRIBUTE,       true ),
-    $("__asm__",              ASM_TOK,         true ),
-    $("__asm",                ASM_TOK,         true ),
-    $("assert",               ASSERT,          false),
-    $("asm",                  ASM_TOK,         true ),
-    $("abstract",             ABSTRACT,        false),
-    $("auto",                 AUTO,            true ),
-    $("break",                BREAK,           true ),
-    $("__builtin_va_list",    BUILTIN_VA_LIST, true ),
-    $("calloc",               CALLOC,          false),
-    $("case",                 CASE,            true ),
-    $("catch",                CATCH,           true ),
-    $("char",                 CHAR,            true ),
-    $("_Complex",             COMPLEX,         true ),
-    $("__complex__",          COMPLEX,         true ),
-    $("const",                CONST,           true ),
-    $("__const__",            CONST,           true ),
-    $("continue",             CONTINUE,        true ),
-    $("cyclone_override",     OVERRIDE,        false),
-    $("datatype",             DATATYPE,        false),
-    $("default",              DEFAULT,         true ),
-    $("do",                   DO,              true ),
-    $("double",               DOUBLE,          true ),
-    $("else",                 ELSE,            true ),
-    $("enum",                 ENUM,            true ),
-    $("export",               EXPORT,          false),
-    $("cyclone_hide",         HIDE,            false),
-    $("__extension__",        EXTENSION,       true ),
-    $("extern",               EXTERN,          true ),
-    $("fallthru",             FALLTHRU,        false),
-    $("float",                FLOAT,           true ),
-    $("_Float128",            FLOAT128,        true ),
-    $("for",                  FOR,             true ),
-    $("goto",                 GOTO,            true ),
-    $("if",                   IF,              true ),
-    $("inline",               INLINE,          true ),
-    $("__inline__",           INLINE,          true ),
-    $("__inline",             INLINE,          true ),
-    $("int",                  INT,             true ),
-    $("__int128_t",           INT128_T,        true ),
-    $("let",                  LET,             false),
-    $("long",                 LONG,            true ),
-    $("malloc",               MALLOC,          false),
-    $("namespace",            NAMESPACE,       false),
-    $("new",                  NEW,             false),
-    $("NULL",                 NULL_kw,         false),
-    $("numelts",              NUMELTS,         false),
-    $("__noinference__",      NOINFERENCE,     false),
-    $("offsetof",             OFFSETOF,        true ),
-    $("__cyclone_port_on__",  PORTON,          false),
-    $("__cyclone_port_off__", PORTOFF,         false),
-    $("__cyclone_pragma__",   PRAGMA,          false),
-    $("qcalloc",              QCALLOC,         false),
-    $("qmalloc",              QMALLOC,         false),
-    $("qnew",                 QNEW,            false),
-    $("rcalloc",              RCALLOC,         false),
-    $("REFCNT",               AQ_REFCNT,       false),
-    $("region_t",             REGION_T,        false),
-    $("region",               REGION,          false),
-    $("regions",              REGIONS,         false),
-    $("register",             REGISTER,        true ),
-    $("restrict",             RESTRICT,        true ),
-    $("__restrict",           RESTRICT,        true ),
-    $("RESTRICTED",           AQ_RESTRICTED,   false),
-    $("return",               RETURN,          true ),
-    $("rmalloc",              RMALLOC,         false),
-    $("rmalloc_inline",       RMALLOC_INLINE,  false),
-    $("rvmalloc",             RVMALLOC,        false),
-    $("rnew",                 RNEW,            false),
-    $("short",                SHORT,           true ),
-    $("signed",               SIGNED,          true ),
-    $("__signed__",           SIGNED,          true ),
-    $("sizeof",               SIZEOF,          true ),
-    $("static",               STATIC,          true ),
-    $("struct",               STRUCT,          true ),
-    $("switch",               SWITCH,          true ),
-    $("tagcheck",             TAGCHECK,        false),
-    $("tagof",                TAGOF,           false),
-    $("tag_t",                TAG_T,           false),
-    $("__tempest_on__",       TEMPESTON,       false),
-    $("__tempest_off__",      TEMPESTOFF,      false),
-    $("throw",                THROW,           false),
-    $("try",                  TRY,             false),
-    $("typedef",              TYPEDEF,         true ),
-    $("typeof",               TYPEOF,          true ),
-    $("__typeof__",           TYPEOF,          true ),
-    $("UNIQUE",               AQ_UNIQUE,       false),
-    $("union",                UNION,           true ),
-    $("unsigned",             UNSIGNED,        true ),
-    $("__unsigned__",         UNSIGNED,        true ),
-    $("using",                USING,           false),
-    $("valueof",              VALUEOF,         false),
-    $("valueof_t",            VALUEOF_T,       false),
-    $("void",                 VOID,            true ),
-    $("volatile",             VOLATILE,        true ),
-    $("__volatile__",         VOLATILE,        true ),
-    $("while",                WHILE,           true ),
-  };
-
-  static int
-  num_keywords (bool include_cyclone_keywords)
-  {
-    int sum = 0;
-
-    for (unsigned i = 0; i < numelts (rw_array); i++)
-      if (include_cyclone_keywords || rw_array[i][2])
-        sum++;
-    return sum;
-  }
-
-  ////  Qualifiers (with lexbuf hack) /////////////
-  /* HACK: If we see @taggedfoo then this should be lexed as '@' 'taggedfoo', not
-   * '@tagged' 'foo' -- so we back up the lexer */
-  static int
-  do_possible_qualifier (Lexing::Lexbuf lexbuf)
-  {
-    buffer_t b = lexbuf->lex_buffer + lexbuf->lex_start_pos + 1;
-    unsigned len = lexbuf->lex_curr_pos - (lexbuf->lex_start_pos + 1);
-
-    switch (b[0])
-      {
-      case 't':
-        if (len ==  6 && strncmp (b, "tagged"      ,  6) == 0) return TAGGED_QUAL;
-        if (len ==  4 && strncmp (b, "thin"        ,  4) == 0) return THIN_QUAL;
-        if (len ==  6 && strncmp (b, "throws"      ,  6) == 0) return THROWS_QUAL;
+  buff = buff + offset;
+  if (!(len < numelts(buff)))
+    Warn::impos("array bounds in trie_lookup");
+  while (i < len)
+    switch (t->children) {
+      case {.Many = arr}:
+        // walk down one level
+        int ch = trie_char(buff[i]);
+        if (arr[ch] == NULL)
+          arr[ch] = rnew(r) Trie(Zero(), 0);
+        t = arr[ch];
+        ++i;
         break;
-      case 'n':
-        if (len ==  7 && strncmp (b, "notnull"     ,  7) == 0) return NOTNULL_QUAL;
-        if (len ==  7 && strncmp (b, "numelts"     ,  7) == 0) return NUMELTS_QUAL;
-        if (len ==  8 && strncmp (b, "nullable"    ,  8) == 0) return NULLABLE_QUAL;
-        if (len == 10 && strncmp (b, "nozeroterm"  , 10) == 0) return NOZEROTERM_QUAL;
-        break;
-      case 'z':
-        if (len ==  8 && strncmp (b, "zeroterm"    ,  8) == 0) return ZEROTERM_QUAL;
-        break;
-      case 'e':
-        if (len ==  6 && strncmp (b, "effect"      ,  6) == 0) return EFFECT_QUAL;
-        if (len ==  7 && strncmp (b, "ensures"     ,  7) == 0) return ENSURES_QUAL;
-        if (len == 10 && strncmp (b, "extensible"  , 10) == 0) return EXTENSIBLE_QUAL;
-        break;
-      case 'c':
-        if (len ==  6 && strncmp (b, "checks"      ,  6) == 0) return CHECKS_QUAL;
-        break;
-      case 'r':
-        if (len ==  8 && strncmp (b, "requires"    ,  8) == 0) return REQUIRES_QUAL;
-        if (len ==  6 && strncmp (b, "region"      ,  6) == 0) return REGION_QUAL;
-        break;
-      case 'f':
-        if (len ==  3 && strncmp (b, "fat"         ,  3) == 0) return FAT_QUAL;
-        break;
-      case 'a':
-        if (len ==  5 && strncmp (b, "aqual"       ,  5) == 0) return ALIAS_QUAL;
-        if (len ==  6 && strncmp (b, "assert"      ,  6) == 0) return ASSERT_QUAL;
-        if (len ==  8 && strncmp (b, "assert__"    ,  8) == 0) return ASSERT_QUAL;
-        if (len == 12 && strncmp (b, "assert_false", 12) == 0) return ASSERT_FALSE_QUAL;
-        if (len == 12 && strncmp (b, "autoreleased", 12) == 0) return AUTORELEASED_QUAL;
-        break;
-      case 's':
-        if (len ==  6 && strncmp (b, "subset"      ,  6) == 0) return SUBSET_QUAL;
-        break;
-      default:
-        break;
-      }
-    lexbuf->lex_curr_pos = lexbuf->lex_start_pos + 1; // HACK
-    return '@';
-  }
-
-  ///////////////////////// Trie manipulation ///////////////////////
-  static trie_t<`d>
-  empty_trie (region_t<`d> d, int dummy)
-  {
-    return rnew (d) Trie (Zero (), false);
-  }
-
-  //     ['0'-'9'] --> [0,9]
-  //     ['A'-'Z'] --> [10, 35]
-  //     '\' --> 36
-  //     ['_'-'z'] --> [37, 64]
-  static int
-  trie_char (int c)
-  {
-    // get the legal chars into a narrow range starting at 0
-    if (c == 92) return 37;
-    if (c >= 95) return c - 58;
-    if (c >  64) return c - 55;
-    return c - 48;
-  }
-
-  static trie_t<`r>
-  trie_lookup (region_t<`r> r, trie_t<`r> t,
-               string_t buff, int offset, unsigned len)
-  {
-    unsigned i = 0;
-
-    buff = buff + offset;
-    if (!(len < numelts (buff)))
-      Warn::impos ("array bounds in trie_lookup");
-    while (i < len)
-      switch (t->children)
-        {
-        case { .Many = arr }:
-          // walk down one level
-          int ch = trie_char (buff[i]);
-          if (arr[ch] == NULL)
-            arr[ch] = rnew (r) Trie (Zero (), 0);
+      case {.One = $(one_ch, one_trie)}:
+        // walk down one level
+        if (one_ch == buff[i])
+          t = one_trie;
+        else {
+          let arr = rnew(r) {for j < 65 : NULL};
+          arr[trie_char(one_ch)] = one_trie;
+          let ch = trie_char(buff[i]);
+          arr[ch] = rnew(r) Trie(Zero(), 0);
+          t->children = Many(arr);
           t = arr[ch];
-          ++i;
-          break;
-        case { .One = $(one_ch, one_trie) }:
-          // walk down one level
-          if (one_ch == buff[i])
-            t = one_trie;
-          else
-            {
-              let arr = rnew (r)
-              {
-                for j < 65 : NULL
-              };
-              arr[trie_char (one_ch)] = one_trie;
-              let ch = trie_char (buff[i]);
-              arr[ch] = rnew (r) Trie (Zero (), 0);
-              t->children = Many (arr);
-              t = arr[ch];
-            }
-          ++i;
-          break;
-        case { .Zero = _ }:
-          // new string -- extend the trie
-          while (i < len)
-            {
-              trie_t<`r> next = rnew (r) Trie (Zero (), 0);
-              t->children = One (buff[i++], next);
-              t = next;
-            }
-          return t;
         }
-    return t;
+        ++i;
+        break;
+      case {.Zero = _}:
+        // new string -- extend the trie
+        while (i < len) {
+          trie_t<`r> next = rnew(r) Trie(Zero(), 0);
+          t->children = One(buff[i], next);
+          ++i;
+          t = next;
+        }
+        return t;
+    }
+  return t;
+}
+
+static int str_index_body(region_t<`d> d, $(trie_t<`d>, Xarray::xarray_t<stringptr_t<`H, `H>, `d>,
+                                            string_t buff, int offset, int len) @env) {
+  let $(tree, symbols, buff, offset, len) = *env;
+  let t = trie_lookup(d, tree, buff, offset, len);
+  // build string if necessary and return
+  if (t->shared_str == 0) {
+    let newstr = new_string(len + 1);
+    zstrncpy ((char ?@nozeroterm)newstr, buff + offset, len);
+    int ans = Xarray::add_ind(symbols, new ((string_t)newstr));
+    t->shared_str = ans;
   }
+  return t->shared_str;
+}
 
-  static int
-  str_index_body (region_t<`d> d,
-                  $(trie_t<`d>, Xarray::xarray_t<stringptr_t<`H, `H>, `d>,
-                    string_t buff, int offset, int len) @env)
-  {
-    let $(tree, symbols, buff, offset, len) = *env;
-    let t = trie_lookup (d, tree, buff, offset, len);
-    // build string if necessary and return
-    if (t->shared_str == 0)
-      {
-        let newstr = new_string (len + 1);
-        zstrncpy ((char ?@nozeroterm)newstr, buff + offset, len);
-        int ans = Xarray::add_ind (symbols, new ((string_t)newstr));
-        t->shared_str = ans;
-      }
-    return t->shared_str;
+static int str_index(string_t buff, int offset, int len) {
+  dyn_trie_symbols_t idt = NULL;
+
+  idt :=: ids_trie;
+  let DynTrieSymbols{dyn, t, symbols} = *idt;
+  let env = $(t, symbols, buff, offset, len);
+  let res = open_region(dyn, &env, str_index_body);
+  *idt = DynTrieSymbols{dyn, t, symbols};
+  idt :=: ids_trie;
+  return res;
+}
+
+static int str_index_lbuf(Lexing::Lexbuf lbuf) {
+  return str_index(lbuf->lex_buffer, lbuf->lex_start_pos, lbuf->lex_curr_pos - lbuf->lex_start_pos);
+}
+
+static int insert_typedef_body(region_t<`d> h, $(trie_t<`d>, string_t s) @arg) {
+  let $(t, s) = *arg;
+  let t_node = trie_lookup(h, t, s, 0, numelts(s) - 1);
+  t_node->shared_str = true;
+  return 0;
+}
+
+static void insert_typedef(stringptr_t sptr) {
+  let s = *sptr;
+  dyn_trie_t tdefs = NULL;
+
+  tdefs :=: typedefs_trie;
+  let DynTrie{<`d> dyn, t} = *tdefs;
+  let env = $(t, s);
+  open_region(dyn, &env, insert_typedef_body);
+  *tdefs = DynTrie{dyn, t};
+  tdefs :=: typedefs_trie;
+  return;
+}
+
+static stringptr_t get_symbol_body(region_t<`d> dyn,
+                                   $(trie_t<`d>, Xarray::xarray_t<stringptr_t<`H, `H>, `d>, int)
+                                       @env) {
+  let $(t, symbols, symbol_num) = *env;
+  return Xarray::get(symbols, symbol_num);
+}
+
+static stringptr_t get_symbol(int symbol_num) {
+  dyn_trie_symbols_t idt = NULL;
+
+  idt :=: ids_trie;
+  let DynTrieSymbols{dyn, t, symbols} = *idt;
+  let env = $(t, symbols, symbol_num);
+  let res = open_region(dyn, &env, get_symbol_body);
+  *idt = DynTrieSymbols{dyn, t, symbols};
+  idt :=: ids_trie;
+  return res;
+}
+
+// ************************ INTEGER CONSTANTS ************************
+
+// String to integer conversions.  Core::int_of_string does not handle
+// all of the cases we want: it does not handle a trailing 'u', 'U',
+// 'l', or 'L'; and in particular, it does not treat '0'['0'-'7'] as
+// an octal number.
+
+// copied from Core
+static int int_of_char(char c) {
+  if ('0' <= c && c <= '9')
+    return c - '0';
+  if ('a' <= c && c <= 'f')
+    return 10 + c - 'a';
+  if ('A' <= c && c <= 'F')
+    return 10 + c - 'A';
+  throw new Invalid_argument("string to integer conversion");
+}
+
+static cnst_t intconst(Lexing::Lexbuf lbuf, int start, int end, int base) {
+  sign_t sn = None;
+
+  start += lbuf->lex_start_pos;
+  mstring_t buff = lbuf->lex_buffer + start;
+  int end2 = lbuf->lex_curr_pos - end;
+  int len = end2 - start;
+  size_of_t size = Int_sz;
+  bool declared_size = false;
+  cnst_t res;
+
+  if (len >= 1 && (buff[len - 1] == 'l' || buff[len - 1] == 'L')) {
+    // size is at least long (default), but could be long long
+    len -= 1;
+    declared_size = true;
+    if (len >= 1 && (buff[len - 1] == 'l' || buff[len - 1] == 'L')) {
+      len -= 1;
+      size = LongLong_sz;
+    }
   }
-
-  static int
-  str_index (string_t buff, int offset, int len)
-  {
-    dyn_trie_symbols_t idt = NULL;
-
-    idt :=: ids_trie;
-    let DynTrieSymbols { dyn, t, symbols } = *idt;
-    let env = $(t, symbols, buff, offset, len);
-    let res = open_region (dyn, &env, str_index_body);
-    *idt = DynTrieSymbols { dyn, t, symbols };
-    idt :=: ids_trie;
-    return res;
+  if (len >= 1 && (buff[len - 1] == 'u' || buff[len - 1] == 'U')) {
+    len -= 1;
+    sn = Unsigned;
   }
-
-  static int
-  str_index_lbuf (Lexing::Lexbuf lbuf)
-  {
-    return str_index (lbuf->lex_buffer,
-                      lbuf->lex_start_pos,
-                      lbuf->lex_curr_pos - lbuf->lex_start_pos);
+  if (sn == Unsigned) {
+    unsigned long long int n = 0;
+    for (int i = 0; i < len; i++)
+      n = n * base + (unsigned long long int)int_of_char(buff[i]);
+    if (n > ((unsigned long long int)0xffffffff)) {
+      if (declared_size && size == Int_sz)
+        err("integer constant too large", lbuf);
+      size = LongLong_sz;
+    }
+    if (size == Int_sz)
+      res = Cnst{.Int_c = $(sn, (unsigned)n)};
+    else
+      res = Cnst{.LongLong_c = $(sn, n)};
+  } else {
+    long long int n = 0;
+    for (int i = 0; i < len; i++) {
+      n = n * base + (long long int)int_of_char(buff[i]);
+    }
+    long long unsigned x = ((unsigned long long)n >> 32);
+    if (x != 0xffffffff && x != 0x00000000) {
+      if (declared_size && size == Int_sz)
+        err("integer constant too large", lbuf);
+      size = LongLong_sz;
+    }
+    if (size == Int_sz)
+      res = Cnst{.Int_c = $(sn, (int)n)};
+    else
+      res = Cnst{.LongLong_c = $(sn, n)};
   }
+  return res;
+}
 
-  static int
-  insert_typedef_body (region_t<`d> h, $(trie_t<`d>, string_t s) @arg)
-  {
-    let $(t, s) = *arg;
-    let t_node = trie_lookup (h, t, s, 0, numelts (s) - 1);
-    t_node->shared_str = true;
-    return 0;
+// ************************* STRING CONSTANTS *************************
+
+static char string_buffer_v[] @zeroterm = {'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 0};
+static mstring_t string_buffer = (mstring_t)string_buffer_v;
+static int string_pos = 0;
+
+static void store_string_char(char c) {
+  int sz = numelts(string_buffer) - 1;
+
+  if (string_pos >= sz) {
+    int newsz = sz;
+    while (string_pos >= newsz)
+      newsz = newsz * 2;
+    mstring_t str = new { for
+        i < newsz : (i < sz) ? string_buffer[i] : '\000'
+    };
+    string_buffer = str;
   }
+  string_buffer[string_pos] = c;
+  ++string_pos;
+}
 
-  static void
-  insert_typedef (stringptr_t sptr)
-  {
-    let s = *sptr;
-    dyn_trie_t tdefs = NULL;
+static void store_string(string_t s) {
+  int sz = strlen(s);
 
-    tdefs :=: typedefs_trie;
-    let DynTrie { <`d> dyn, t } = *tdefs;
-    let env = $(t, s);
-    open_region (dyn, &env, insert_typedef_body);
-    *tdefs = DynTrie { dyn, t };
-    tdefs :=: typedefs_trie;
+  for (int i = 0; i < sz; i++)
+    store_string_char(s[i]);
+}
+
+static mstring_t get_stored_string() {
+  mstring_t str = substring(string_buffer, 0, string_pos);
+
+  string_pos = 0;
+  return str;
+}
+
+// ******************* NAMESPACE, USING, AND TYPEDEF  *******************
+// FIX: As has been the case for years, any available typedef trumps
+//      a non-typedef, including typedefs in outer namespaces!!!
+// FIX: We also have never had good error locations for unbound namespaces.
+// FIX: If it were not for the tries, Binding would not have to leak so much
+//      about the representation of NSCtxt.
+
+static struct Ldecls {
+  Set::set_t<var_t> typedefs;
+};
+typedef struct Ldecls @ldecls_t;
+
+static opt_t<Binding::nsctxt_t<ldecls_t>> lstate = NULL;
+
+static ldecls_t mk_empty_ldecls(bool ignore) { return new Ldecls(Set::empty(zstrptrcmp)); }
+
+static void typedef_init() { lstate = new Opt(Binding::mt_nsctxt(true, mk_empty_ldecls)); }
+
+static void recompute_typedefs() {
+  // Drop the old trie on the floor.
+  dyn_trie_t tdefs = NULL;
+
+  tdefs :=: typedefs_trie;
+  let DynTrie{dyn, t} = *tdefs;
+  free_ukey(dyn);
+  let NewDynamicRegion{<`d2> dyn2} = new_ukey();
+  trie_t<`d2> t2 = open_region(dyn2, 0, empty_trie);
+  *tdefs = DynTrie{dyn2, t2};
+  typedefs_trie :=: tdefs;
+
+  // accumulative, so no need to co curr_ns first
+  for (let as = lstate->v->availables; as != NULL; as = as->tl)
+    switch (as->hd) {
+      case &Binding::Using(ns):
+        fallthru(ns);
+      case &Binding::Namespace(ns):
+        let ts = Dict::lookup(lstate->v->ns_data, ns);
+        Set::iter(insert_typedef, ts->typedefs);
+        break;
+    }
+}
+
+// This can stay the slow way because most identifiers are not qualified.
+// FIX: get a proper location!
+static bool is_typedef_in_namespace(List_t<var_t, `H> ns, var_t v) {
+  Binding::namespace_name_t ans = Binding::resolve_rel_ns(0, lstate->v, ns);
+  let ts = Dict::lookup(lstate->v->ns_data, ans);
+
+  return Set::member(ts->typedefs, v);
+}
+
+static bool is_typedef_body(region_t<`d> d,
+                            $(List::list_t<var_t, `H>, trie_t<`d>, string_t<`H>) @env) {
+  let $(ns, t, s) = *env;
+  int len = numelts(s) - 1;
+  for (int i = 0; i < len; ++i)
+    switch (t->children) {
+      case {.Zero = _}:
+        return false;
+      case {.One = $(one_ch, one_trie)} && one_ch != s[i]:
+        return false;
+      case {.One = $(_, one_trie)}:
+        t = one_trie;
+        break;
+      case {.Many = arr}:
+        let next = arr[trie_char(s[i])];
+        if (next == NULL)
+          return false;
+        t = next;
+        break;
+    }
+  return t->shared_str;
+}
+
+static bool is_typedef(list_t<var_t, `H> ns, var_t v) {
+  if (ns != NULL)
+    return is_typedef_in_namespace((List_t<var_t, `H>)ns, v);
+  // all unqualified typedefs must be in the trie
+  // look ma -- fast lookup
+  let s = *v;
+  dyn_trie_t tdefs = NULL;
+  tdefs :=: typedefs_trie;
+  let DynTrie{dyn, t} = *tdefs;
+  let env = $(ns, t, s);
+  let res = open_region(dyn, &env, is_typedef_body);
+  *tdefs = DynTrie{dyn, t};
+  tdefs :=: typedefs_trie;
+  return res;
+}
+
+void enter_namespace(var_t s) {
+  Binding::enter_ns(lstate->v, s, true, mk_empty_ldecls);
+  let ts = Dict::lookup(lstate->v->ns_data, lstate->v->curr_ns);
+  // some more typedefs may be visible
+#if 0
+  recompute_typedefs (); // too slow! (does repeated work)
+#endif
+  Set::iter(insert_typedef, ts->typedefs);
+}
+
+void leave_namespace() {
+  Binding::leave_ns(lstate->v);
+  recompute_typedefs();
+}
+
+void enter_using(qvar_t q) {
+  let ns = Binding::enter_using(0, lstate->v, q);  // FIX: get a proper location!
+  let ts = Dict::lookup(lstate->v->ns_data, ns);
+
+  // some more typedefs may be visible
+  // recompute_typedefs(); // too slow! (does repeated work)
+  Set::iter(insert_typedef, ts->typedefs);
+}
+
+void leave_using() {
+  Binding::leave_using(lstate->v);
+  // some typedefs may no longer be visible
+  recompute_typedefs();
+}
+
+void register_typedef(qvar_t q) {
+  // FIX: we assume that q is not in fact qualified (always have)
+  let ts = Dict::lookup(lstate->v->ns_data, lstate->v->curr_ns);
+
+  ts->typedefs = Set::insert(ts->typedefs, (*q)[1]);
+
+  // FIX: We're really assuming it's unqualified here -- else need to
+  //      decide if the namespace-list is a visible one
+  insert_typedef((*q)[1]);
+}
+
+static short process_id(Lexing::Lexbuf lbuf) {
+  int symbol_num = str_index_lbuf(lbuf);
+
+  // maybe it's a keyword
+  if (symbol_num <= num_kws)
+    // check to see if we're parsing C or Cyclone
+    if (!in_extern_c || kw_nums[symbol_num - 1].is_c_keyword) {
+      short res = (short)kw_nums[symbol_num - 1].token_index;
+      return res;
+    }
+
+  // it could be a typedef or an identifer
+  let s = get_symbol(symbol_num);
+  token_string = *s;
+  return (is_typedef(NULL, s)) ? TYPEDEF_NAME : IDENTIFIER;
+}
+
+static short process_qual_id(Lexing::Lexbuf lbuf) {
+  if (in_extern_c)
+    err("qualified identifiers not allowed in C code", lbuf);
+  int i = lbuf->lex_start_pos;
+  int end = lbuf->lex_curr_pos;
+  mstring_t s = lbuf->lex_buffer;
+
+  string_t<`H> *v = NULL;
+  list_t<var_t> rev_vs = NULL;
+
+  while (i < end) {
+    int start = i;
+    for (; i < end && s[i] != ':'; i++)
+      ;              // skip
+    if (start == i)  // no progress -- first char is ':'
+      Warn::impos2("bad namespace");
+    int vlen = i - start;
+    if (v != NULL)
+      rev_vs = new List(v, rev_vs);
+    v = get_symbol(str_index(s, start, vlen));
+    i += 2;
+  }
+  if (v == NULL)
+    Warn::impos2("bad namespace");
+  list_t<var_t> vs = List::imp_rev(rev_vs);
+  // special cases:  when we have Cyc::Foo::bar or C::Foo::bar then
+  // we have absolute namespaces.
+  if (vs != NULL && strcmp(*vs->hd, "Cyc") == 0) {
+    vs = vs->tl;
+    token_qvar = new $(Abs_n(vs, false), v);
+  } else if (vs != NULL && strcmp(*vs->hd, "C") == 0) {
+    vs = vs->tl;
+    token_qvar = new $(Abs_n(vs, true), v);
+  } else
+    token_qvar = new $(Rel_n(vs), v);
+  return (is_typedef(vs, v)) ? QUAL_TYPEDEF_NAME : QUAL_IDENTIFIER;
+}
+
+// Tracking source files and line numbers
+
+// One for each # nnn <file> that occurs in the source
+struct PosInfo<`r> {
+  struct PosInfo<`r> *`r next;
+  unsigned int starting_line;      // nnn
+  const char ?`r filename;         // <file>
+  seg_t      ?`U linenumpos;       // one entry for each line, holding seg_t
+  unsigned int linenumpos_offset;  // next spot for inserting
+};
+typedef struct PosInfo<`r> @`r pinfo_t<`r>;
+typedef struct PosInfo<`r> *`r pinfo_opt_t<`r>;
+// List of position info's in reverse order
+static pinfo_opt_t pos_info = NULL;
+// Current line number
+static int linenumber = 1;
+
+// when we see a new # nnn <file> directive, we create a new filepos entry
+static pinfo_t<`r + `H> rnew_filepos(region_t<`r> r,
+                                     const char ?`r+`H filename,
+                                     unsigned int starting_line,
+                                     pinfo_opt_t<`r+`H> next) {
+  seg_t ?`U linenumpos = qcalloc(heap_region, unique_qual, 10,
+                                 sizeof(seg_t));  // rcalloc(unique_region, 10, sizeof(seg_t));
+  linenumpos[0] = yylloc.first_line;
+  return rnew(r) PosInfo{.next = next,
+                         .starting_line = starting_line,
+                         .filename = filename,
+                         .linenumpos = linenumpos,
+                         .linenumpos_offset = 1};
+}
+
+// when we see a newline, we add it into the current filepos entry
+static void inc_linenumber() {
+  if (pos_info == NULL)
+    Warn::impos2("empty position info!");
+  pinfo_t p = (pinfo_t)pos_info;
+  seg_t ?`U linenums = NULL;
+  p->linenumpos :=: linenums;
+  unsigned offset = p->linenumpos_offset;
+  unsigned n = numelts(linenums);
+  // check for enough space to insert the position
+  if (offset >= n) {
+    // have to grow the array -- double it and copy over old array
+    seg_t ?`U newlinenums = qcalloc(heap_region, unique_qual, n * 2,
+                                    sizeof(seg_t));  // rcalloc(unique_region, n*2, sizeof(seg_t));
+    for (unsigned i = 0; i < n; i++)
+      newlinenums[i] = linenums[i];
+    linenums :=: newlinenums;
+    // free old array of positions
+    ufree((_ *)newlinenums);
+  }
+  // plug in the current position for this line number
+  linenums[offset] = yylloc.first_line;
+  p->linenumpos_offset = offset + 1;
+  linenumber++;
+  p->linenumpos :=: linenums;
+}
+
+static void process_directive(char ?line) {
+  int i;
+  char buf[100];
+  const char ?filename = "";
+
+  if (sscanf(line, "# %d \"%s", &i, buf) == 2) {
+    filename = aprintf("\"%s", buf);
+    if (linenumber == i && pos_info != NULL && strcmp(pos_info->filename, filename) == 0)
+      return;
+    linenumber = i;
+  } else if (sscanf(line, "# %d", &i) == 1) {
+    if (linenumber == i)
+      return;
+    linenumber = i;
+    if (pos_info != NULL)
+      filename = pos_info->filename;
+  } else {
+    linenumber++;  // we don't understand it, so skip over it
     return;
   }
+  pos_info = rnew_filepos(heap_region, filename, linenumber, pos_info);
+}
 
-  static stringptr_t
-  get_symbol_body (region_t<`d> dyn,
-                   $(trie_t<`d>, Xarray::xarray_t<stringptr_t<`H, `H>, `d>, int) @env)
-  {
-    let $(t, symbols, symbol_num) = *env;
-    return Xarray::get (symbols, symbol_num);
+// translate an absolute character offset to a file and line number given
+// position information.  If it's an invalid offset (e.g. 0) return $(NULL,0).
+$(const char ?, unsigned int) xlate_pos(seg_t char_offset) {
+  for (pinfo_opt_t p = pos_info; p != NULL; p = p->next) {
+    seg_t first_char_offset = p->linenumpos[0];
+    if (char_offset < first_char_offset && p->next != NULL)
+      continue;
+    // we've found the right pinfo array, but we have to find the lineno now
+    // use a binary search...
+    unsigned base = 0;
+    unsigned size = p->linenumpos_offset;
+    while (size > 1) {
+      int half = size / 2;
+      int mid = base + half;
+      if (char_offset > p->linenumpos[mid]) {
+        base = base + half;
+        size = size - half;
+      } else
+        size = half;
+    }
+    return $(p->filename, p->starting_line + base);
   }
+  return $(NULL, 0);
+}
 
-  static stringptr_t
-  get_symbol (int symbol_num)
-  {
-    dyn_trie_symbols_t idt = NULL;
-
-    idt :=: ids_trie;
-    let DynTrieSymbols { dyn, t, symbols } = *idt;
-    let env = $(t, symbols, symbol_num);
-    let res = open_region (dyn, &env, get_symbol_body);
-    *idt = DynTrieSymbols { dyn, t, symbols };
-    idt :=: ids_trie;
-    return res;
-  }
-
-  // ************************ INTEGER CONSTANTS ************************
-
-  // String to integer conversions.  Core::int_of_string does not handle
-  // all of the cases we want: it does not handle a trailing 'u', 'U',
-  // 'l', or 'L'; and in particular, it does not treat '0'['0'-'7'] as
-  // an octal number.
-
-  // copied from Core
-  static int
-  int_of_char (char c)
-  {
-    if ('0' <= c && c <= '9') return c - '0';
-    if ('a' <= c && c <= 'f') return 10 + c - 'a';
-    if ('A' <= c && c <= 'F') return 10 + c - 'A';
-    throw new Invalid_argument ("string to integer conversion");
-  }
-
-
-  static cnst_t
-  intconst (Lexing::Lexbuf lbuf, int start, int end, int base)
-  {
-    sign_t sn = None;
-
-    start += lbuf->lex_start_pos;
-    mstring_t buff = lbuf->lex_buffer + start;
-    int       end2 = lbuf->lex_curr_pos - end;
-    int       len = end2 - start;
-    size_of_t size = Int_sz;
-    bool      declared_size = false;
-    cnst_t    res;
-
-    if (len >= 1 && (buff[len - 1] == 'l' || buff[len - 1] == 'L'))
-      {
-        // size is at least long (default), but could be long long
-        len -= 1;
-        declared_size = true;
-        if (len >= 1 && (buff[len - 1] == 'l' || buff[len - 1] == 'L'))
-          {
-            len -= 1;
-            size = LongLong_sz;
-          }
-      }
-    if (len >= 1 && (buff[len - 1] == 'u' || buff[len - 1] == 'U'))
-      {
-        len -= 1;
-        sn = Unsigned;
-      }
-    if (sn == Unsigned)
-      {
-        unsigned long long int n = 0;
-        for (int i = 0; i < len; i++)
-          n = n * base + (unsigned long long int)int_of_char (buff[i]);
-        if (n > ((unsigned long long int)0xffffffff))
-          {
-            if (declared_size && size == Int_sz)
-              err ("integer constant too large", lbuf);
-            size = LongLong_sz;
-          }
-        if (size == Int_sz)
-          res = Cnst {
-            .Int_c = $(sn, (unsigned)n)
-          };
-        else
-          res = Cnst {
-            .LongLong_c = $(sn, n)
-          };
-      }
-    else
-      {
-        long long int n = 0;
-        for (int i = 0; i < len; i++) {
-          n = n * base + (long long int)int_of_char (buff[i]);
-        }
-        long long unsigned x = ((unsigned long long)n >> 32);
-        if (x != 0xffffffff && x != 0x00000000)
-          {
-            if (declared_size && size == Int_sz)
-              err ("integer constant too large", lbuf);
-            size = LongLong_sz;
-          }
-        if (size == Int_sz)
-          res = Cnst {
-            .Int_c = $(sn, (int)n)
-          };
-        else
-          res = Cnst {
-            .LongLong_c = $(sn, n)
-          };
-      }
-    return res;
-  }
-
-  // ************************* STRING CONSTANTS *************************
-
-  static char string_buffer_v[]@zeroterm = {'x','x','x','x','x','x','x','x','x','x',0};
-  static mstring_t string_buffer = (mstring_t)string_buffer_v;
-  static int string_pos = 0;
-
-  static void
-  store_string_char (char c)
-  {
-    int sz = numelts (string_buffer) - 1;
-
-    if (string_pos >= sz)
-      {
-        int newsz = sz;
-        while (string_pos >= newsz)
-          newsz = newsz * 2;
-        mstring_t str = new { for i < newsz : (i < sz) ? string_buffer[i] : '\000' };
-        string_buffer = str;
-      }
-    string_buffer[string_pos] = c;
-    ++string_pos;
-  }
-
-  static void
-  store_string (string_t s)
-  {
-    int sz = strlen (s);
-
-    for (int i = 0; i < sz; i++)
-      store_string_char (s[i]);
-  }
-
-  static mstring_t
-  get_stored_string ()
-  {
-    mstring_t str = substring (string_buffer, 0, string_pos);
-
-    string_pos = 0;
-    return str;
-  }
-
-  // ******************* NAMESPACE, USING, AND TYPEDEF  *******************
-  // FIX: As has been the case for years, any available typedef trumps
-  //      a non-typedef, including typedefs in outer namespaces!!!
-  // FIX: We also have never had good error locations for unbound namespaces.
-  // FIX: If it were not for the tries, Binding would not have to leak so much
-  //      about the representation of NSCtxt.
-
-  static struct Ldecls
-  {
-    Set::set_t<var_t> typedefs;
-  };
-  typedef struct Ldecls @ldecls_t;
-
-  static opt_t<Binding::nsctxt_t<ldecls_t>> lstate = NULL;
-
-  static ldecls_t
-  mk_empty_ldecls (bool ignore)
-  {
-    return new Ldecls (Set::empty (zstrptrcmp));
-  }
-
-  static void
-  typedef_init ()
-  {
-    lstate = new Opt (Binding::mt_nsctxt (true, mk_empty_ldecls));
-  }
-
-  static void
-  recompute_typedefs ()
-  {
-    // Drop the old trie on the floor.
-    dyn_trie_t tdefs = NULL;
-
-    tdefs :=: typedefs_trie;
-    let DynTrie { dyn, t } = *tdefs;
-    free_ukey (dyn);
-    let NewDynamicRegion { <`d2> dyn2 } = new_ukey ();
-    trie_t<`d2> t2 = open_region (dyn2, 0, empty_trie);
-    *tdefs = DynTrie { dyn2, t2 };
-    typedefs_trie :=: tdefs;
-
-    // accumulative, so no need to co curr_ns first
-    for (let as = lstate->v->availables; as != NULL; as = as->tl)
-      switch (as->hd)
-        {
-        case &Binding::Using (ns):
-          fallthru (ns);
-        case &Binding::Namespace (ns):
-          let ts = Dict::lookup (lstate->v->ns_data, ns);
-          Set::iter (insert_typedef, ts->typedefs);
-          break;
-        }
-  }
-
-  // This can stay the slow way because most identifiers are not qualified.
-  // FIX: get a proper location!
-  static bool
-  is_typedef_in_namespace (List_t<var_t, `H> ns, var_t v)
-  {
-    Binding::namespace_name_t ans = Binding::resolve_rel_ns (0, lstate->v, ns);
-    let ts = Dict::lookup (lstate->v->ns_data, ans);
-
-    return Set::member (ts->typedefs, v);
-  }
-
-  static bool
-  is_typedef_body (region_t<`d> d,
-                   $(List::list_t<var_t, `H>, trie_t<`d>,
-                     string_t<`H>) @env)
-  {
-    let $(ns, t, s) = *env;
-    int len = numelts (s) - 1;
-    for (int i = 0; i < len; ++i)
-      switch (t->children)
-        {
-        case { .Zero = _ }: return false;
-        case { .One  = $(one_ch, one_trie) } && one_ch != s[i]: return false;
-        case { .One  = $(_     , one_trie) }: t = one_trie; break;
-        case { .Many = arr }:
-          let next = arr[trie_char (s[i])];
-          if (next == NULL)
-            return false;
-          t = next;
-          break;
-        }
-    return t->shared_str;
-  }
-
-  static bool
-  is_typedef (list_t<var_t, `H> ns, var_t v)
-  {
-    if (ns != NULL)
-      return is_typedef_in_namespace ((List_t<var_t, `H>)ns, v);
-    // all unqualified typedefs must be in the trie
-    // look ma -- fast lookup
-    let s = *v;
-    dyn_trie_t tdefs = NULL;
-    tdefs :=: typedefs_trie;
-    let DynTrie { dyn, t } = *tdefs;
-    let env = $(ns, t, s);
-    let res = open_region (dyn, &env, is_typedef_body);
-    *tdefs = DynTrie { dyn, t };
-    tdefs :=: typedefs_trie;
-    return res;
-  }
-
-  void
-  enter_namespace (var_t s)
-  {
-    Binding::enter_ns (lstate->v, s, true, mk_empty_ldecls);
-    let ts = Dict::lookup (lstate->v->ns_data, lstate->v->curr_ns);
-    // some more typedefs may be visible
-#if 0
-    recompute_typedefs (); // too slow! (does repeated work)
-#endif
-    Set::iter (insert_typedef, ts->typedefs);
-  }
-
-  void
-  leave_namespace ()
-  {
-    Binding::leave_ns (lstate->v);
-    recompute_typedefs ();
-  }
-
-  void
-  enter_using (qvar_t q)
-  {
-    let ns = Binding::enter_using (0, lstate->v, q); // FIX: get a proper location!
-    let ts = Dict::lookup (lstate->v->ns_data, ns);
-
-    // some more typedefs may be visible
-    // recompute_typedefs(); // too slow! (does repeated work)
-    Set::iter (insert_typedef, ts->typedefs);
-  }
-
-  void
-  leave_using ()
-  {
-    Binding::leave_using (lstate->v);
-    // some typedefs may no longer be visible
-    recompute_typedefs ();
-  }
-
-  void
-  register_typedef (qvar_t q)
-  {
-    // FIX: we assume that q is not in fact qualified (always have)
-    let ts = Dict::lookup (lstate->v->ns_data, lstate->v->curr_ns);
-
-    ts->typedefs = Set::insert (ts->typedefs, (*q)[1]);
-
-    // FIX: We're really assuming it's unqualified here -- else need to
-    //      decide if the namespace-list is a visible one
-    insert_typedef ((*q)[1]);
-  }
-
-  static short
-  process_id (Lexing::Lexbuf lbuf)
-  {
-    int symbol_num = str_index_lbuf (lbuf);
-
-    // maybe it's a keyword
-    if (symbol_num <= num_kws)
-      // check to see if we're parsing C or Cyclone
-      if (!in_extern_c || kw_nums[symbol_num - 1].is_c_keyword)
-        {
-          short res = (short)kw_nums[symbol_num - 1].token_index;
-          return res;
-        }
-
-    // it could be a typedef or an identifer
-    let s = get_symbol (symbol_num);
-    token_string = *s;
-    return (is_typedef (NULL, s)) ? TYPEDEF_NAME : IDENTIFIER;
-  }
-
-  static short
-  process_qual_id (Lexing::Lexbuf lbuf)
-  {
-    if (in_extern_c)
-      err ("qualified identifiers not allowed in C code", lbuf);
-    int i = lbuf->lex_start_pos;
-    int end = lbuf->lex_curr_pos;
-    mstring_t s = lbuf->lex_buffer;
-
-    string_t<`H> *v = NULL;
-    list_t<var_t> rev_vs = NULL;
-
-    while (i < end)
-      {
-        int start = i;
-        for (; i < end && s[i] != ':'; i++)
-          ;  // skip
-        if (start == i) // no progress -- first char is ':'
-          Warn::impos2 ("bad namespace");
-        int vlen = i - start;
-        if (v != NULL)
-          rev_vs = new List (v, rev_vs);
-        v = get_symbol (str_index (s, start, vlen));
-        i += 2;
-      }
-    if (v == NULL)
-      Warn::impos2 ("bad namespace");
-    list_t<var_t> vs = List::imp_rev (rev_vs);
-    // special cases:  when we have Cyc::Foo::bar or C::Foo::bar then
-    // we have absolute namespaces.
-    if (vs != NULL && strcmp (*vs->hd, "Cyc") == 0)
-      {
-        vs = vs->tl;
-        token_qvar = new $(Abs_n (vs, false), v);
-      }
-    else if (vs != NULL && strcmp (*vs->hd, "C") == 0)
-      {
-        vs = vs->tl;
-        token_qvar = new $(Abs_n (vs, true), v);
-      }
-    else
-      token_qvar = new $(Rel_n (vs), v);
-    return (is_typedef (vs, v)) ? QUAL_TYPEDEF_NAME : QUAL_IDENTIFIER;
-  }
-
-  // Tracking source files and line numbers
-
-  // One for each # nnn <file> that occurs in the source
-  struct PosInfo<`r>
-  {
-    struct PosInfo<`r> *`r next;
-    unsigned int starting_line;           // nnn
-    const char ?`r filename;     // <file>
-    seg_t ?`U linenumpos;        // one entry for each line, holding seg_t
-    unsigned int linenumpos_offset; // next spot for inserting
-  };
-  typedef struct PosInfo<`r> @`r pinfo_t<`r>;
-  typedef struct PosInfo<`r> *`r pinfo_opt_t<`r>;
-  // List of position info's in reverse order
-  static pinfo_opt_t pos_info = NULL;
-  // Current line number
-  static int linenumber = 1;
-
-  // when we see a new # nnn <file> directive, we create a new filepos entry
-  static pinfo_t<`r + `H>
-  rnew_filepos (region_t<`r> r,
-                const char ?`r + `H filename,
-                unsigned int starting_line,
-                pinfo_opt_t<`r + `H> next)
-  {
-    seg_t ?`U linenumpos = qcalloc (heap_region, unique_qual, 10, sizeof (seg_t)); //rcalloc(unique_region, 10, sizeof(seg_t));
-    linenumpos[0] = yylloc.first_line;
-    return rnew (r) PosInfo {
-      .next = next, .starting_line = starting_line,
-      .filename = filename,
-      .linenumpos = linenumpos,
-      .linenumpos_offset = 1
-    };
-  }
-
-  // when we see a newline, we add it into the current filepos entry
-  static void
-  inc_linenumber ()
-  {
-    if (pos_info == NULL)
-      Warn::impos2 ("empty position info!");
-    pinfo_t p = (pinfo_t)pos_info;
-    seg_t ?`U linenums = NULL;
-    p->linenumpos :=: linenums;
-    unsigned offset = p->linenumpos_offset;
-    unsigned n = numelts (linenums);
-    // check for enough space to insert the position
-    if (offset >= n)
-      {
-        // have to grow the array -- double it and copy over old array
-        seg_t ?`U newlinenums = qcalloc (heap_region, unique_qual, n * 2, sizeof (seg_t)); //rcalloc(unique_region, n*2, sizeof(seg_t));
-        for (unsigned i = 0; i < n; i++)
-          newlinenums[i] = linenums[i];
-        linenums :=: newlinenums;
-        // free old array of positions
-        ufree ((_ *)newlinenums);
-      }
-    // plug in the current position for this line number
-    linenums[offset] = yylloc.first_line;
-    p->linenumpos_offset = offset + 1;
-    linenumber++;
-    p->linenumpos :=: linenums;
-  }
-
-  static void
-  process_directive (char ?line)
-  {
-    int i;
-    char buf[100];
-    const char ?filename = "";
-
-    if (sscanf (line, "# %d \"%s", &i, buf) == 2)
-      {
-        filename = aprintf ("\"%s", buf);
-        if (linenumber == i && pos_info != NULL
-            && strcmp (pos_info->filename, filename) == 0)
-          return;
-        linenumber = i;
-      }
-    else if (sscanf (line, "# %d", &i) == 1)
-      {
-        if (linenumber == i)
-          return;
-        linenumber = i;
-        if (pos_info != NULL)
-          filename = pos_info->filename;
-      }
-    else
-      {
-        linenumber++; // we don't understand it, so skip over it
-        return;
-      }
-    pos_info = rnew_filepos (heap_region, filename, linenumber, pos_info);
-  }
-
-  // translate an absolute character offset to a file and line number given
-  // position information.  If it's an invalid offset (e.g. 0) return $(NULL,0).
-  $(const char ?, unsigned int)
-  xlate_pos (seg_t char_offset)
-  {
-    for (pinfo_opt_t p = pos_info; p != NULL; p = p->next)
-      {
-        seg_t first_char_offset = p->linenumpos[0];
-        if (char_offset < first_char_offset && p->next != NULL)
-          continue;
-        // we've found the right pinfo array, but we have to find the lineno now
-        // use a binary search...
-        unsigned base = 0;
-        unsigned size = p->linenumpos_offset;
-        while (size > 1)
-          {
-            int half = size / 2;
-            int mid = base + half;
-            if (char_offset > p->linenumpos[mid])
-              {
-                base = base + half;
-                size = size - half;
-              }
-            else
-              size = half;
-          }
-        return $(p->filename, p->starting_line + base);
-      }
-    return $(NULL, 0);
-  }
-
-  // Forward declarations of lexing functions
-  int token (Lexing::Lexbuf);
-  int scan_charconst (Lexing::Lexbuf);
-  int strng (Lexing::Lexbuf);
-  int strng_next (Lexing::Lexbuf);
-  int wstrng (Lexing::Lexbuf);
-  int wstrng_next (Lexing::Lexbuf);
-  int comment (Lexing::Lexbuf);
+// Forward declarations of lexing functions
+int token(Lexing::Lexbuf);
+int scan_charconst(Lexing::Lexbuf);
+int strng(Lexing::Lexbuf);
+int strng_next(Lexing::Lexbuf);
+int wstrng(Lexing::Lexbuf);
+int wstrng_next(Lexing::Lexbuf);
+int comment(Lexing::Lexbuf);
 } // namespace Lex
 
 // for parser -- must not be prefixed
-int
-yylex (Lexing::Lexbuf<Lexing::Function_lexbuf_state<FILE @> > lbuf,
-       union YYSTYPE @yylval,
-       YYLTYPE @yyllocptr)
-{
-  int ans = Lex::token (lbuf);
+int yylex(Lexing::Lexbuf<Lexing::Function_lexbuf_state<FILE @> > lbuf, union YYSTYPE @yylval,
+          YYLTYPE @yyllocptr) {
+  int ans = Lex::token(lbuf);
 
-  yylloc.first_line = yyllocptr->first_line = Lexing::lexeme_start (lbuf);
-  yylloc.last_line = yyllocptr->last_line = Lexing::lexeme_end (lbuf);
-  switch (ans)
-    {
+  yylloc.first_line = yyllocptr->first_line = Lexing::lexeme_start(lbuf);
+  yylloc.last_line = yyllocptr->last_line = Lexing::lexeme_end(lbuf);
+  switch (ans) {
     case AQUAL_SHORT_CONST:
     case TYPE_VAR:
     case WCHARACTER_CONSTANT:
@@ -1019,29 +898,21 @@ yylex (Lexing::Lexbuf<Lexing::Function_lexbuf_state<FILE @> > lbuf,
     case WSTRING:
     case IDENTIFIER:
     case TYPEDEF_NAME:
-      *yylval = YYSTYPE {
-        .String_tok = Lex::token_string
-      };
+      *yylval = YYSTYPE{.String_tok = Lex::token_string};
       break;
     case QUAL_IDENTIFIER:
     case QUAL_TYPEDEF_NAME:
-      *yylval = YYSTYPE {
-        .QualId_tok = Lex::token_qvar
-      };
+      *yylval = YYSTYPE{.QualId_tok = Lex::token_qvar};
       break;
     case INTEGER_CONSTANT:
-      *yylval = YYSTYPE {
-        .Int_tok = Lex::token_int
-      };
+      *yylval = YYSTYPE{.Int_tok = Lex::token_int};
       break;
     case CHARACTER_CONSTANT:
-      *yylval = YYSTYPE {
-        .Char_tok = Lex::token_char
-      };
+      *yylval = YYSTYPE{.Char_tok = Lex::token_char};
       break;
     default:
       break;
-    }
+  }
   return ans;
 }
 
@@ -1326,75 +1197,66 @@ and comment = parse
 // because lex_init() gets called as soon as we're done lexing
 // to free up its other data structures.  We need to hang on to
 // the position information so that if we dump, it's there.
-void
-pos_init ()
-{
+void pos_init() {
   linenumber = 1;
   pos_info = NULL;
 }
 
-static Xarray::xarray_t<stringptr_t, `d>
-empty_xarray (region_t<`d> id_rgn, int dummy)
-{
-  Xarray::xarray_t<stringptr_t, `d> symbols =
-    Xarray::rcreate (id_rgn, 101, new ((string_t)""));
+static Xarray::xarray_t<stringptr_t, `d> empty_xarray(region_t<`d> id_rgn, int dummy) {
+  Xarray::xarray_t<stringptr_t, `d> symbols = Xarray::rcreate(id_rgn, 101, new ((string_t) ""));
   // don't use first entry b/c 0 means "not a symbol"
-  Xarray::add (symbols, &bogus_string);
+  Xarray::add(symbols, &bogus_string);
   return symbols;
 }
 
-void
-lex_init (bool include_cyclone_keywords)
-{
+void lex_init(bool include_cyclone_keywords) {
   // reset the in_extern_c stuff
   in_extern_c = false;
   list_t<bool, `H, UNIQUE> x = NULL;
   prev_extern_c :=: x;
-  while (x != NULL)
-    {
-      list_t<bool, `H, UNIQUE> t = x->tl;
-      ufree (x);
-      x = t;
-    }
+  while (x != NULL) {
+    list_t<bool, `H, UNIQUE> t = x->tl;
+    ufree(x);
+    x = t;
+  }
   // free any dynamic regions allocated first
-  if (ids_trie != NULL)
-    {
-      dyn_trie_symbols_t idt = NULL;
-      idt :=: ids_trie;
-      let DynTrieSymbols { dyn, ... } = *idt;
-      free_ukey (dyn);
-      ufree (idt);
-    }
-  if (typedefs_trie != NULL)
-    {
-      dyn_trie_t tdefs = NULL;
-      tdefs :=: typedefs_trie;
-      let DynTrie { dyn, ... } = *tdefs;
-      free_ukey (dyn);
-      ufree (tdefs);
-    }
+  if (ids_trie != NULL) {
+    dyn_trie_symbols_t idt = NULL;
+    idt :=: ids_trie;
+    let DynTrieSymbols{dyn, ...} = *idt;
+    free_ukey(dyn);
+    ufree(idt);
+  }
+  if (typedefs_trie != NULL) {
+    dyn_trie_t tdefs = NULL;
+    tdefs :=: typedefs_trie;
+    let DynTrie{dyn, ...} = *tdefs;
+    free_ukey(dyn);
+    ufree(tdefs);
+  }
   // Now allocate dynamic regions for the tries
-  let NewDynamicRegion { id_dyn } = new_ukey ();
-  let ts = open_region (id_dyn, 0, empty_trie);
-  let xa = open_region (id_dyn, 0, empty_xarray);
-  ids_trie = qunew DynTrieSymbols { id_dyn, ts, xa };
+  let NewDynamicRegion{id_dyn} = new_ukey();
+  let ts = open_region(id_dyn, 0, empty_trie);
+  let xa = open_region(id_dyn, 0, empty_xarray);
+  ids_trie = qunew DynTrieSymbols{id_dyn, ts, xa};
 
-  let NewDynamicRegion { typedefs_dyn } = new_ukey ();
-  trie_t t = open_region (typedefs_dyn, 0, empty_trie);
-  typedefs_trie = qunew DynTrie { typedefs_dyn, t };
-  num_kws = num_keywords (include_cyclone_keywords);
-  kw_nums = new { for i < num_kws : KeyWordInfo { 0, 0 } };
+  let NewDynamicRegion{typedefs_dyn} = new_ukey();
+  trie_t t = open_region(typedefs_dyn, 0, empty_trie);
+  typedefs_trie = qunew DynTrie{typedefs_dyn, t};
+  num_kws = num_keywords(include_cyclone_keywords);
+  kw_nums = new { for
+      i < num_kws : KeyWordInfo{0, 0}
+  };
   unsigned i = 0;
-  unsigned rwsze = numelts (rw_array);
+  unsigned rwsze = numelts(rw_array);
   for (unsigned j = 0; j < rwsze; j++)
-    if (include_cyclone_keywords || rw_array[j][2])
-      {
-        let str = rw_array[j][0];
-        str_index (str, 0, strlen (str));
-        kw_nums[i] = KeyWordInfo { rw_array[j][1], rw_array[j][2] };
-        i++;
-      }
-  typedef_init ();
+    if (include_cyclone_keywords || rw_array[j][2]) {
+      let str = rw_array[j][0];
+      str_index(str, 0, strlen(str));
+      kw_nums[i] = KeyWordInfo{rw_array[j][1], rw_array[j][2]};
+      i++;
+    }
+  typedef_init();
   comment_depth = 0;
 }
 

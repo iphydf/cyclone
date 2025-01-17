@@ -20,62 +20,7 @@
 
 /************* PLATFORM-SPECIFIC ELEMENTS *****************/
 
-#if defined(GEEKOS)
-
-#define HAVE_THREADS 1
-
-#include <geekos/kthread.h>  // for Exit
-#include <geekos/screen.h>   // for error printing
-#include <geekos/setjmp.h>
-#include <geekos/string.h>  // for memset
-
-// #include <limits.h> // for magic numbers
-#define INT_MAX 0x7fffffff
-#define bzero(_addr, _szb) memset(_addr, '\0', _szb)
-
-// error printing functions
-#define errprintf Print
-#define errquit(arg...) \
-  {                     \
-    Print(arg);         \
-    Exit(1);            \
-  }
-
-// thread-local accessor functions
-#define create_tlocal_key Tlocal_Create
-#define get_tlocal Tlocal_Get
-#define put_tlocal Tlocal_Put
-#define DO_THREAD_UNREG
-
-#elif (defined(__linux__) && defined(__KERNEL__))  // change to CYC_LINUX_KERNEL
-
-#include <linux/kernel.h>
-#define bzero(_addr, _szb) memset(_addr, '\0', _szb)
-
-#include "runtime_tls.h"
-
-#undef HAVE_THREADS
-#define USE_CYC_TLS 1
-
-#define errprintf(arg...) printk("<3>" arg)
-#define errquit(arg...) \
-  { printk("<3>" arg); }
-
-#else
-
 #include <limits.h>  // for magic numbers
-#include <setjmp.h>  // precore_c.h uses jmp_buf without defining it
-#include <stdio.h>   // for error printing
-#ifdef _HAVE_PTHREAD_
-#define HAVE_THREADS 1
-#include <pthread.h>
-
-// thread-local accessor functions
-#define tlocal_key_t pthread_key_t
-#define create_tlocal_key pthread_key_create
-#define get_tlocal pthread_getspecific
-#define put_tlocal pthread_setspecific
-#endif
 
 // error printing functions
 #define errprintf(arg...) fprintf(stderr, ##arg)
@@ -84,8 +29,6 @@
     fprintf(stderr, ##arg); \
     exit(1);                \
   } while (0)
-
-#endif
 
 #define MAX_ALLOC_SIZE INT_MAX
 
@@ -99,10 +42,7 @@
 /* RUNTIME_CYC defined to prevent including parts of precore_c.h that
    might cause problems, particularly relating to region profiling */
 #define RUNTIME_CYC
-#ifndef USE_CYC_TLS
 #include "precore_c.h"
-#include "runtime_tls.h"
-#endif
 
 /************** INIT and FINI ROUTINES ************/
 
@@ -136,5 +76,17 @@ struct _RuntimeStack *_top_frame();
 // frame is returned, or else NULL if none found.
 struct _RuntimeStack *_pop_frame_until(int tag);
 struct _RuntimeStack *_frame_until(int tag, int do_pop);
+
+/*************** EXCEPTION HANDLING *******************/
+
+#define _CYC_MAX_STACKTRACE 100
+
+typedef struct _Cyc_Stacktrace {
+  char *frames[_CYC_MAX_STACKTRACE];
+  int size;
+} _Cyc_Stacktrace;
+
+_Cyc_Stacktrace *_cyc_get_stacktrace(void);
+void _cyc_free_stacktrace(_Cyc_Stacktrace *stacktrace);
 
 #endif

@@ -303,7 +303,7 @@ static type_t tcConst(tenv_t te, seg_t loc, type_t *topt, cnst_t *c, exp_t e) {
 static type_t tcVar(tenv_t te, seg_t loc, type_t *topt, exp_t e, binding_t *b) {
   switch (*b) {
     case &Unresolved_b(q):
-      Warn::impos_loc2(loc, "unresolved binding in tcVar");
+      Warn::impos_loc2(loc, "unresolved binding in tcVar: ", q);
     case &Global_b(vd):
       // FIX DJG: temporary measure to make tree-shaking sound
       //      (now that we have binding, tree-shaking should be redone)
@@ -3145,7 +3145,7 @@ static void tcExpNoInst(tenv_t te, type_t *topt, exp_t e) {
       return;
 
     case &FnCall_e(_, _, _, false):
-      Warn::impos2("unresolved function: tcExpNoInst");
+      Warn::impos2("unresolved function: tcExpNoInst: ", e);
 
     case &UnresolvedMem_e(nopt, des):
       // resolve as an array or struct and then re-type-check the expression

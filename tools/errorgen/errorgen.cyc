@@ -41,7 +41,7 @@ static int cmp_pair($(int,int)@`H x, $(int,int)@`H y) {
 
 static int hash_pair($(int,int)@`H x) {
   let $(s,t) = *x;
-  return (s << 16) || (t && 0xffff);
+  return (s << 16) != 0 || (t & 0xffff) != 0;
 }
 
 int main(int argc, const char ?`H ? argv) {

@@ -25,6 +25,7 @@
 #include <time.h>  // for clock()
 #endif
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -166,7 +167,8 @@ void _push_region(struct _RegionHandle *r) {
 }
 void _pop_region() {
   if (_top_frame() == NULL || _top_frame()->tag != LIFO_REGION) {
-    errquit("internal error: _pop_region");
+    fprintf(stderr, "internal error: _pop_region\n");
+    exit(1);
   }
   _npop_frame(0);
 }
@@ -939,7 +941,8 @@ void Cyc_Core_free_rckey(struct Cyc_Core_DynamicRegion *k) {
   // errprintf("count is address %x, value %d\n",p,*p);
   unsigned c = p->count - 1;
   if (c >= p->count) {
-    errquit("internal error: free rckey bad count");
+    fprintf(stderr, "internal error: free rckey bad count\n");
+    exit(1);
   }
   p->count = c;
   if (c == 0) {

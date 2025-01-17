@@ -17,5 +17,8 @@ cc_library(
         MACHINE,
     ],
     visibility = ["//visibility:public"],
-    deps = ["//cyclone/library/std/cyc-lib"],
+    deps = [
+        "//cyclone/library/std/cyc-lib",
+        "@libunwind",
+    ],
 )

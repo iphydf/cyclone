@@ -1,0 +1,7 @@
+# 2 "simple.cyc"
+
+datatype exn{Invalid_argument};
+
+void qsort() {
+  new Invalid_argument;
+}

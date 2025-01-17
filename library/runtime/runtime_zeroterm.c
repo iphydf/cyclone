@@ -30,7 +30,7 @@ typedef long long int64_t;
 #include <stdint.h>
 #endif
 #endif
-#include "runtime_internal.h"
+#include "precore_c.h"
 
 /* Add i to zero-terminated pointer x.  Checks for x being null and
    ensures that x[0..i-1] are not 0. */

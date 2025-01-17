@@ -106,16 +106,16 @@ def _cyc_compile_impl(ctx):
                 "--better-widen",
 
                 # Do not lower the C code.
-                #"--no-lower",
+                # "--no-lower",
 
                 # Don't expand typedefs in pretty printing.
-                #"-noexpandtypedefs",
+                # "-noexpandtypedefs",
 
                 # Activate the link-checker.
-                #"-ic",
+                # "-ic",
 
                 # Use interprocedural type inference.
-                #"--inf",
+                # "--inf",
 
                 # Pretty print the C code that Cyclone generates.
                 "-pp",
