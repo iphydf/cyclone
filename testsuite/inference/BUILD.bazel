@@ -3,10 +3,7 @@ load("//cyclone:build_defs.bzl", "MACHINE")
 
 genrule(
     name = "sample_srcs",
-    srcs = [
-        "sample.cyc",
-        "//cyclone/library/std/cyc-lib:cycspecs",
-    ],
+    srcs = ["sample.cyc"],
     outs = ["sample.c"],
     cmd = " ".join([
         "$(location //cyclone/tools/cyclone)",

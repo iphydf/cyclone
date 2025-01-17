@@ -1,13 +1,8 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <wchar.h>
 
 int main(int argc, char *argv[]) {
   char const *arch;
-
-  if (argc < 2)
-    return 1;
 
 #ifdef __i386__
   arch = "i386";

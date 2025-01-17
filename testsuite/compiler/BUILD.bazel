@@ -22,8 +22,8 @@
         "> $@",
         "2>&1 || true",
     ]),
-    tools = ["//cyclone/tools/cyclone"],
     toolchains = ["@rules_cc//cc:current_cc_toolchain"],
+    tools = ["//cyclone/tools/cyclone"],
 ) for cyc in glob(["*.cyc"])]
 
 [sh_test(

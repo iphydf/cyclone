@@ -82,8 +82,8 @@ cc_library(
         "-Wno-unused",
         MACHINE,
     ],
-    linkopts = [MACHINE],
     includes = ["."],
+    linkopts = [MACHINE],
     visibility = ["//visibility:public"],
     deps = ["//cyclone/library/banshee/rlib"],
 )

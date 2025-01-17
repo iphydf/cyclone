@@ -22,10 +22,7 @@ filegroup(
 
 genrule(
     name = "std_doc",
-    srcs = glob(["*.h"]) + [
-        "//cyclone/library/std",
-        "//cyclone/library/std/cyc-lib:cycspecs",
-    ],
+    srcs = glob(["*.h"]) + ["//cyclone/library/std"],
     outs = ["manual.tex"],
     cmd = " ".join([
         "$(location //cyclone/tools/cycdoc)",

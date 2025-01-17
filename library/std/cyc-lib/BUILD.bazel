@@ -9,11 +9,3 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
 )
-
-exports_files(
-    srcs = [
-        "cycspecs",
-        "gc.a",
-        "runtime_cyc.a",
-    ],
-)

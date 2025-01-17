@@ -9,6 +9,7 @@ cc_binary(
     visibility = ["//cyclone/stage1:__subpackages__"],
     deps = [
         "//cyclone/library/runtime",
+        "//cyclone/library/std/cyc-lib",
         "//cyclone/stage0/library/compiler",
         "//cyclone/stage0/library/std",
     ],

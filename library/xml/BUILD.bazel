@@ -12,8 +12,8 @@ cycyacc(
 cyc_library(
     name = "xml",
     srcs = [
-        ":xmlscan",
         ":xmlparse_tab",
+        ":xmlscan",
     ] + glob(["*.h"]) + glob(["*.cyc"]),
     hdrs = glob(["*.h"]),
     visibility = ["//visibility:public"],

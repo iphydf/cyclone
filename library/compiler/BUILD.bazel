@@ -39,9 +39,8 @@ cc_binary(
 
 genrule(
     name = "gen_config",
-    srcs = ["//cyclone/library/std/cyc-lib:cycspecs"],
     outs = ["config.c"],
-    cmd = "$(location :make-config) $< > $@",
+    cmd = "$(location :make-config) > $@",
     tools = [":make-config"],
 )
 
