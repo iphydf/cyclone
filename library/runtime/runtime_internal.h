@@ -35,14 +35,10 @@
 // only need things here that are not in cyc_include.h, which end up
 // included because of the following:
 
-// The C include file precore_c.h is produced (semi) automatically
-// from the Cyclone include file core.h.  Note, it now includes
-// the contents of cyc_include.h
-
-/* RUNTIME_CYC defined to prevent including parts of precore_c.h that
+/* RUNTIME_CYC defined to prevent including parts of cyc_include.h that
    might cause problems, particularly relating to region profiling */
 #define RUNTIME_CYC
-#include "precore_c.h"
+#include "cyc_include.h"
 
 /************** INIT and FINI ROUTINES ************/
 
@@ -77,16 +73,18 @@ struct _RuntimeStack *_top_frame();
 struct _RuntimeStack *_pop_frame_until(int tag);
 struct _RuntimeStack *_frame_until(int tag, int do_pop);
 
-/*************** EXCEPTION HANDLING *******************/
+/*************** GC ROUTINES *******************/
 
-#define _CYC_MAX_STACKTRACE 100
+void cyc_gc_init();
 
-typedef struct _Cyc_Stacktrace {
-  char *frames[_CYC_MAX_STACKTRACE];
-  int size;
-} _Cyc_Stacktrace;
+void *cyc_gc_malloc(size_t n);
+void *cyc_gc_malloc_atomic(size_t n);
 
-_Cyc_Stacktrace *_cyc_get_stacktrace(void);
-void _cyc_free_stacktrace(_Cyc_Stacktrace *stacktrace);
+void *cyc_gc_calloc(size_t n, size_t t);
+void *cyc_gc_calloc_atomic(size_t n, size_t t);
+
+void *cyc_gc_realloc(void *x, size_t n);
+
+void cyc_gc_free(void *x);
 
 #endif

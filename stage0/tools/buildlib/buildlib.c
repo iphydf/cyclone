@@ -714,13 +714,13 @@ static struct _fat_ptr Cyc_nk2str(enum Cyc_name_kind kind) {
   _T0 = kind;
   _T1 = (int)_T0;
   switch (_T1) {
-  case Cyc_NK_Tag: 
+  case Cyc_NK_Tag:
     _T2 = _tag_fat("tag",sizeof(char),4U);
     return _T2;
-  case Cyc_NK_Ident: 
+  case Cyc_NK_Ident:
     _T3 = _tag_fat("",sizeof(char),1U);
     return _T3;
-  default: 
+  default:
     _T4 = _tag_fat("<invalid>",sizeof(char),10U);
     return _T4;
   }
@@ -941,7 +941,7 @@ static void Cyc_rename_decl(struct Cyc_Absyn_Decl * d) {
     _T1 = (int *)_T1E;
     _T2 = *_T1;
     switch (_T2) {
-    case 5: 
+    case 5:
       { struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct * _T22 = (struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct *)_T1E;
 	_T21 = _T22->f1;
       }{ struct Cyc_Absyn_Aggrdecl * ad = _T21;
@@ -958,7 +958,7 @@ static void Cyc_rename_decl(struct Cyc_Absyn_Decl * d) {
 	}(*_T4).f1 = _T5;
 	goto _LL0;
       }
-    case 7: 
+    case 7:
       { struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct * _T22 = (struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct *)_T1E;
 	_T20 = _T22->f1;
       }{ struct Cyc_Absyn_Enumdecl * ed = _T20;
@@ -975,7 +975,7 @@ static void Cyc_rename_decl(struct Cyc_Absyn_Decl * d) {
 	}(*_TC).f1 = _TD;
 	goto _LL0;
       }
-    case 8: 
+    case 8:
       { struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct * _T22 = (struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct *)_T1E;
 	_T1F = _T22->f1;
       }{ struct Cyc_Absyn_Typedefdecl * td = _T1F;
@@ -992,7 +992,7 @@ static void Cyc_rename_decl(struct Cyc_Absyn_Decl * d) {
 	}(*_T14).f1 = _T15;
 	goto _LL0;
       }
-    default: 
+    default:
       _T1B = Cyc_stderr;
       _T1C = _tag_fat("Error in .cys file: bad user-defined type definition\n",
 		      sizeof(char),54U);
@@ -10341,7 +10341,7 @@ struct _tuple15 * Cyc_line_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     Cyc_macroname(lexbuf);
     _TL24: if (Cyc_current_args != 0) { goto _TL22;
     }else { goto _TL23;
@@ -10368,12 +10368,12 @@ struct _tuple15 * Cyc_line_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T13->f1 = *_TC;
       _TB = (struct _tuple15 *)_T13;
     }return _TB;
-  case 1: 
+  case 1:
     _TD = Cyc_line(lexbuf);
     return _TD;
-  case 2: 
+  case 2:
     return 0;
-  default: 
+  default:
     _TE = lexbuf;
     _TF = _TE->refill_buff;
     _TF(lexbuf);
@@ -10434,7 +10434,7 @@ int Cyc_macroname_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     { struct _fat_ptr * _T25 = _cycalloc(sizeof(struct _fat_ptr));
       _T3 = Cyc_Lexing_lexeme(lexbuf);
       _T4 = Cyc_Lexing_lexeme_end(lexbuf);
@@ -10458,7 +10458,7 @@ int Cyc_macroname_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     }Cyc_current_targets = _TA;
     Cyc_token(lexbuf);
     return 0;
-  case 1: 
+  case 1:
     { struct _fat_ptr * _T25 = _cycalloc(sizeof(struct _fat_ptr));
       _TF = Cyc_Lexing_lexeme(lexbuf);
       _T10 = Cyc_Lexing_lexeme_end(lexbuf);
@@ -10482,7 +10482,7 @@ int Cyc_macroname_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     }Cyc_current_targets = _T16;
     Cyc_args(lexbuf);
     return 0;
-  case 2: 
+  case 2:
     { struct _fat_ptr * _T25 = _cycalloc(sizeof(struct _fat_ptr));
       _T1B = Cyc_Lexing_lexeme(lexbuf);
       *_T25 = _T1B;
@@ -10500,7 +10500,7 @@ int Cyc_macroname_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     }Cyc_current_targets = _T1C;
     Cyc_token(lexbuf);
     return 0;
-  default: 
+  default:
     _T20 = lexbuf;
     _T21 = _T20->refill_buff;
     _T21(lexbuf);
@@ -10571,7 +10571,7 @@ int Cyc_args_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     { struct _fat_ptr * a;
       a = _cycalloc(sizeof(struct _fat_ptr));
       _T2 = a;
@@ -10591,7 +10591,7 @@ int Cyc_args_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _TB = Cyc_args(lexbuf);
       return _TB;
     }
-  case 1: 
+  case 1:
     { struct _fat_ptr * a;
       a = _cycalloc(sizeof(struct _fat_ptr));
       _TC = a;
@@ -10611,7 +10611,7 @@ int Cyc_args_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T15 = Cyc_args(lexbuf);
       return _T15;
     }
-  case 2: 
+  case 2:
     { struct _fat_ptr * a;
       a = _cycalloc(sizeof(struct _fat_ptr));
       _T16 = a;
@@ -10631,7 +10631,7 @@ int Cyc_args_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T1F = Cyc_token(lexbuf);
       return _T1F;
     }
-  case 3: 
+  case 3:
     { struct _fat_ptr * a;
       a = _cycalloc(sizeof(struct _fat_ptr));
       _T20 = a;
@@ -10651,7 +10651,7 @@ int Cyc_args_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T29 = Cyc_token(lexbuf);
       return _T29;
     }
-  default: 
+  default:
     _T2A = lexbuf;
     _T2B = _T2A->refill_buff;
     _T2B(lexbuf);
@@ -10732,7 +10732,7 @@ int Cyc_token_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     { struct _fat_ptr * _T39 = _cycalloc(sizeof(struct _fat_ptr));
       _T3 = Cyc_Lexing_lexeme(lexbuf);
       *_T39 = _T3;
@@ -10740,151 +10740,151 @@ int Cyc_token_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     }Cyc_add_target(_T2);
     _T4 = Cyc_token(lexbuf);
     return _T4;
-  case 1: 
+  case 1:
     return 0;
-  case 2: 
+  case 2:
     _T5 = Cyc_token(lexbuf);
     return _T5;
-  case 3: 
+  case 3:
     Cyc_string(lexbuf);
     _T6 = Cyc_token(lexbuf);
     return _T6;
-  case 4: 
+  case 4:
     _T7 = Cyc_token(lexbuf);
     return _T7;
-  case 5: 
+  case 5:
     _T8 = Cyc_token(lexbuf);
     return _T8;
-  case 6: 
+  case 6:
     _T9 = Cyc_token(lexbuf);
     return _T9;
-  case 7: 
+  case 7:
     _TA = Cyc_token(lexbuf);
     return _TA;
-  case 8: 
+  case 8:
     _TB = Cyc_token(lexbuf);
     return _TB;
-  case 9: 
+  case 9:
     _TC = Cyc_token(lexbuf);
     return _TC;
-  case 10: 
+  case 10:
     _TD = Cyc_token(lexbuf);
     return _TD;
-  case 11: 
+  case 11:
     _TE = Cyc_token(lexbuf);
     return _TE;
-  case 12: 
+  case 12:
     _TF = Cyc_token(lexbuf);
     return _TF;
-  case 13: 
+  case 13:
     _T10 = Cyc_token(lexbuf);
     return _T10;
-  case 14: 
+  case 14:
     _T11 = Cyc_token(lexbuf);
     return _T11;
-  case 15: 
+  case 15:
     _T12 = Cyc_token(lexbuf);
     return _T12;
-  case 16: 
+  case 16:
     _T13 = Cyc_token(lexbuf);
     return _T13;
-  case 17: 
+  case 17:
     _T14 = Cyc_token(lexbuf);
     return _T14;
-  case 18: 
+  case 18:
     _T15 = Cyc_token(lexbuf);
     return _T15;
-  case 19: 
+  case 19:
     _T16 = Cyc_token(lexbuf);
     return _T16;
-  case 20: 
+  case 20:
     _T17 = Cyc_token(lexbuf);
     return _T17;
-  case 21: 
+  case 21:
     _T18 = Cyc_token(lexbuf);
     return _T18;
-  case 22: 
+  case 22:
     _T19 = Cyc_token(lexbuf);
     return _T19;
-  case 23: 
+  case 23:
     _T1A = Cyc_token(lexbuf);
     return _T1A;
-  case 24: 
+  case 24:
     _T1B = Cyc_token(lexbuf);
     return _T1B;
-  case 25: 
+  case 25:
     _T1C = Cyc_token(lexbuf);
     return _T1C;
-  case 26: 
+  case 26:
     _T1D = Cyc_token(lexbuf);
     return _T1D;
-  case 27: 
+  case 27:
     _T1E = Cyc_token(lexbuf);
     return _T1E;
-  case 28: 
+  case 28:
     _T1F = Cyc_token(lexbuf);
     return _T1F;
-  case 29: 
+  case 29:
     _T20 = Cyc_token(lexbuf);
     return _T20;
-  case 30: 
+  case 30:
     _T21 = Cyc_token(lexbuf);
     return _T21;
-  case 31: 
+  case 31:
     _T22 = Cyc_token(lexbuf);
     return _T22;
-  case 32: 
+  case 32:
     _T23 = Cyc_token(lexbuf);
     return _T23;
-  case 33: 
+  case 33:
     _T24 = Cyc_token(lexbuf);
     return _T24;
-  case 34: 
+  case 34:
     _T25 = Cyc_token(lexbuf);
     return _T25;
-  case 35: 
+  case 35:
     _T26 = Cyc_token(lexbuf);
     return _T26;
-  case 36: 
+  case 36:
     _T27 = Cyc_token(lexbuf);
     return _T27;
-  case 37: 
+  case 37:
     _T28 = Cyc_token(lexbuf);
     return _T28;
-  case 38: 
+  case 38:
     _T29 = Cyc_token(lexbuf);
     return _T29;
-  case 39: 
+  case 39:
     _T2A = Cyc_token(lexbuf);
     return _T2A;
-  case 40: 
+  case 40:
     _T2B = Cyc_token(lexbuf);
     return _T2B;
-  case 41: 
+  case 41:
     _T2C = Cyc_token(lexbuf);
     return _T2C;
-  case 42: 
+  case 42:
     _T2D = Cyc_token(lexbuf);
     return _T2D;
-  case 43: 
+  case 43:
     _T2E = Cyc_token(lexbuf);
     return _T2E;
-  case 44: 
+  case 44:
     _T2F = Cyc_token(lexbuf);
     return _T2F;
-  case 45: 
+  case 45:
     _T30 = Cyc_token(lexbuf);
     return _T30;
-  case 46: 
+  case 46:
     _T31 = Cyc_token(lexbuf);
     return _T31;
-  case 47: 
+  case 47:
     _T32 = Cyc_token(lexbuf);
     return _T32;
-  case 48: 
+  case 48:
     _T33 = Cyc_token(lexbuf);
     return _T33;
-  default: 
+  default:
     _T34 = lexbuf;
     _T35 = _T34->refill_buff;
     _T35(lexbuf);
@@ -10922,34 +10922,34 @@ int Cyc_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     _T2 = Cyc_string(lexbuf);
     return _T2;
-  case 1: 
+  case 1:
     return 0;
-  case 2: 
+  case 2:
     _T3 = Cyc_string(lexbuf);
     return _T3;
-  case 3: 
+  case 3:
     _T4 = Cyc_string(lexbuf);
     return _T4;
-  case 4: 
+  case 4:
     _T5 = Cyc_string(lexbuf);
     return _T5;
-  case 5: 
+  case 5:
     _T6 = Cyc_string(lexbuf);
     return _T6;
-  case 6: 
+  case 6:
     _T7 = Cyc_string(lexbuf);
     return _T7;
-  case 7: 
+  case 7:
     return 0;
-  case 8: 
+  case 8:
     return 0;
-  case 9: 
+  case 9:
     _T8 = Cyc_string(lexbuf);
     return _T8;
-  default: 
+  default:
     _T9 = lexbuf;
     _TA = _T9->refill_buff;
     _TA(lexbuf);
@@ -11032,9 +11032,9 @@ int Cyc_slurp_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     return 0;
-  case 1: 
+  case 1:
     _T2 = _check_null(Cyc_slurp_out);
     Cyc_fputc(34,_T2);
     _TL2A: _T3 = Cyc_slurp_string(lexbuf);
@@ -11043,7 +11043,7 @@ int Cyc_slurp_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     }
     _TL2B: goto _TL2A;
     _TL2C: return 1;
-  case 2: 
+  case 2:
     _T4 = _check_null(Cyc_slurp_out);
     Cyc_fputs("*__IGNORE_FOR_CYCLONE_MALLOC(",_T4);
     _T5 = _tag_fat("Warning: declaration of malloc sidestepped\n",sizeof(char),
@@ -11051,7 +11051,7 @@ int Cyc_slurp_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     _T6 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T5,_T6);
     return 1;
-  case 3: 
+  case 3:
     _T7 = _check_null(Cyc_slurp_out);
     Cyc_fputs(" __IGNORE_FOR_CYCLONE_MALLOC(",_T7);
     _T8 = _tag_fat("Warning: declaration of malloc sidestepped\n",sizeof(char),
@@ -11059,7 +11059,7 @@ int Cyc_slurp_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     _T9 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T8,_T9);
     return 1;
-  case 4: 
+  case 4:
     _TA = _check_null(Cyc_slurp_out);
     Cyc_fputs("*__IGNORE_FOR_CYCLONE_CALLOC(",_TA);
     _TB = _tag_fat("Warning: declaration of calloc sidestepped\n",sizeof(char),
@@ -11067,7 +11067,7 @@ int Cyc_slurp_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     _TC = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_TB,_TC);
     return 1;
-  case 5: 
+  case 5:
     _TD = _check_null(Cyc_slurp_out);
     Cyc_fputs(" __IGNORE_FOR_CYCLONE_CALLOC(",_TD);
     _TE = _tag_fat("Warning: declaration of calloc sidestepped\n",sizeof(char),
@@ -11075,120 +11075,120 @@ int Cyc_slurp_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     _TF = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_TE,_TF);
     return 1;
-  case 6: 
+  case 6:
     _T10 = _check_null(Cyc_slurp_out);
     Cyc_fputs("__region",_T10);
     _T11 = _tag_fat("Warning: use of region sidestepped\n",sizeof(char),36U);
     _T12 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T11,_T12);
     return 1;
-  case 7: 
+  case 7:
     _T13 = _tag_fat("Warning: use of __extension__ deleted\n",sizeof(char),
 		    39U);
     _T14 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T13,_T14);
     return 1;
-  case 8: 
+  case 8:
     _T15 = _tag_fat("Warning: use of nonnull attribute deleted\n",sizeof(char),
 		    43U);
     _T16 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T15,_T16);
     return 1;
-  case 9: 
+  case 9:
     _T17 = _tag_fat("Warning: use of mode HI deleted\n",sizeof(char),33U);
     _T18 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T17,_T18);
     return 1;
-  case 10: 
+  case 10:
     _T19 = _tag_fat("Warning: use of mode SI deleted\n",sizeof(char),33U);
     _T1A = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T19,_T1A);
     return 1;
-  case 11: 
+  case 11:
     _T1B = _tag_fat("Warning: use of mode QI deleted\n",sizeof(char),33U);
     _T1C = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T1B,_T1C);
     return 1;
-  case 12: 
+  case 12:
     _T1D = _tag_fat("Warning: use of mode DI deleted\n",sizeof(char),33U);
     _T1E = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T1D,_T1E);
     return 1;
-  case 13: 
+  case 13:
     _T1F = _tag_fat("Warning: use of mode DI deleted\n",sizeof(char),33U);
     _T20 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T1F,_T20);
     return 1;
-  case 14: 
+  case 14:
     _T21 = _tag_fat("Warning: use of mode word deleted\n",sizeof(char),35U);
     _T22 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T21,_T22);
     return 1;
-  case 15: 
+  case 15:
     _T23 = _tag_fat("Warning: use of __attribute__((deprecated)) deleted\n",
 		    sizeof(char),53U);
     _T24 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T23,_T24);
     return 1;
-  case 16: 
+  case 16:
     _T25 = _tag_fat("Warning: use of __attribute__((__deprecated__)) deleted\n",
 		    sizeof(char),57U);
     _T26 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T25,_T26);
     return 1;
-  case 17: 
+  case 17:
     _T27 = _tag_fat("Warning: use of __attribute__((__transparent_union__)) deleted\n",
 		    sizeof(char),64U);
     _T28 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T27,_T28);
     return 1;
-  case 18: 
+  case 18:
     _T29 = _tag_fat("Warning: use of __asm__ on declaration deleted\n",sizeof(char),
 		    48U);
     _T2A = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T29,_T2A);
     return 1;
-  case 19: 
+  case 19:
     _T2B = _check_null(Cyc_slurp_out);
     Cyc_fputs("inline",_T2B);
     return 1;
-  case 20: 
+  case 20:
     _T2C = _check_null(Cyc_slurp_out);
     Cyc_fputs("inline",_T2C);
     return 1;
-  case 21: 
+  case 21:
     _T2D = _check_null(Cyc_slurp_out);
     Cyc_fputs("const",_T2D);
     return 1;
-  case 22: 
+  case 22:
     _T2E = _check_null(Cyc_slurp_out);
     Cyc_fputs("const",_T2E);
     return 1;
-  case 23: 
+  case 23:
     _T2F = _check_null(Cyc_slurp_out);
     Cyc_fputs("signed",_T2F);
     return 1;
-  case 24: 
+  case 24:
     _T30 = _check_null(Cyc_slurp_out);
     Cyc_fputs("signed",_T30);
     return 1;
-  case 25: 
+  case 25:
     _T31 = _check_null(Cyc_slurp_out);
     Cyc_fputs("signed",_T31);
     return 1;
-  case 26: 
+  case 26:
     _T32 = _check_null(Cyc_slurp_out);
     Cyc_fputs("int",_T32);
     return 1;
-  case 27: 
+  case 27:
     return 1;
-  case 28: 
+  case 28:
     _T33 = Cyc_Lexing_lexeme_char(lexbuf,0);
     _T34 = (int)_T33;
     _T35 = _check_null(Cyc_slurp_out);
     Cyc_fputc(_T34,_T35);
     return 1;
-  default: 
+  default:
     _T36 = lexbuf;
     _T37 = _T36->refill_buff;
     _T37(lexbuf);
@@ -11250,13 +11250,13 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     return 0;
-  case 1: 
+  case 1:
     _T2 = _check_null(Cyc_slurp_out);
     Cyc_fputc(34,_T2);
     return 0;
-  case 2: 
+  case 2:
     _T3 = _tag_fat("Warning: unclosed string\n",sizeof(char),26U);
     _T4 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T3,_T4);
@@ -11272,7 +11272,7 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T8 = _tag_fat(_T27,sizeof(void *),1);
       Cyc_fprintf(_T6,_T7,_T8);
     }return 1;
-  case 3: 
+  case 3:
     { struct Cyc_String_pa_PrintArg_struct _T26;
       _T26.tag = 0;
       _T26.f1 = Cyc_Lexing_lexeme(lexbuf);
@@ -11285,7 +11285,7 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _TC = _tag_fat(_T27,sizeof(void *),1);
       Cyc_fprintf(_TA,_TB,_TC);
     }return 1;
-  case 4: 
+  case 4:
     { struct Cyc_String_pa_PrintArg_struct _T26;
       _T26.tag = 0;
       _T26.f1 = Cyc_Lexing_lexeme(lexbuf);
@@ -11298,7 +11298,7 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T10 = _tag_fat(_T27,sizeof(void *),1);
       Cyc_fprintf(_TE,_TF,_T10);
     }return 1;
-  case 5: 
+  case 5:
     { struct Cyc_String_pa_PrintArg_struct _T26;
       _T26.tag = 0;
       _T26.f1 = Cyc_Lexing_lexeme(lexbuf);
@@ -11311,7 +11311,7 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T14 = _tag_fat(_T27,sizeof(void *),1);
       Cyc_fprintf(_T12,_T13,_T14);
     }return 1;
-  case 6: 
+  case 6:
     { struct Cyc_String_pa_PrintArg_struct _T26;
       _T26.tag = 0;
       _T26.f1 = Cyc_Lexing_lexeme(lexbuf);
@@ -11324,7 +11324,7 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T18 = _tag_fat(_T27,sizeof(void *),1);
       Cyc_fprintf(_T16,_T17,_T18);
     }return 1;
-  case 7: 
+  case 7:
     { struct Cyc_String_pa_PrintArg_struct _T26;
       _T26.tag = 0;
       _T26.f1 = Cyc_Lexing_lexeme(lexbuf);
@@ -11337,7 +11337,7 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T1C = _tag_fat(_T27,sizeof(void *),1);
       Cyc_fprintf(_T1A,_T1B,_T1C);
     }return 1;
-  case 8: 
+  case 8:
     { struct Cyc_String_pa_PrintArg_struct _T26;
       _T26.tag = 0;
       _T26.f1 = Cyc_Lexing_lexeme(lexbuf);
@@ -11350,7 +11350,7 @@ int Cyc_slurp_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T20 = _tag_fat(_T27,sizeof(void *),1);
       Cyc_fprintf(_T1E,_T1F,_T20);
     }return 1;
-  default: 
+  default:
     _T21 = lexbuf;
     _T22 = _T21->refill_buff;
     _T22(lexbuf);
@@ -11383,36 +11383,36 @@ int Cyc_asmtok_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     return 0;
-  case 1: 
+  case 1:
     if (Cyc_parens_to_match != 1) { goto _TL2F;
     }
     return 0;
     _TL2F: Cyc_parens_to_match = Cyc_parens_to_match + -1;
     return 1;
-  case 2: 
+  case 2:
     Cyc_parens_to_match = Cyc_parens_to_match + 1;
     return 1;
-  case 3: 
+  case 3:
     _TL31: _T2 = Cyc_asm_string(lexbuf);
     if (_T2) { goto _TL32;
     }else { goto _TL33;
     }
     _TL32: goto _TL31;
     _TL33: return 1;
-  case 4: 
+  case 4:
     _TL34: _T3 = Cyc_asm_comment(lexbuf);
     if (_T3) { goto _TL35;
     }else { goto _TL36;
     }
     _TL35: goto _TL34;
     _TL36: return 1;
-  case 5: 
+  case 5:
     return 1;
-  case 6: 
+  case 6:
     return 1;
-  default: 
+  default:
     _T4 = lexbuf;
     _T5 = _T4->refill_buff;
     _T5(lexbuf);
@@ -11447,31 +11447,31 @@ int Cyc_asm_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     _T2 = _tag_fat("Warning: unclosed string\n",sizeof(char),26U);
     _T3 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T2,_T3);
     return 0;
-  case 1: 
+  case 1:
     return 0;
-  case 2: 
+  case 2:
     _T4 = _tag_fat("Warning: unclosed string\n",sizeof(char),26U);
     _T5 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T4,_T5);
     return 1;
-  case 3: 
+  case 3:
     return 1;
-  case 4: 
+  case 4:
     return 1;
-  case 5: 
+  case 5:
     return 1;
-  case 6: 
+  case 6:
     return 1;
-  case 7: 
+  case 7:
     return 1;
-  case 8: 
+  case 8:
     return 1;
-  default: 
+  default:
     _T6 = lexbuf;
     _T7 = _T6->refill_buff;
     _T7(lexbuf);
@@ -11504,16 +11504,16 @@ int Cyc_asm_comment_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     _T2 = _tag_fat("Warning: unclosed comment\n",sizeof(char),27U);
     _T3 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T2,_T3);
     return 0;
-  case 1: 
+  case 1:
     return 0;
-  case 2: 
+  case 2:
     return 1;
-  default: 
+  default:
     _T4 = lexbuf;
     _T5 = _T4->refill_buff;
     _T5(lexbuf);
@@ -11546,7 +11546,7 @@ struct _tuple16 * Cyc_suck_line_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexsta
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     Cyc_current_line = _tag_fat("#define ",sizeof(char),9U);
     Cyc_suck_macroname(lexbuf);
     { struct _tuple16 * _T9 = _cycalloc(sizeof(struct _tuple16));
@@ -11554,12 +11554,12 @@ struct _tuple16 * Cyc_suck_line_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexsta
       _T9->f1 = _check_null(Cyc_current_source);
       _T2 = (struct _tuple16 *)_T9;
     }return _T2;
-  case 1: 
+  case 1:
     _T3 = Cyc_suck_line(lexbuf);
     return _T3;
-  case 2: 
+  case 2:
     return 0;
-  default: 
+  default:
     _T4 = lexbuf;
     _T5 = _T4->refill_buff;
     _T5(lexbuf);
@@ -11682,10 +11682,10 @@ struct _tuple19 * Cyc_spec_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     _T2 = Cyc_spec(lexbuf);
     return _T2;
-  case 1: 
+  case 1:
     _T3 = Cyc_Lexing_lexeme(lexbuf);
     _T4 = Cyc_Lexing_lexeme_end(lexbuf);
     _T5 = Cyc_Lexing_lexeme_start(lexbuf);
@@ -11721,12 +11721,12 @@ struct _tuple19 * Cyc_spec_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T18->f7 = Cyc_current_cpp;
       _TB = (struct _tuple19 *)_T18;
     }return _TB;
-  case 2: 
+  case 2:
     _TC = Cyc_spec(lexbuf);
     return _TC;
-  case 3: 
+  case 3:
     return 0;
-  case 4: 
+  case 4:
     { struct Cyc_Int_pa_PrintArg_struct _T18;
       _T18.tag = 1;
       _TE = Cyc_Lexing_lexeme_char(lexbuf,0);
@@ -11742,7 +11742,7 @@ struct _tuple19 * Cyc_spec_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T12 = _tag_fat(_T19,sizeof(void *),1);
       Cyc_fprintf(_T10,_T11,_T12);
     }return 0;
-  default: 
+  default:
     _T13 = lexbuf;
     _T14 = _T13->refill_buff;
     _T14(lexbuf);
@@ -11909,11 +11909,11 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     return 0;
-  case 1: 
+  case 1:
     return 0;
-  case 2: 
+  case 2:
     Cyc_snarfed_symbols = 0;
     _TL43: _T2 = Cyc_snarfsymbols(lexbuf);
     if (_T2) { goto _TL44;
@@ -11922,7 +11922,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     _TL44: goto _TL43;
     _TL45: Cyc_current_symbols = Cyc_List_append(Cyc_snarfed_symbols,Cyc_current_symbols);
     return 1;
-  case 3: 
+  case 3:
     Cyc_snarfed_symbols = 0;
     { struct Cyc_List_List * tmp_user_defs = Cyc_current_user_defs;
       _TL46: _T3 = Cyc_snarfsymbols(lexbuf);
@@ -11942,7 +11942,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
 							Cyc_current_omit_symbols);
       return 1;
     }
-  case 4: 
+  case 4:
     Cyc_braces_to_match = 1;
     Cyc_specbuf = Cyc_Buffer_create(255U);
     _TL4B: _T7 = Cyc_block(lexbuf);
@@ -11966,7 +11966,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       }Cyc_current_hstubs = _TD;
       return 1;
     }
-  case 5: 
+  case 5:
     { struct _fat_ptr s = Cyc_Lexing_lexeme(lexbuf);
       _TE = &s;
       _TF = _tag_fat("hstub",sizeof(char),6U);
@@ -12033,7 +12033,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
 	}
       }
     }
-  case 6: 
+  case 6:
     Cyc_braces_to_match = 1;
     Cyc_specbuf = Cyc_Buffer_create(255U);
     _TL57: _T2F = Cyc_block(lexbuf);
@@ -12057,7 +12057,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       }Cyc_current_cstubs = _T35;
       return 1;
     }
-  case 7: 
+  case 7:
     { struct _fat_ptr s = Cyc_Lexing_lexeme(lexbuf);
       _T36 = &s;
       _T37 = _tag_fat("cstub",sizeof(char),6U);
@@ -12124,7 +12124,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
 	}
       }
     }
-  case 8: 
+  case 8:
     Cyc_braces_to_match = 1;
     Cyc_specbuf = Cyc_Buffer_create(255U);
     _TL63: _T57 = Cyc_block(lexbuf);
@@ -12148,7 +12148,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       }Cyc_current_cycstubs = _T5D;
       return 1;
     }
-  case 9: 
+  case 9:
     { struct _fat_ptr s = Cyc_Lexing_lexeme(lexbuf);
       _T5E = &s;
       _T5F = _tag_fat("cycstub",sizeof(char),8U);
@@ -12215,7 +12215,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
 	}
       }
     }
-  case 10: 
+  case 10:
     Cyc_braces_to_match = 1;
     Cyc_specbuf = Cyc_Buffer_create(255U);
     _TL6F: _T7F = Cyc_block(lexbuf);
@@ -12236,11 +12236,11 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       }Cyc_current_cpp = _T83;
       return 1;
     }
-  case 11: 
+  case 11:
     return 1;
-  case 12: 
+  case 12:
     return 1;
-  case 13: 
+  case 13:
     { struct Cyc_Int_pa_PrintArg_struct _T8F;
       _T8F.tag = 1;
       _T85 = Cyc_Lexing_lexeme_char(lexbuf,0);
@@ -12256,7 +12256,7 @@ int Cyc_commands_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T89 = _tag_fat(_T90,sizeof(void *),1);
       Cyc_fprintf(_T87,_T88,_T89);
     }return 0;
-  default: 
+  default:
     _T8A = lexbuf;
     _T8B = _T8A->refill_buff;
     _T8B(lexbuf);
@@ -12325,7 +12325,7 @@ int Cyc_snarfsymbols_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     { struct Cyc_List_List * _T2D = _cycalloc(sizeof(struct Cyc_List_List));
       { struct _fat_ptr * _T2E = _cycalloc(sizeof(struct _fat_ptr));
 	_T4 = Cyc_Lexing_lexeme(lexbuf);
@@ -12336,7 +12336,7 @@ int Cyc_snarfsymbols_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T2 = (struct Cyc_List_List *)_T2D;
     }Cyc_snarfed_symbols = _T2;
     return 1;
-  case 1: 
+  case 1:
     { struct _fat_ptr s = Cyc_Lexing_lexeme(lexbuf);
       struct _fat_ptr t = s;
       _TL73: _T5 = t;
@@ -12400,18 +12400,18 @@ int Cyc_snarfsymbols_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
 	return 1;
       }
     }
-  case 2: 
+  case 2:
     return 1;
-  case 3: 
+  case 3:
     return 0;
-  case 4: 
+  case 4:
     _T1F = Cyc_stderr;
     _T20 = _tag_fat("Error in .cys file: unexpected end-of-file\n",sizeof(char),
 		    44U);
     _T21 = _tag_fat(0U,sizeof(void *),0);
     Cyc_fprintf(_T1F,_T20,_T21);
     return 0;
-  case 5: 
+  case 5:
     { struct Cyc_Int_pa_PrintArg_struct _T2D;
       _T2D.tag = 1;
       _T23 = Cyc_Lexing_lexeme_char(lexbuf,0);
@@ -12427,7 +12427,7 @@ int Cyc_snarfsymbols_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       _T27 = _tag_fat(_T2E,sizeof(void *),1);
       Cyc_fprintf(_T25,_T26,_T27);
     }return 0;
-  default: 
+  default:
     _T28 = lexbuf;
     _T29 = _T28->refill_buff;
     _T29(lexbuf);
@@ -12480,12 +12480,12 @@ int Cyc_block_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     _T2 = _tag_fat("Warning: unclosed brace\n",sizeof(char),25U);
     _T3 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T2,_T3);
     return 0;
-  case 1: 
+  case 1:
     if (Cyc_braces_to_match != 1) { goto _TL7A;
     }
     return 0;
@@ -12493,12 +12493,12 @@ int Cyc_block_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     _T4 = _check_null(Cyc_specbuf);
     Cyc_Buffer_add_char(_T4,'}');
     return 1;
-  case 2: 
+  case 2:
     Cyc_braces_to_match = Cyc_braces_to_match + 1;
     _T5 = _check_null(Cyc_specbuf);
     Cyc_Buffer_add_char(_T5,'{');
     return 1;
-  case 3: 
+  case 3:
     _T6 = _check_null(Cyc_specbuf);
     Cyc_Buffer_add_char(_T6,'"');
     _TL7C: _T7 = Cyc_block_string(lexbuf);
@@ -12507,7 +12507,7 @@ int Cyc_block_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     }
     _TL7D: goto _TL7C;
     _TL7E: return 1;
-  case 4: 
+  case 4:
     _T8 = _check_null(Cyc_specbuf);
     _T9 = _tag_fat("/*",sizeof(char),3U);
     Cyc_Buffer_add_string(_T8,_T9);
@@ -12517,12 +12517,12 @@ int Cyc_block_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     }
     _TL80: goto _TL7F;
     _TL81: return 1;
-  case 5: 
+  case 5:
     _TB = _check_null(Cyc_specbuf);
     _TC = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_TB,_TC);
     return 1;
-  case 6: 
+  case 6:
     _TD = Cyc_Lexing_lexeme(lexbuf);
     { struct _fat_ptr symbol = _TD;
       _TE = Cyc_rename_current_symbol;
@@ -12545,12 +12545,12 @@ int Cyc_block_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
       Cyc_Buffer_add_string(_T14,_T15);
       _TL83: return 1;
     }
-  case 7: 
+  case 7:
     _T16 = _check_null(Cyc_specbuf);
     _T17 = Cyc_Lexing_lexeme_char(lexbuf,0);
     Cyc_Buffer_add_char(_T16,_T17);
     return 1;
-  default: 
+  default:
     _T18 = lexbuf;
     _T19 = _T18->refill_buff;
     _T19(lexbuf);
@@ -12600,16 +12600,16 @@ int Cyc_block_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     _T2 = _tag_fat("Warning: unclosed string\n",sizeof(char),26U);
     _T3 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T2,_T3);
     return 0;
-  case 1: 
+  case 1:
     _T4 = _check_null(Cyc_specbuf);
     Cyc_Buffer_add_char(_T4,'"');
     return 0;
-  case 2: 
+  case 2:
     _T5 = _tag_fat("Warning: unclosed string\n",sizeof(char),26U);
     _T6 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T5,_T6);
@@ -12617,37 +12617,37 @@ int Cyc_block_string_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
     _T8 = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_T7,_T8);
     return 1;
-  case 3: 
+  case 3:
     _T9 = _check_null(Cyc_specbuf);
     _TA = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_T9,_TA);
     return 1;
-  case 4: 
+  case 4:
     _TB = _check_null(Cyc_specbuf);
     _TC = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_TB,_TC);
     return 1;
-  case 5: 
+  case 5:
     _TD = _check_null(Cyc_specbuf);
     _TE = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_TD,_TE);
     return 1;
-  case 6: 
+  case 6:
     _TF = _check_null(Cyc_specbuf);
     _T10 = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_TF,_T10);
     return 1;
-  case 7: 
+  case 7:
     _T11 = _check_null(Cyc_specbuf);
     _T12 = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_T11,_T12);
     return 1;
-  case 8: 
+  case 8:
     _T13 = _check_null(Cyc_specbuf);
     _T14 = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_T13,_T14);
     return 1;
-  default: 
+  default:
     _T15 = lexbuf;
     _T16 = _T15->refill_buff;
     _T16(lexbuf);
@@ -12684,22 +12684,22 @@ int Cyc_block_comment_rec(struct Cyc_Lexing_lexbuf * lexbuf,int lexstate) {
   _T0 = lexstate;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 0: 
+  case 0:
     _T2 = _tag_fat("Warning: unclosed comment\n",sizeof(char),27U);
     _T3 = _tag_fat(0U,sizeof(void *),0);
     Cyc_log(_T2,_T3);
     return 0;
-  case 1: 
+  case 1:
     _T4 = _check_null(Cyc_specbuf);
     _T5 = _tag_fat("*/",sizeof(char),3U);
     Cyc_Buffer_add_string(_T4,_T5);
     return 0;
-  case 2: 
+  case 2:
     _T6 = _check_null(Cyc_specbuf);
     _T7 = Cyc_Lexing_lexeme(lexbuf);
     Cyc_Buffer_add_string(_T6,_T7);
     return 1;
-  default: 
+  default:
     _T8 = lexbuf;
     _T9 = _T8->refill_buff;
     _T9(lexbuf);
@@ -12822,7 +12822,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
     _T1 = (int *)_T56;
     _T2 = *_T1;
     switch (_T2) {
-    case 1: 
+    case 1:
       { struct Cyc_Absyn_Var_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Var_e_Absyn_Raw_exp_struct *)_T56;
 	_T3 = _T5E->f1;
 	_T5D = (void *)_T3;
@@ -12834,7 +12834,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	  return;
 	}
       }
-    case 3: 
+    case 3:
       { struct Cyc_Absyn_Primop_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Primop_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f2;
       }{ struct Cyc_List_List * x = _T5D;
@@ -12851,7 +12851,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	goto _TL8B;
 	_TL8A: return;
       }
-    case 23: 
+    case 23:
       { struct Cyc_Absyn_Subscript_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Subscript_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T5C = _T5E->f2;
@@ -12861,7 +12861,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	_T5C = e2;
 	goto _LL8;
       }
-    case 9: 
+    case 9:
       { struct Cyc_Absyn_SeqExp_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_SeqExp_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T5C = _T5E->f2;
@@ -12871,7 +12871,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	_T5C = e2;
 	goto _LLA;
       }
-    case 4: 
+    case 4:
       { struct Cyc_Absyn_AssignOp_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_AssignOp_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T5C = _T5E->f3;
@@ -12881,42 +12881,42 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	Cyc_scan_exp(e2,dep);
 	return;
       }
-    case 40: 
+    case 40:
       { struct Cyc_Absyn_Extension_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Extension_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
       }{ struct Cyc_Absyn_Exp * e1 = _T5D;
 	_T5D = e1;
 	goto _LLE;
       }
-    case 20: 
+    case 20:
       { struct Cyc_Absyn_Deref_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Deref_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
       }_LLE: { struct Cyc_Absyn_Exp * e1 = _T5D;
 	_T5D = e1;
 	goto _LL10;
       }
-    case 18: 
+    case 18:
       { struct Cyc_Absyn_Sizeofexp_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Sizeofexp_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
       }_LL10: { struct Cyc_Absyn_Exp * e1 = _T5D;
 	_T5D = e1;
 	goto _LL12;
       }
-    case 15: 
+    case 15:
       { struct Cyc_Absyn_Address_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Address_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
       }_LL12: { struct Cyc_Absyn_Exp * e1 = _T5D;
 	_T5D = e1;
 	goto _LL14;
       }
-    case 5: 
+    case 5:
       { struct Cyc_Absyn_Increment_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Increment_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
       }_LL14: { struct Cyc_Absyn_Exp * e1 = _T5D;
 	Cyc_scan_exp(e1,dep);
 	return;
       }
-    case 6: 
+    case 6:
       { struct Cyc_Absyn_Conditional_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Conditional_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T5C = _T5E->f2;
@@ -12929,7 +12929,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	Cyc_scan_exp(e3,dep);
 	return;
       }
-    case 7: 
+    case 7:
       { struct Cyc_Absyn_And_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_And_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T5C = _T5E->f2;
@@ -12939,7 +12939,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	_T5C = e2;
 	goto _LL1A;
       }
-    case 8: 
+    case 8:
       { struct Cyc_Absyn_Or_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Or_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T5C = _T5E->f2;
@@ -12949,7 +12949,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	Cyc_scan_exp(e2,dep);
 	return;
       }
-    case 10: 
+    case 10:
       { struct Cyc_Absyn_FnCall_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_FnCall_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T5A = _T5E->f2;
@@ -12969,7 +12969,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	goto _TL8F;
 	_TL8E: return;
       }
-    case 14: 
+    case 14:
       { struct Cyc_Absyn_Cast_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Cast_e_Absyn_Raw_exp_struct *)_T56;
 	_T10 = _T5E->f1;
 	_T5D = (void *)_T10;
@@ -12980,7 +12980,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	Cyc_scan_exp(e1,dep);
 	return;
       }
-    case 33: 
+    case 33:
       { struct Cyc_Absyn_Malloc_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Malloc_e_Absyn_Raw_exp_struct *)_T56;
 	_T11 = _T5E->f1;
 	_T59 = _T11.mknd;
@@ -13015,14 +13015,14 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	_TL94: _TL95: Cyc_scan_exp(e,dep);
 	return;
       }
-    case 37: 
+    case 37:
       { struct Cyc_Absyn_Tagcheck_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Tagcheck_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
       }{ struct Cyc_Absyn_Exp * e = _T5D;
 	Cyc_scan_exp(e,dep);
 	return;
       }
-    case 38: 
+    case 38:
       { struct Cyc_Absyn_Valueof_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Valueof_e_Absyn_Raw_exp_struct *)_T56;
 	_T19 = _T5E->f1;
 	_T5D = (void *)_T19;
@@ -13030,7 +13030,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	_T5D = t1;
 	goto _LL26;
       }
-    case 17: 
+    case 17:
       { struct Cyc_Absyn_Sizeoftype_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Sizeoftype_e_Absyn_Raw_exp_struct *)_T56;
 	_T1A = _T5E->f1;
 	_T5D = (void *)_T1A;
@@ -13038,7 +13038,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	Cyc_scan_type(t1,dep);
 	return;
       }
-    case 21: 
+    case 21:
       { struct Cyc_Absyn_AggrMember_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_AggrMember_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T57 = _T5E->f2;
@@ -13048,7 +13048,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	_T57 = fn;
 	goto _LL2A;
       }
-    case 22: 
+    case 22:
       { struct Cyc_Absyn_AggrArrow_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_AggrArrow_e_Absyn_Raw_exp_struct *)_T56;
 	_T5D = _T5E->f1;
 	_T57 = _T5E->f2;
@@ -13058,7 +13058,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	Cyc_add_target(fn);
 	return;
       }
-    case 19: 
+    case 19:
       { struct Cyc_Absyn_Offsetof_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_Offsetof_e_Absyn_Raw_exp_struct *)_T56;
 	_T1B = _T5E->f1;
 	_T5D = (void *)_T1B;
@@ -13077,9 +13077,9 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	  }_LL57: ;
 	}return;
       }
-    case 0: 
+    case 0:
       return;
-    case 35: 
+    case 35:
       { struct Cyc_Absyn_UnresolvedMem_e_Absyn_Raw_exp_struct * _T5E = (struct Cyc_Absyn_UnresolvedMem_e_Absyn_Raw_exp_struct *)_T56;
 	_T5A = _T5E->f2;
       }{ struct Cyc_List_List * x = _T5A;
@@ -13100,51 +13100,51 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
 	goto _TL99;
 	_TL98: return;
       }
-    case 39: 
+    case 39:
       return;
-    case 2: 
+    case 2:
       _T20 = Cyc_stderr;
       _T21 = _tag_fat("Error: unexpected Pragma_e\n",sizeof(char),28U);
       _T22 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T20,_T21,_T22);
       exit(1);
       return;
-    case 34: 
+    case 34:
       _T23 = Cyc_stderr;
       _T24 = _tag_fat("Error: unexpected Swap_e\n",sizeof(char),26U);
       _T25 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T23,_T24,_T25);
       exit(1);
       return;
-    case 36: 
+    case 36:
       _T26 = Cyc_stderr;
       _T27 = _tag_fat("Error: unexpected Stmt_e\n",sizeof(char),26U);
       _T28 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T26,_T27,_T28);
       exit(1);
       return;
-    case 41: 
+    case 41:
       _T29 = Cyc_stderr;
       _T2A = _tag_fat("Error: unexpected Assert_e\n",sizeof(char),28U);
       _T2B = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T29,_T2A,_T2B);
       exit(1);
       return;
-    case 42: 
+    case 42:
       _T2C = Cyc_stderr;
       _T2D = _tag_fat("Error: unexpected Assert_false_e\n",sizeof(char),34U);
       _T2E = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T2C,_T2D,_T2E);
       exit(1);
       return;
-    case 11: 
+    case 11:
       _T2F = Cyc_stderr;
       _T30 = _tag_fat("Error: unexpected Throw_e\n",sizeof(char),27U);
       _T31 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T2F,_T30,_T31);
       exit(1);
       return;
-    case 12: 
+    case 12:
       _T32 = Cyc_stderr;
       _T33 = _tag_fat("Error: unexpected NoInstantiate_e\n",sizeof(char),
 		      35U);
@@ -13152,35 +13152,35 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
       Cyc_fprintf(_T32,_T33,_T34);
       exit(1);
       return;
-    case 13: 
+    case 13:
       _T35 = Cyc_stderr;
       _T36 = _tag_fat("Error: unexpected Instantiate_e\n",sizeof(char),33U);
       _T37 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T35,_T36,_T37);
       exit(1);
       return;
-    case 16: 
+    case 16:
       _T38 = Cyc_stderr;
       _T39 = _tag_fat("Error: unexpected New_e\n",sizeof(char),25U);
       _T3A = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T38,_T39,_T3A);
       exit(1);
       return;
-    case 24: 
+    case 24:
       _T3B = Cyc_stderr;
       _T3C = _tag_fat("Error: unexpected CompoundLit_e\n",sizeof(char),33U);
       _T3D = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T3B,_T3C,_T3D);
       exit(1);
       return;
-    case 25: 
+    case 25:
       _T3E = Cyc_stderr;
       _T3F = _tag_fat("Error: unexpected Array_e\n",sizeof(char),27U);
       _T40 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T3E,_T3F,_T40);
       exit(1);
       return;
-    case 26: 
+    case 26:
       _T41 = Cyc_stderr;
       _T42 = _tag_fat("Error: unexpected Comprehension_e\n",sizeof(char),
 		      35U);
@@ -13188,7 +13188,7 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
       Cyc_fprintf(_T41,_T42,_T43);
       exit(1);
       return;
-    case 27: 
+    case 27:
       _T44 = Cyc_stderr;
       _T45 = _tag_fat("Error: unexpected ComprehensionNoinit_e\n",sizeof(char),
 		      41U);
@@ -13196,35 +13196,35 @@ void Cyc_scan_exp(struct Cyc_Absyn_Exp * e,struct Cyc_Hashtable_Table * dep) {
       Cyc_fprintf(_T44,_T45,_T46);
       exit(1);
       return;
-    case 28: 
+    case 28:
       _T47 = Cyc_stderr;
       _T48 = _tag_fat("Error: unexpected Aggregate_e\n",sizeof(char),31U);
       _T49 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T47,_T48,_T49);
       exit(1);
       return;
-    case 29: 
+    case 29:
       _T4A = Cyc_stderr;
       _T4B = _tag_fat("Error: unexpected AnonStruct_e\n",sizeof(char),32U);
       _T4C = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T4A,_T4B,_T4C);
       exit(1);
       return;
-    case 30: 
+    case 30:
       _T4D = Cyc_stderr;
       _T4E = _tag_fat("Error: unexpected Datatype_e\n",sizeof(char),30U);
       _T4F = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T4D,_T4E,_T4F);
       exit(1);
       return;
-    case 31: 
+    case 31:
       _T50 = Cyc_stderr;
       _T51 = _tag_fat("Error: unexpected Enum_e\n",sizeof(char),26U);
       _T52 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T50,_T51,_T52);
       exit(1);
       return;
-    default: 
+    default:
       _T53 = Cyc_stderr;
       _T54 = _tag_fat("Error: unexpected AnonEnum_e\n",sizeof(char),30U);
       _T55 = _tag_fat(0U,sizeof(void *),0);
@@ -13359,7 +13359,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
   _T1 = (int *)_T0;
   _T2 = *_T1;
   switch (_T2) {
-  case 0: 
+  case 0:
     _T3 = t;
     { struct Cyc_Absyn_AppType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_AppType_Absyn_Type_struct *)_T3;
       _T4 = _T6B->f1;
@@ -13373,19 +13373,19 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       _T6 = (int *)_T5;
       _T7 = *_T6;
       switch (_T7) {
-      case 0: 
+      case 0:
 	goto _LL23;
-      case 1: 
+      case 1:
 	_LL23: goto _LL25;
-      case 21: 
+      case 21:
 	_LL25: goto _LL27;
-      case 2: 
+      case 2:
 	_LL27: goto _LL29;
-      case 3: 
+      case 3:
 	_LL29: goto _LL2B;
-      case 20: 
+      case 20:
 	_LL2B: return;
-      case 24: 
+      case 24:
 	_T8 = c;
 	{ struct Cyc_Absyn_AggrCon_Absyn_TyCon_struct * _T6D = (struct Cyc_Absyn_AggrCon_Absyn_TyCon_struct *)_T8;
 	  _T6C = _T6D->f1;
@@ -13400,7 +13400,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
 	    goto _LL2F;
 	  }
 	}
-      case 19: 
+      case 19:
 	_TA = c;
 	{ struct Cyc_Absyn_EnumCon_Absyn_TyCon_struct * _T6D = (struct Cyc_Absyn_EnumCon_Absyn_TyCon_struct *)_TA;
 	  _TB = _T6D->f1;
@@ -13411,39 +13411,39 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
 	  Cyc_add_target(v);
 	  return;
 	}
-      case 22: 
+      case 22:
 	goto _LL33;
-      case 23: 
+      case 23:
 	_LL33: goto _LL35;
-      case 4: 
+      case 4:
 	_LL35: goto _LL37;
-      case 6: 
+      case 6:
 	_LL37: goto _LL39;
-      case 7: 
+      case 7:
 	_LL39: goto _LL3B;
-      case 8: 
+      case 8:
 	_LL3B: goto _LL3D;
-      case 9: 
+      case 9:
 	_LL3D: goto _LL3F;
-      case 10: 
+      case 10:
 	_LL3F: goto _LL41;
-      case 5: 
+      case 5:
 	_LL41: goto _LL43;
-      case 11: 
+      case 11:
 	_LL43: goto _LL45;
-      case 12: 
+      case 12:
 	_LL45: goto _LL47;
-      case 13: 
+      case 13:
 	_LL47: goto _LL49;
-      case 14: 
+      case 14:
 	_LL49: goto _LL4B;
-      case 15: 
+      case 15:
 	_LL4B: goto _LL4D;
-      case 16: 
+      case 16:
 	_LL4D: goto _LL4F;
-      case 18: 
+      case 18:
 	_LL4F: goto _LL51;
-      default: 
+      default:
 	_LL51: { struct Cyc_String_pa_PrintArg_struct _T6D;
 	  _T6D.tag = 0;
 	  _T6D.f1 = Cyc_Absynpp_typ2string(t);
@@ -13460,7 +13460,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       }
       ;
     }
-  case 4: 
+  case 4:
     _T10 = t;
     { struct Cyc_Absyn_PointerType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_PointerType_Absyn_Type_struct *)_T10;
       _T68 = _T6B->f1;
@@ -13471,7 +13471,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       Cyc_scan_type(_T12,_T13);
       return;
     }
-  case 5: 
+  case 5:
     _T14 = t;
     { struct Cyc_Absyn_ArrayType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_ArrayType_Absyn_Type_struct *)_T14;
       _T15 = _T6B->f1;
@@ -13487,7 +13487,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       Cyc_scan_exp_opt(sz,dep);
       return;
     }
-  case 11: 
+  case 11:
     _T18 = t;
     { struct Cyc_Absyn_TypeofType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_TypeofType_Absyn_Type_struct *)_T18;
       _T67 = _T6B->f1;
@@ -13495,7 +13495,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       Cyc_scan_exp(e,dep);
       return;
     }
-  case 6: 
+  case 6:
     _T19 = t;
     { struct Cyc_Absyn_FnType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_FnType_Absyn_Type_struct *)_T19;
       _T66 = _T6B->f1;
@@ -13534,7 +13534,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       goto _TLA3;
       _TLA2: _TLA3: return;
     }
-  case 7: 
+  case 7:
     _T27 = t;
     { struct Cyc_Absyn_AnonAggrType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_AnonAggrType_Absyn_Type_struct *)_T27;
       _T65 = _T6B->f3;
@@ -13559,7 +13559,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       goto _TLA7;
       _TLA6: return;
     }
-  case 8: 
+  case 8:
     _T33 = t;
     { struct Cyc_Absyn_TypedefType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_TypedefType_Absyn_Type_struct *)_T33;
       _T34 = _T6B->f1;
@@ -13570,7 +13570,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       Cyc_add_target(v);
       return;
     }
-  case 10: 
+  case 10:
     _T35 = t;
     _T36 = (struct Cyc_Absyn_TypeDeclType_Absyn_Type_struct *)_T35;
     _T37 = _T36->f1;
@@ -13579,7 +13579,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
     _T3A = (int *)_T39;
     _T3B = *_T3A;
     switch (_T3B) {
-    case 0: 
+    case 0:
       _T3C = t;
       { struct Cyc_Absyn_TypeDeclType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_TypeDeclType_Absyn_Type_struct *)_T3C;
 	_T3D = _T6B->f1;
@@ -13609,7 +13609,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
 	  }
 	}
       }
-    case 1: 
+    case 1:
       _T44 = t;
       { struct Cyc_Absyn_TypeDeclType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_TypeDeclType_Absyn_Type_struct *)_T44;
 	_T45 = _T6B->f1;
@@ -13639,7 +13639,7 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
 	  }
 	}
       }
-    default: 
+    default:
       _T4C = t;
       { struct Cyc_Absyn_TypeDeclType_Absyn_Type_struct * _T6B = (struct Cyc_Absyn_TypeDeclType_Absyn_Type_struct *)_T4C;
 	_T4D = _T6B->f1;
@@ -13660,35 +13660,35 @@ void Cyc_scan_type(void * t,struct Cyc_Hashtable_Table * dep) {
       }
     }
     ;
-  case 12: 
+  case 12:
     _T52 = Cyc_stderr;
     _T53 = _tag_fat("Error: unexpected @subset type\n",sizeof(char),32U);
     _T54 = _tag_fat(0U,sizeof(void *),0);
     Cyc_fprintf(_T52,_T53,_T54);
     exit(1);
     return;
-  case 3: 
+  case 3:
     _T55 = Cyc_stderr;
     _T56 = _tag_fat("Error: unexpected Cvar\n",sizeof(char),24U);
     _T57 = _tag_fat(0U,sizeof(void *),0);
     Cyc_fprintf(_T55,_T56,_T57);
     exit(1);
     return;
-  case 1: 
+  case 1:
     _T58 = Cyc_stderr;
     _T59 = _tag_fat("Error: unexpected Evar\n",sizeof(char),24U);
     _T5A = _tag_fat(0U,sizeof(void *),0);
     Cyc_fprintf(_T58,_T59,_T5A);
     exit(1);
     return;
-  case 2: 
+  case 2:
     _T5B = Cyc_stderr;
     _T5C = _tag_fat("Error: unexpected VarType\n",sizeof(char),27U);
     _T5D = _tag_fat(0U,sizeof(void *),0);
     Cyc_fprintf(_T5B,_T5C,_T5D);
     exit(1);
     return;
-  default: 
+  default:
     _T5E = Cyc_stderr;
     _T5F = _tag_fat("Error: unexpected valueof_t\n",sizeof(char),29U);
     _T60 = _tag_fat(0U,sizeof(void *),0);
@@ -13854,7 +13854,7 @@ void Cyc_scan_decl(struct Cyc_Absyn_Decl * d,struct Cyc_Hashtable_Table * dep) {
     _T5 = (int *)_T86;
     _T6 = *_T5;
     switch (_T6) {
-    case 0: 
+    case 0:
       { struct Cyc_Absyn_Var_d_Absyn_Raw_decl_struct * _T8C = (struct Cyc_Absyn_Var_d_Absyn_Raw_decl_struct *)_T86;
 	_T8B = _T8C->f1;
       }{ struct Cyc_Absyn_Vardecl * x = _T8B;
@@ -13877,7 +13877,7 @@ void Cyc_scan_decl(struct Cyc_Absyn_Decl * d,struct Cyc_Hashtable_Table * dep) {
 	  }
 	}
       }
-    case 1: 
+    case 1:
       { struct Cyc_Absyn_Fn_d_Absyn_Raw_decl_struct * _T8C = (struct Cyc_Absyn_Fn_d_Absyn_Raw_decl_struct *)_T86;
 	_T8A = _T8C->f1;
       }{ struct Cyc_Absyn_Fndecl * x = _T8A;
@@ -13945,7 +13945,7 @@ void Cyc_scan_decl(struct Cyc_Absyn_Decl * d,struct Cyc_Hashtable_Table * dep) {
 	  }
 	}
       }
-    case 5: 
+    case 5:
       { struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct * _T8C = (struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct *)_T86;
 	_T89 = _T8C->f1;
       }{ struct Cyc_Absyn_Aggrdecl * x = _T89;
@@ -13998,7 +13998,7 @@ void Cyc_scan_decl(struct Cyc_Absyn_Decl * d,struct Cyc_Hashtable_Table * dep) {
 	  }
 	}
       }
-    case 7: 
+    case 7:
       { struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct * _T8C = (struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct *)_T86;
 	_T88 = _T8C->f1;
       }{ struct Cyc_Absyn_Enumdecl * x = _T88;
@@ -14049,7 +14049,7 @@ void Cyc_scan_decl(struct Cyc_Absyn_Decl * d,struct Cyc_Hashtable_Table * dep) {
 	  }
 	}
       }
-    case 8: 
+    case 8:
       { struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct * _T8C = (struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct *)_T86;
 	_T87 = _T8C->f1;
       }{ struct Cyc_Absyn_Typedefdecl * x = _T87;
@@ -14074,82 +14074,82 @@ void Cyc_scan_decl(struct Cyc_Absyn_Decl * d,struct Cyc_Hashtable_Table * dep) {
 	  }
 	}
       }
-    case 4: 
+    case 4:
       _T52 = Cyc_stderr;
       _T53 = _tag_fat("Error: unexpected region declaration",sizeof(char),
 		      37U);
       _T54 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T52,_T53,_T54);
       exit(1);
-    case 13: 
+    case 13:
       _T55 = Cyc_stderr;
       _T56 = _tag_fat("Error: unexpected __cyclone_port_on__",sizeof(char),
 		      38U);
       _T57 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T55,_T56,_T57);
       exit(1);
-    case 14: 
+    case 14:
       _T58 = Cyc_stderr;
       _T59 = _tag_fat("Error: unexpected __cyclone_port_off__",sizeof(char),
 		      39U);
       _T5A = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T58,_T59,_T5A);
       exit(1);
-    case 15: 
+    case 15:
       _T5B = Cyc_stderr;
       _T5C = _tag_fat("Error: unexpected __tempest_on__",sizeof(char),33U);
       _T5D = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T5B,_T5C,_T5D);
       exit(1);
-    case 16: 
+    case 16:
       _T5E = Cyc_stderr;
       _T5F = _tag_fat("Error: unexpected __tempest_off__",sizeof(char),34U);
       _T60 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T5E,_T5F,_T60);
       exit(1);
-    case 2: 
+    case 2:
       _T61 = Cyc_stderr;
       _T62 = _tag_fat("Error: unexpected let declaration\n",sizeof(char),
 		      35U);
       _T63 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T61,_T62,_T63);
       exit(1);
-    case 6: 
+    case 6:
       _T64 = Cyc_stderr;
       _T65 = _tag_fat("Error: unexpected datatype declaration\n",sizeof(char),
 		      40U);
       _T66 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T64,_T65,_T66);
       exit(1);
-    case 3: 
+    case 3:
       _T67 = Cyc_stderr;
       _T68 = _tag_fat("Error: unexpected let declaration\n",sizeof(char),
 		      35U);
       _T69 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T67,_T68,_T69);
       exit(1);
-    case 9: 
+    case 9:
       _T6A = Cyc_stderr;
       _T6B = _tag_fat("Error: unexpected namespace declaration\n",sizeof(char),
 		      41U);
       _T6C = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T6A,_T6B,_T6C);
       exit(1);
-    case 10: 
+    case 10:
       _T6D = Cyc_stderr;
       _T6E = _tag_fat("Error: unexpected using declaration\n",sizeof(char),
 		      37U);
       _T6F = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T6D,_T6E,_T6F);
       exit(1);
-    case 11: 
+    case 11:
       _T70 = Cyc_stderr;
       _T71 = _tag_fat("Error: unexpected extern \"C\" declaration\n",sizeof(char),
 		      42U);
       _T72 = _tag_fat(0U,sizeof(void *),0);
       Cyc_fprintf(_T70,_T71,_T72);
       exit(1);
-    default: 
+    default:
       _T73 = Cyc_stderr;
       _T74 = _tag_fat("Error: unexpected extern \"C include\" declaration\n",
 		      sizeof(char),50U);
@@ -14478,31 +14478,31 @@ static long Cyc_is_other_special(char c) {
   _T0 = c;
   _T1 = (int)_T0;
   switch (_T1) {
-  case 92: 
+  case 92:
     goto _LL4;
-  case 34: 
+  case 34:
     _LL4: goto _LL6;
-  case 59: 
+  case 59:
     _LL6: goto _LL8;
-  case 38: 
+  case 38:
     _LL8: goto _LLA;
-  case 40: 
+  case 40:
     _LLA: goto _LLC;
-  case 41: 
+  case 41:
     _LLC: goto _LLE;
-  case 124: 
+  case 124:
     _LLE: goto _LL10;
-  case 94: 
+  case 94:
     _LL10: goto _LL12;
-  case 60: 
+  case 60:
     _LL12: goto _LL14;
-  case 62: 
+  case 62:
     _LL14: goto _LL16;
-  case 10: 
+  case 10:
     _LL16: goto _LL18;
-  case 9: 
+  case 9:
     _LL18: return 1;
-  default: 
+  default:
     return 0;
   }
   ;
@@ -16160,7 +16160,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 					  _T11A = (int *)_T29C;
 					  _T11B = *_T11A;
 					  switch (_T11B) {
-					  case 0: 
+					  case 0:
 					    { struct Cyc_Absyn_Var_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Var_d_Absyn_Raw_decl_struct *)_T29C;
 					      _T2A1 = _T2A2->f1;
 					    }{ struct Cyc_Absyn_Vardecl * x = _T2A1;
@@ -16200,7 +16200,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						}
 					      }
 					    }
-					  case 1: 
+					  case 1:
 					    { struct Cyc_Absyn_Fn_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Fn_d_Absyn_Raw_decl_struct *)_T29C;
 					      _T2A0 = _T2A2->f1;
 					    }{ struct Cyc_Absyn_Fndecl * x = _T2A0;
@@ -16240,7 +16240,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						}
 					      }
 					    }
-					  case 5: 
+					  case 5:
 					    { struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct *)_T29C;
 					      _T29F = _T2A2->f1;
 					    }{ struct Cyc_Absyn_Aggrdecl * x = _T29F;
@@ -16255,7 +16255,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						}
 					      }
 					    }
-					  case 7: 
+					  case 7:
 					    { struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct *)_T29C;
 					      _T29E = _T2A2->f1;
 					    }{ struct Cyc_Absyn_Enumdecl * x = _T29E;
@@ -16332,7 +16332,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						}
 					      }
 					    }
-					  case 8: 
+					  case 8:
 					    { struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct *)_T29C;
 					      _T29D = _T2A2->f1;
 					    }{ struct Cyc_Absyn_Typedefdecl * x = _T29D;
@@ -16347,29 +16347,29 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						}
 					      }
 					    }
-					  case 13: 
+					  case 13:
 					    goto _LL17;
-					  case 14: 
+					  case 14:
 					    _LL17: goto _LL19;
-					  case 15: 
+					  case 15:
 					    _LL19: goto _LL1B;
-					  case 16: 
+					  case 16:
 					    _LL1B: goto _LL1D;
-					  case 2: 
+					  case 2:
 					    _LL1D: goto _LL1F;
-					  case 6: 
+					  case 6:
 					    _LL1F: goto _LL21;
-					  case 3: 
+					  case 3:
 					    _LL21: goto _LL23;
-					  case 9: 
+					  case 9:
 					    _LL23: goto _LL25;
-					  case 10: 
+					  case 10:
 					    _LL25: goto _LL27;
-					  case 11: 
+					  case 11:
 					    _LL27: goto _LL29;
-					  case 12: 
+					  case 12:
 					    _LL29: goto _LL2B;
-					  default: 
+					  default:
 					    _LL2B: name = 0;
 					    goto _LL9;
 					  }
@@ -16598,7 +16598,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 					      _T197 = (int *)_T29C;
 					      _T198 = *_T197;
 					      switch (_T198) {
-					      case 0: 
+					      case 0:
 						{ struct Cyc_Absyn_Var_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Var_d_Absyn_Raw_decl_struct *)_T29C;
 						  _T2A1 = _T2A2->f1;
 						}{ struct Cyc_Absyn_Vardecl * x = _T2A1;
@@ -16613,7 +16613,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						    }
 						  }
 						}
-					      case 1: 
+					      case 1:
 						{ struct Cyc_Absyn_Fn_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Fn_d_Absyn_Raw_decl_struct *)_T29C;
 						  _T2A0 = _T2A2->f1;
 						}{ struct Cyc_Absyn_Fndecl * x = _T2A0;
@@ -16634,7 +16634,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						    }
 						  }
 						}
-					      case 5: 
+					      case 5:
 						{ struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Aggr_d_Absyn_Raw_decl_struct *)_T29C;
 						  _T29F = _T2A2->f1;
 						}{ struct Cyc_Absyn_Aggrdecl * x = _T29F;
@@ -16649,7 +16649,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						    }
 						  }
 						}
-					      case 7: 
+					      case 7:
 						{ struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Enum_d_Absyn_Raw_decl_struct *)_T29C;
 						  _T29E = _T2A2->f1;
 						}{ struct Cyc_Absyn_Enumdecl * x = _T29E;
@@ -16664,7 +16664,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						    }
 						  }
 						}
-					      case 8: 
+					      case 8:
 						{ struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct * _T2A2 = (struct Cyc_Absyn_Typedef_d_Absyn_Raw_decl_struct *)_T29C;
 						  _T29D = _T2A2->f1;
 						}{ struct Cyc_Absyn_Typedefdecl * x = _T29D;
@@ -16679,29 +16679,29 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						    }
 						  }
 						}
-					      case 4: 
+					      case 4:
 						goto _LL4C;
-					      case 13: 
+					      case 13:
 						_LL4C: goto _LL4E;
-					      case 14: 
+					      case 14:
 						_LL4E: goto _LL50;
-					      case 15: 
+					      case 15:
 						_LL50: goto _LL52;
-					      case 16: 
+					      case 16:
 						_LL52: goto _LL54;
-					      case 2: 
+					      case 2:
 						_LL54: goto _LL56;
-					      case 6: 
+					      case 6:
 						_LL56: goto _LL58;
-					      case 3: 
+					      case 3:
 						_LL58: goto _LL5A;
-					      case 9: 
+					      case 9:
 						_LL5A: goto _LL5C;
-					      case 10: 
+					      case 10:
 						_LL5C: goto _LL5E;
-					      case 11: 
+					      case 11:
 						_LL5E: goto _LL60;
-					      default: 
+					      default:
 						_LL60: name = 0;
 						goto _LL3E;
 					      }
@@ -16744,9 +16744,9 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						_T1AB = (int *)_T29C;
 						_T1AC = *_T1AB;
 						switch (_T1AC) {
-						case 0: 
+						case 0:
 						  goto _LL74;
-						case 1: 
+						case 1:
 						  _LL74: { struct Cyc_NO_SUPPORT_exn_struct * _T29D = _cycalloc(sizeof(struct Cyc_NO_SUPPORT_exn_struct));
 						    _T29D->tag = Cyc_NO_SUPPORT;
 						    _T29D->f1 = _tag_fat("user defintions for function or variable decls",
@@ -16755,7 +16755,7 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						    _T1AD = (struct Cyc_NO_SUPPORT_exn_struct *)_T29D;
 						  }_T1AE = (void *)_T1AD;
 						  _throw(_T1AE);
-						default: 
+						default:
 						  goto _LL70;
 						}
 						_LL70: ;
@@ -16854,14 +16854,14 @@ int Cyc_process_file(const char * filename,struct Cyc_List_List * start_symbols,
 						    _T1C6 = (int *)_T29F;
 						    _T1C7 = *_T1C6;
 						    switch (_T1C7) {
-						    case 5: 
+						    case 5:
 						      goto _LL81;
-						    case 6: 
+						    case 6:
 						      _LL81: goto _LL83;
-						    case 7: 
+						    case 7:
 						      _LL83: kind = 0U;
 						      goto _LL7D;
-						    default: 
+						    default:
 						      kind = 1U;
 						      goto _LL7D;
 						    }
@@ -17993,7 +17993,6 @@ static void Cyc_set_header(struct _fat_ptr s) {
     _TB = (struct _fat_ptr *)_TC;
   }*_T6 = _T7(_TA,_TB);
 }
-extern void GC_blacklist_warn_clear();
  struct _tuple21 {
   struct _fat_ptr f0;
   long f1;
@@ -18087,7 +18086,6 @@ int Cyc_main(int argc,struct _fat_ptr argv) {
   struct _fat_ptr _T52;
   struct Cyc_List_List * _T53;
   long _T54;
-  GC_blacklist_warn_clear();
   { struct _tuple21 * _T55[6];
     { struct _tuple21 * _T56 = _cycalloc(sizeof(struct _tuple21));
       _T56->f0 = _tag_fat("-d",sizeof(char),3U);

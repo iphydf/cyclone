@@ -71,7 +71,6 @@ extern char Cyc_Output_Table_overflow[15U];
   char * tag;
   int f1;
 };
-extern void GC_blacklist_warn_clear();
 int Cyc_main(int argc,struct _fat_ptr argv) {
   struct Cyc___cycFILE * _T0;
   struct _fat_ptr _T1;
@@ -150,7 +149,6 @@ int Cyc_main(int argc,struct _fat_ptr argv) {
   unsigned char * _T4A;
   unsigned char * _T4B;
   const char * _T4C;
-  GC_blacklist_warn_clear();
   if (argc < 2) { goto _TL2;
   }else { goto _TL3;
   }

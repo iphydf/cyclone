@@ -37,8 +37,7 @@
     return &errno;
   }
 
-  #include <setjmp.h> // Needed by precore_c.h
-  #include "precore_c.h"
+  #include "cyc_include.h"
   #include <fcntl.h>
   int fcntl_with_arg(int fd, int cmd, long arg) {
     return fcntl(fd, cmd, arg);

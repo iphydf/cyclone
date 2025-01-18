@@ -1556,7 +1556,6 @@ static void Cyc_set_max_vc_term_size(int n) {
   _T0 = n;
   Cyc_Flags_max_vc_term_size = (unsigned int)_T0;
 }
-extern void GC_blacklist_warn_clear();
  struct _tuple14 {
   struct _fat_ptr f0;
   long f1;
@@ -2201,7 +2200,6 @@ int Cyc_main(int argc,struct _fat_ptr argv) {
   long _T17;
   int _T18;
   long _T19;
-  GC_blacklist_warn_clear();
   { struct _fat_ptr optstring = _tag_fat("Options:",sizeof(char),9U);
     { int i = 1;
       _TL80: _T0 = i;

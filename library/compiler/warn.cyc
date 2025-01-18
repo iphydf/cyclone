@@ -19,6 +19,7 @@
 
 #include <string.h>
 #include "absynpp.h"
+#include "cyclone/library/std/execinfo.h"
 #include "cyclone/library/std/position.h"
 #include "warn.h"
 using Absyn;
@@ -41,7 +42,7 @@ static int pr(const char ? fmt, ... inject parg_t ap)
 
 static void ice(string_t msg) {
   pr("Internal Compiler Error: %s\n", msg);
-  Core::print_stacktrace();
+  Execinfo::print_stacktrace();
 }
 
 static list_t<seg_t> warning_segs       = NULL;

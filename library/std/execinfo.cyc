@@ -16,14 +16,14 @@
    write to the Free Software Foundation, Inc., 59 Temple Place, Suite
    330, Boston, MA 02111-1307 USA. */
 
-#include "core.h"
-#include "execinfo.h"
-
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
+#include "core.h"
+#include "execinfo.h"
 
 using Core;
 
@@ -36,9 +36,7 @@ namespace Cexecinfo {
 
 namespace Execinfo;
 
-int
-backtrace (int ?array, int size)
-{
+int backtrace(int ?array, int size) {
 #ifdef __linux__
   if (size > numelts(array))
     throw new Failure("backtrace: size > numelts(array)");

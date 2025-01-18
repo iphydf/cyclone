@@ -84,7 +84,7 @@ void GC_register_finalizer_no_order(GC_PTR obj, GC_finalization_proc fn, GC_PTR 
 
 #include <stdlib.h>
 
-#include "precore_c.h"
+#include "cyc_include.h"
 
 typedef struct GC_head {
   __attribute__((aligned)) size_t size;

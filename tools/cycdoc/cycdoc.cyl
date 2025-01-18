@@ -372,15 +372,9 @@ static void process_file(string_t<`H> filename) {
 }
 
 using Arg;
-extern "C" void GC_blacklist_warn_clear();
 
 int main(int argc, string_t<`H> ?`H argv)
 {
-  /* Don't print garbage collector warnings about allocations of
-   * blacklisted blocks.  This turns up on OS X and possibly other
-   * BSD systems (??) */
-  GC_blacklist_warn_clear();
-
   Arg::speclist_t<`H, `H> options =
       List::list(new $("-D", true, "<name>[=<value>]", new Flag_spec(add_cycarg),
                        "Pass definition to preprocessor"),

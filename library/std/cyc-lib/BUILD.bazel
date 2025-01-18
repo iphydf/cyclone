@@ -2,10 +2,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 cc_library(
     name = "cyc-lib",
-    hdrs = [
-        "cyc_include.h",
-        "precore_c.h",
-    ],
+    hdrs = ["cyc_include.h"],
     includes = ["."],
     visibility = ["//visibility:public"],
 )

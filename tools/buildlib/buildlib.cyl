@@ -2026,10 +2026,7 @@ static void set_header(string_t<`H> s) {
 using Arg;
 
 /********************** Main *********************/
-extern "C" void GC_blacklist_warn_clear();
 int main(int argc, const char ?`H?`H argv) {
-  GC_blacklist_warn_clear();
-
   Arg::speclist_t<`H,`H> options =
       list(new $("-d", false, " <file>", new String_spec(set_output_dir),
                  "Set the output directory to <file>"),

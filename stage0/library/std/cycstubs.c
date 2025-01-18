@@ -2107,12 +2107,12 @@ int Cyc_getsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
     _TD = (int *)_TC;
     _TE = *_TD;
     switch (_TE) {
-    case 0: 
+    case 0:
       _TF = _T2F.f1;
       _T10 = (int *)_TF;
       _T11 = *_T10;
       switch (_T11) {
-      case 3: 
+      case 3:
 	_T12 = _T2F.f0;
 	{ struct Cyc_SO_int_SockOpt_struct * _T34 = (struct Cyc_SO_int_SockOpt_struct *)_T12;
 	  _T33 = _T34->f1;
@@ -2124,7 +2124,7 @@ int Cyc_getsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
 	  _T14 = getsockopt_int(fd,level,optname,x,y);
 	  return _T14;
 	}
-      case 0: 
+      case 0:
 	_T15 = _T2F.f0;
 	{ struct Cyc_SO_int_SockOpt_struct * _T34 = (struct Cyc_SO_int_SockOpt_struct *)_T15;
 	  _T33 = _T34->f1;
@@ -2142,16 +2142,16 @@ int Cyc_getsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
 	  _T1D = getsockopt_int(_T17,_T18,_T19,_T1A,_T1C);
 	  return _T1D;
 	}
-      default: 
+      default:
 	goto _LL9;
       }
       ;
-    case 1: 
+    case 1:
       _T1E = _T2F.f1;
       _T1F = (int *)_T1E;
       _T20 = *_T1F;
       switch (_T20) {
-      case 3: 
+      case 3:
 	_T21 = _T2F.f0;
 	{ struct Cyc_SO_timeval_SockOpt_struct * _T34 = (struct Cyc_SO_timeval_SockOpt_struct *)_T21;
 	  _T30 = _T34->f1;
@@ -2163,7 +2163,7 @@ int Cyc_getsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
 	  _T23 = getsockopt_timeval(fd,level,optname,x,y);
 	  return _T23;
 	}
-      case 0: 
+      case 0:
 	_T24 = _T2F.f0;
 	{ struct Cyc_SO_timeval_SockOpt_struct * _T34 = (struct Cyc_SO_timeval_SockOpt_struct *)_T24;
 	  _T30 = _T34->f1;
@@ -2181,11 +2181,11 @@ int Cyc_getsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
 	  _T2C = getsockopt_timeval(_T26,_T27,_T28,_T29,_T2B);
 	  return _T2C;
 	}
-      default: 
+      default:
 	goto _LL9;
       }
       ;
-    default: 
+    default:
       _LL9: _T2D = &Cyc_SocketError_val;
       _T2E = (struct Cyc_SocketError_exn_struct *)_T2D;
       _throw(_T2E);
@@ -2422,7 +2422,7 @@ int Cyc_setsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
     _TD = (int *)_TC;
     _TE = *_TD;
     switch (_TE) {
-    case 0: 
+    case 0:
       _TF = _T23.f1;
       _T10 = (int *)_TF;
       _T11 = *_T10;
@@ -2439,7 +2439,7 @@ int Cyc_setsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
 	_T14 = setsockopt_int(fd,level,optname,x,y);
 	return _T14;
       }_TL9F: goto _LL7;
-    case 1: 
+    case 1:
       _T15 = _T23.f1;
       _T16 = (int *)_T15;
       _T17 = *_T16;
@@ -2456,7 +2456,7 @@ int Cyc_setsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
 	_T1A = setsockopt_timeval(fd,level,optname,x,y);
 	return _T1A;
       }_TLA1: goto _LL7;
-    case 2: 
+    case 2:
       _T1B = _T23.f1;
       _T1C = (int *)_T1B;
       _T1D = *_T1C;
@@ -2473,7 +2473,7 @@ int Cyc_setsockopt(int fd,int level,int optname,struct _fat_ptr ap) {
 	_T20 = setsockopt_linger(fd,level,optname,x,y);
 	return _T20;
       }_TLA3: goto _LL7;
-    default: 
+    default:
       _LL7: _T21 = &Cyc_SocketError_val;
       _T22 = (struct Cyc_SocketError_exn_struct *)_T21;
       _throw(_T22);

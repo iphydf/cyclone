@@ -65,7 +65,10 @@ static int cyc_backtrace_full_callback(void *data, uintptr_t pc, const char *fil
 
   fprintf(stderr, "    0x%lx: ", (unsigned long)pc);
   cyc_print_symbol(function);
-  fprintf(stderr, " (%s:%d)\n", filename, lineno);
+  if (filename != NULL) {
+    fprintf(stderr, " (%s:%d)", filename, lineno);
+  }
+  fputc('\n', stderr);
 
   return 0;
 }
@@ -74,7 +77,7 @@ static void cyc_backtrace_error_callback(void *data, const char *msg, int errnum
   fprintf(stderr, "Error: %s (%d)\n", msg, errnum);
 }
 
-void Cyc_Core_print_stacktrace(void) {
+void Cyc_Execinfo_print_stacktrace(void) {
   struct backtrace_state *state = backtrace_create_state(NULL, 0, NULL, NULL);
   if (state == NULL) {
     fputs("Failed to create backtrace state\n", stderr);

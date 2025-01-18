@@ -35,14 +35,12 @@ extern void Cyc_verbose();
 extern void Cyc_terse();
 extern void Cyc_output();
 extern void Cyc_done(int);
-extern void GC_blacklist_warn_clear();
 int Cyc_main(int argc,struct _fat_ptr argv) {
   struct _fat_ptr _T0;
   unsigned char * _T1;
   struct _fat_ptr * _T2;
   int _T3;
   int _T4;
-  GC_blacklist_warn_clear();
   _T0 = argv;
   _T1 = _check_fat_subscript(_T0,sizeof(struct _fat_ptr),0);
   _T2 = (struct _fat_ptr *)_T1;
