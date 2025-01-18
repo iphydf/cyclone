@@ -665,6 +665,8 @@ string_t attribute2string(attribute_t a) {
       return "pure";
     case &Always_inline_att:
       return "always_inline";
+    case &Gnu_inline_att:
+      return "gnu_inline";
     case &Mode_att(s):
       return aprintf("__mode__(\"%s\")", s);
     case &Alias_att(s):

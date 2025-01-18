@@ -309,7 +309,7 @@ def buildlib(name, src, hdrs, stage = None, visibility = None, deps = [], includ
         ],
         cmd = " ".join([
             "$(location %s)" % buildlib,
-            "  -cc $$(echo $(CC) | sed -e \"s|^[^/]|$$PWD/&|\")",
+            "  -cc \"$$(echo $(CC) | sed -e \"s|^[^/]|$$PWD/&|\")\"",
             "  -v",
             " ".join(["-I$$(realpath %s)" % i for i in includes]),
             "  $(location %s) >& BUILDLIB.LOG;" % src,

@@ -50,7 +50,7 @@ long get_memusage(void) {
 
   vmsize = 0;
   pid = getpid();
-  snprintf(filename, 64, "/proc/%d/stat", pid);
+  snprintf(filename, 64, "/proc/%llu/stat", (unsigned long long)pid);
   filename[63] = '\0';
   stat_file = fopen(filename, "r");
   if (!stat_file) {

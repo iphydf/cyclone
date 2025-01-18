@@ -49,6 +49,7 @@ datacon(Attribute, Destructor_att);
 datacon(Attribute, No_check_memory_usage_att);
 datacon(Attribute, Pure_att);
 datacon(Attribute, Always_inline_att);
+datacon(Attribute, Gnu_inline_att);
 datacon(Attribute, No_throw_att);
 datacon(Attribute, Deprecated_att);
 datacon(Attribute, Leaf_att);
@@ -84,6 +85,7 @@ attribute_t parse_nullary_att(seg_t loc, string_t<`H> s) {
     $("no_check_memory_usage", &Atts::No_check_memory_usage_att_val),
     $("pure", &Atts::Pure_att_val),
     $("always_inline", &Atts::Always_inline_att_val),
+    $("gnu_inline", &Atts::Gnu_inline_att_val),
     $("no_throw", &Atts::No_throw_att_val),
     $("nothrow", &Atts::No_throw_att_val),
     $("deprecated", &Atts::Deprecated_att_val),
@@ -410,28 +412,30 @@ static int attribute_case_number(attribute_t att) {
       return 26;
     case &Always_inline_att:
       return 27;
-    case &No_throw_att:
+    case &Gnu_inline_att:
       return 28;
-    case &Deprecated_att:
+    case &No_throw_att:
       return 29;
-    case &Leaf_att:
+    case &Deprecated_att:
       return 30;
-    case &Malloc_att:
+    case &Leaf_att:
       return 31;
-    case &Access_att(...):
+    case &Malloc_att:
       return 32;
-    case &Cold_att:
+    case &Access_att(...):
       return 33;
-    case &AllocSize_att(...):
+    case &Cold_att:
       return 34;
-    case &AllocAlign_att(...):
+    case &AllocSize_att(...):
       return 35;
-    case &WarnUnusedResult_att:
+    case &AllocAlign_att(...):
       return 36;
-    case &MayAlias_att:
+    case &WarnUnusedResult_att:
       return 37;
-    case &VectorSize_att(...):
+    case &MayAlias_att:
       return 38;
+    case &VectorSize_att(...):
+      return 39;
   }
 }
 
@@ -477,6 +481,7 @@ bool fntype_att(attribute_t a) {
     case &Noreturn_att:
     case &Pure_att:
     case &Always_inline_att:
+    case &Gnu_inline_att:
     case &Format_att(...):
     case &Const_att:
     case &Availability_att:

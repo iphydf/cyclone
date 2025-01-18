@@ -531,6 +531,7 @@ namespace Absyn {
     Mode_att(string_t);
     Alias_att(string_t);
     Always_inline_att;
+    Gnu_inline_att;
     No_throw_att;
     Deprecated_att;
     Leaf_att;

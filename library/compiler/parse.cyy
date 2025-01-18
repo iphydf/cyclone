@@ -190,7 +190,7 @@ using Parse;
 %type<$(list_t<$(string_t<`H>, exp_t) @`H, `H>, list_t<$(string_t<`H>, exp_t) @`H, `H>, list_t<string_t<`H> @`H, `H>) @`H> asm_out_opt
 %type<$(list_t<$(string_t<`H>, exp_t) @`H, `H>, list_t<string_t<`H> @`H, `H>) @`H> asm_in_opt
 %type<list_t<string_t<`H> @`H, `H>> asm_clobber_opt asm_clobber_list
-%type<list_t<$(string_t<`H>, exp_t) @`H, `H>> asm_outlist asm_inlist
+%type<list_t<$(string_t<`H>, exp_t) @`H, `H>> asm_io_list
 %type<$(string_t<`H>, exp_t) @`H> asm_io_elt
 %type<exp_maker_fun_t> relational_op equality_op
 %type<primop_t> additive_op multiplicative_op
@@ -3404,21 +3404,15 @@ asm_out_opt
 		  let &$(inlist, clobbers) = $2;
 		  $$ = ^$(new $(NULL, inlist, clobbers));
 		}
-	| ':' asm_outlist asm_in_opt
+	| COLON_COLON asm_io_list
+		{
+		  $$ = ^$(new $(NULL, $2, NULL));
+		}
+	| ':' asm_io_list asm_in_opt
 		{
 		  let &$(inlist, clobbers) = $3;
 		  $$ = ^$(new $(List::imp_rev ($2), inlist, clobbers));
 		}
-
-asm_outlist
-	: asm_io_elt
-		{
-		  $$ = ^$(new List ($1, NULL));
-		}
-	| asm_outlist ',' asm_io_elt
-		{
-		  $$ = ^$(new List ($3, $1));
-		}                                //reversed
 
 
 asm_in_opt
@@ -3430,21 +3424,21 @@ asm_in_opt
 		{
 		  $$ = ^$(new $(NULL, $2));
 		}
-	| ':' asm_inlist asm_clobber_opt
+	| ':' asm_io_list asm_clobber_opt
 		{
 		  $$ = ^$(new $(List::imp_rev ($2), $3));
 		}
 
-asm_inlist
+
+asm_io_list
 	: asm_io_elt
 		{
 		  $$ = ^$(new List ($1, NULL));
 		}
-	| asm_inlist ',' asm_io_elt
+	| asm_io_list ',' asm_io_elt
 		{
 		  $$ = ^$(new List ($3, $1));
 		}                              //reversed
-
 
 asm_io_elt
 	: STRING '(' expression ')'
