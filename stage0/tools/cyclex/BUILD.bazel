@@ -6,6 +6,7 @@ cc_binary(
     srcs = glob(["*.c"]),
     copts = [MACHINE],
     linkopts = [MACHINE],
+    tags = ["no-cross"],
     visibility = ["//cyclone/stage1:__subpackages__"],
     deps = [
         "//cyclone/library/runtime",

@@ -152,6 +152,7 @@ namespace Absyn {
     Extern,    // definition is provided elsewhere
     ExternC,   // definition is provided elsewhere by C code
     Register,  // value may be stored in a register
+    Noreturn,  // function never returns
   };
 
   // type qualifiers -- const, volatile, and restrict

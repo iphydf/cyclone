@@ -24,6 +24,7 @@
         "> $@",
         "|| true",
     ]),
+    tags = ["no-cross"],
     toolchains = ["@rules_cc//cc:current_cc_toolchain"],
     tools = ["//cyclone/tools/cyclone"],
 ) for cyc in glob(["*.cyc"])]
@@ -40,4 +41,5 @@
         ref,
         ":%s_out" % ref[:-4],
     ],
+    tags = ["no-cross"],
 ) for ref in glob(["*.ref"])]

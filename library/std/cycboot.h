@@ -20,7 +20,7 @@
 #define _CYCBOOT_H_
 __noinference__ {
 /***** <sys/type.h> *****/
-#ifndef _size_t_def_
+#if !defined(_size_t_def_) && !defined(__DEFINED_size_t)
 #define _size_t_def_
   // Careful with this one, it might be arch specific
   typedef unsigned long size_t;  // correct on powerpc at least

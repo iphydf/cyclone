@@ -15,6 +15,7 @@ filegroup(
     srcs = glob(
         [
             "*.cyc",
+            "*.inc",
             "*.h",
         ],
         exclude = [

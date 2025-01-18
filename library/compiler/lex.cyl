@@ -200,6 +200,7 @@ static $(string_t, short, bool) rw_array[] = {
   $("malloc",               MALLOC,          false),
   $("namespace",            NAMESPACE,       false),
   $("new",                  NEW,             false),
+  $("_Noreturn",            NORETURN,        true ),
   $("NULL",                 NULL_kw,         false),
   $("numelts",              NUMELTS,         false),
   $("__noinference__",      NOINFERENCE,     false),

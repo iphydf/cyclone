@@ -5030,17 +5030,6 @@ hstub difftime {
 hstub getdate {
   extern struct tm *getdate(const char @);
 }
-hstub getdate {
-extern "C" int __CYCLONE_GETDATE_ERR();
-#define getdate_err (__CYCLONE_GETDATE_ERR())
-}
-cstub getdate {
-  // We do this because getdate_err is probably a C macro
-  #include <time.h>
-  int __CYCLONE_GETDATE_ERR() {
-    return getdate_err;
-  }
-}
 hstub gmtime {
   extern "C" struct tm @gmtime(const time_t @);
 }

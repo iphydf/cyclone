@@ -12,6 +12,7 @@ cc_library(
         MACHINE,
     ],
     linkopts = [MACHINE],
+    tags = ["no-cross"],
     visibility = ["//cyclone/stage0:__subpackages__"],
     deps = [
         "//cyclone/library/runtime",

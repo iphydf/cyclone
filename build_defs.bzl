@@ -51,6 +51,7 @@ def _cyc_compile_impl(ctx):
 
     srcs = _filter_srcs(ctx.attr.srcs, [".cyc"])
     hdrs = _filter_srcs(ctx.attr.srcs, [".h"])
+    incs = _filter_srcs(ctx.attr.srcs, [".inc"])
     outs = []
 
     # Also add all transitive headers from deps to the environment.
@@ -65,14 +66,17 @@ def _cyc_compile_impl(ctx):
         basename = src.basename[:-4]
         c_file = ctx.actions.declare_file("%s.c" % basename)
         cyp_file = ctx.actions.declare_file("%s.cyp" % basename)
+        inc_files = [inc for inc in incs if inc.basename.startswith(basename)]
         outs.extend([
             c_file,
             cyp_file,
         ])
         ctx.actions.run(
             outputs = [cyp_file],
-            inputs = hdrs + dep_hdrs + [src],
-            tools = [cyclone],
+            inputs = depset(
+                hdrs + dep_hdrs + [src] + inc_files,
+                transitive = [cc_toolchain.all_files],
+            ),
             executable = c_compiler_path,
             arguments = stage_defs + [
                 "-xc",
@@ -160,6 +164,7 @@ def _cyc_build(cc_rule, name, srcs = [], csrcs = [], deps = [], cdeps = [], cyco
         cycopts = cycopts,
         per_file_cycopts = per_file_cycopts,
         stage = stage,
+        tags = ["no-cross"],
         deps = deps,
     )
 
@@ -172,6 +177,7 @@ def _cyc_build(cc_rule, name, srcs = [], csrcs = [], deps = [], cdeps = [], cyco
             srcs = csrcs,
             copts = kwargs["copts"],
             linkopts = linkopts + [MACHINE],
+            tags = ["no-cross"],
             deps = cdeps + deps + [
                 "//cyclone/library/std/cyc-lib",
             ],
@@ -183,6 +189,7 @@ def _cyc_build(cc_rule, name, srcs = [], csrcs = [], deps = [], cdeps = [], cyco
         name = name,
         srcs = [":" + srcs_name],
         linkopts = linkopts + [MACHINE],
+        tags = ["no-cross"],
         deps = deps + [
             "//cyclone/library/runtime",
             "//cyclone/library/std/cyc-lib",
@@ -219,6 +226,7 @@ def cyclex(name, src = None, out = None, stage = None):
         srcs = [src],
         outs = [out],
         cmd = "$(location %s) $< $@" % tool,
+        tags = ["no-cross"],
         tools = [tool],
     )
 
@@ -241,6 +249,7 @@ def cycyacc(name, src, stage = None):
             out_hdr,
         ],
         cmd = "$(location %s) -v -d $< -o $(location %s)" % (tool, out_cyc),
+        tags = ["no-cross"],
         tools = [tool],
     )
 
@@ -269,6 +278,7 @@ def errorgen(name, src = None, stage = None):
             ">",
             "$(location %s)" % out,
         ]),
+        tags = ["no-cross"],
         tools = [
             cyclone,
             tool,
@@ -299,7 +309,7 @@ def buildlib(name, src, hdrs, stage = None, visibility = None, deps = [], includ
         ],
         cmd = " ".join([
             "$(location %s)" % buildlib,
-            "  -cc '$(CC)'",
+            "  -cc $$(echo $(CC) | sed -e \"s|^[^/]|$$PWD/&|\")",
             "  -v",
             " ".join(["-I$$(realpath %s)" % i for i in includes]),
             "  $(location %s) >& BUILDLIB.LOG;" % src,
@@ -307,6 +317,7 @@ def buildlib(name, src, hdrs, stage = None, visibility = None, deps = [], includ
             "  do cp BUILDLIB.OUT/$$(echo $$i | sed -e 's!$(GENDIR)/%s/!!') $$i;" % native.package_name(),
             "done; cat BUILDLIB.LOG",
         ]),
+        tags = ["no-cross"],
         tools = [buildlib],
         toolchains = ["@rules_cc//cc:current_cc_toolchain"],
         visibility = visibility,

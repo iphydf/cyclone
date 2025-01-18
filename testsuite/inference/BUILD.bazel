@@ -20,6 +20,7 @@ cc_test(
     srcs = [":sample_srcs"],
     copts = [MACHINE],
     linkopts = [MACHINE],
+    tags = ["no-cross"],
     deps = [
         "//cyclone/library/runtime",
         "//cyclone/library/std/cyc-lib",

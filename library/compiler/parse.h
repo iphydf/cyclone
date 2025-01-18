@@ -66,6 +66,7 @@ using Core {
           Auto_sc,
           Register_sc,
           Abstract_sc,
+          Noreturn_sc,
           None_sc
         };
 
