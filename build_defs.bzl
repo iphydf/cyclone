@@ -37,7 +37,7 @@ def _cyc_compile_impl(ctx):
 
     per_file_cycopts = ctx.attr.per_file_cycopts
 
-    if ctx.attr.stage != None:
+    if ctx.attr.stage:
         for_boot = " [stage %s]" % ctx.attr.stage
         stage_defs = ["-DCYC_STAGE=%d" % ctx.attr.stage]
     else:
@@ -64,15 +64,13 @@ def _cyc_compile_impl(ctx):
     for src in srcs:
         basename = src.basename[:-4]
         c_file = ctx.actions.declare_file("%s.c" % basename)
-        cyp_file = ctx.actions.declare_file("%s-pp.cyc" % basename)
+        cyp_file = ctx.actions.declare_file("%s.cyp" % basename)
         outs.extend([
             c_file,
             cyp_file,
         ])
         ctx.actions.run(
-            outputs = [
-                cyp_file,
-            ],
+            outputs = [cyp_file],
             inputs = hdrs + dep_hdrs + [src],
             tools = [cyclone],
             executable = c_compiler_path,
@@ -193,15 +191,26 @@ def _cyc_build(cc_rule, name, srcs = [], csrcs = [], deps = [], cdeps = [], cyco
     )
 
 def cyc_binary(**kwargs):
+    """Build a Cyclone binary."""
     _cyc_build(cc_binary, **kwargs)
 
 def cyc_library(**kwargs):
+    """Build a Cyclone library."""
     _cyc_build(cc_library, **kwargs)
 
 def cyc_test(**kwargs):
+    """Build a Cyclone test."""
     _cyc_build(cc_test, **kwargs)
 
 def cyclex(name, src = None, out = None, stage = None):
+    """Build a lexer.
+
+    Args:
+        name: The name of the rule.
+        src: The source file.
+        out: The output file.
+        stage: The stage of the build.
+    """
     tool = _tool("cyclex", stage)
     src = src or "%s.cyl" % name
     out = out or "%s.cyc" % name
@@ -214,6 +223,13 @@ def cyclex(name, src = None, out = None, stage = None):
     )
 
 def cycyacc(name, src, stage = None):
+    """Build a parser.
+
+    Args:
+        name: The name of the rule.
+        src: The source file.
+        stage: The stage of the build.
+    """
     tool = _tool("bison", stage)
     out_cyc = "%s.cyc" % name
     out_hdr = "%s.h" % name
@@ -229,6 +245,13 @@ def cycyacc(name, src, stage = None):
     )
 
 def errorgen(name, src = None, stage = None):
+    """Generate error codes.
+
+    Args:
+        name: The name of the rule.
+        src: The source file.
+        stage: The stage of the build.
+    """
     tool = _tool("errorgen", stage + 1 if stage != None else None)
     cyclone = _tool("cyclone", stage)
 
@@ -253,6 +276,17 @@ def errorgen(name, src = None, stage = None):
     )
 
 def buildlib(name, src, hdrs, stage = None, visibility = None, deps = [], includes = []):
+    """Generate Cyclone bindings.
+
+    Args:
+        name: The name of the rule.
+        src: The source file.
+        hdrs: The header files.
+        stage: The stage of the build.
+        visibility: The visibility of the rule.
+        deps: The dependencies.
+        includes: The include directories.
+    """
     buildlib = _tool("buildlib", stage)
 
     native.genrule(

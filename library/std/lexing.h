@@ -64,11 +64,11 @@ namespace Lexing {
 
   extern struct lex_tables {
     // for space this should probably be shorts, but who cares
-    int ? lex_base;
-    int ? lex_backtrk;
-    int ? lex_default;
-    int ? lex_trans;
-    int ? lex_check;
+    int ?lex_base;
+    int ?lex_backtrk;
+    int ?lex_default;
+    int ?lex_trans;
+    int ?lex_check;
   };
   typedef struct lex_tables @LexTables;
 
@@ -76,7 +76,7 @@ namespace Lexing {
       int(@`H read_fun)(mstring_t<`H>, int,`b), `b);
 
   extern Lexbuf<Function_lexbuf_state<FILE @`r>> from_file(FILE @`r);
-  extern Lexbuf<bool> from_string(mstring_t);
+  extern Lexbuf<long> from_string(mstring_t);
 
   extern mstring_t<`r> rlexeme(region_t<`r>, Lexbuf<`a>);
   extern mstring_t lexeme(Lexbuf);

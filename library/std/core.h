@@ -56,17 +56,11 @@ __noinference__ {
   /** [buffer_t] is a non-zero-terminated dynamically sized buffer */
   typedef char ?@aqual(`q) @nozeroterm `r mbuffer_t<`r, `q>;
 
-#ifndef bool
   typedef long bool;
 /** In Cyclone, we use [bool] as a synonym for [int].  We also define
     macros [true] and [false], which are 1 and 0, respectively.  */
-#endif
-#ifndef false
 #define false ((bool)0)
-#endif
-#ifndef true
 #define true ((bool)1)
-#endif
 
   /*** The rest of the declarations are in namespace Core. */
 

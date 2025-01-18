@@ -18,6 +18,7 @@
    Suite 330, Boston, MA 02111-1307, USA. */
 
 #include <string.h>
+
 #include "tcutil.h"
 #include "toc.h"
 #include "toseqc.h"
@@ -53,20 +54,23 @@ static enum SideEffect join_side_effect(enum SideEffect e1, enum SideEffect e2) 
 }
 
 /* These functions have no side-effects whatsoever */
-static string_t pure_funs[] = {"_get_fat_size",
-                               "_tag_fat",
-                               "_get_zero_arr_size_char",
-                               "_get_zero_arr_size_short",
-                               "_get_zero_arr_size_int",
-                               "_get_zero_arr_size_float",
-                               "_get_zero_arr_size_double",
-                               "_get_zero_arr_size_longdouble",
-                               "_get_zero_arr_size_voidstar"};
+static string_t pure_funs[] = {
+    "_get_fat_size",
+    "_tag_fat",
+    "_get_zero_arr_size_char",
+    "_get_zero_arr_size_short",
+    "_get_zero_arr_size_int",
+    "_get_zero_arr_size_float",
+    "_get_zero_arr_size_double",
+    "_get_zero_arr_size_longdouble",
+    "_get_zero_arr_size_voidstar",
+};
 /* These functions might throw exceptions but have no other side-effects */
 static string_t exn_effect_funs[] = {
     "_check_null",          "_check_known_subscript_null", "_check_known_subscript_notnull",
     "_check_fat_subscript", "_check_fat_at_base",          "_untag_fat_ptr",
-    "_region_malloc"};
+    "_region_malloc",
+};
 static enum SideEffect fun_effect(qvar_t qv) {
   switch (qv) {
     case &$({.Loc_n = _}, fn):
@@ -233,7 +237,7 @@ static enum SideEffect stmt_effect(stmt_t s) {
         continue;
       case &Seq_s(s1, s2):
         res = join_side_effect(res, stmt_effect(s1));
-        s   = s2;
+        s = s2;
         continue;
 
       case &Decl_s(d, s1):
@@ -302,10 +306,10 @@ static stmt_opt_t exps_to_seqc(exp_t e, list_t<exp_t> es) {
   // Create local declarations for each expression.  Note that we
   // don't have to do this for the last expression in the list or for
   // constant expressions.
-  stmt_t stmt         = exp_stmt(copy_exp(e), e->loc);
+  stmt_t stmt = exp_stmt(copy_exp(e), e->loc);
   stmt_opt_t laststmt = stmt;
-  bool did_skip       = false;
-  bool did_convert    = false;
+  bool did_skip = false;
+  bool did_convert = false;
   for (_ x = List::rev(es); x != NULL; x = x->tl) {
     let e1 = x->hd;
     // Don't bother translating any constant expressions.  Note that if
@@ -323,16 +327,16 @@ static stmt_opt_t exps_to_seqc(exp_t e, list_t<exp_t> es) {
     did_convert = true;
 
     // Variable expression
-    let v  = Toc::temp_var();
+    let v = Toc::temp_var();
     let ve = var_exp(v, e1->loc);
 
     // Add to the declaration
-    let e2    = new_exp(e1->r, e1->loc);
+    let e2 = new_exp(e1->r, e1->loc);
     e2->annot = e1->annot;
-    e2->topt  = e1->topt;
+    e2->topt = e1->topt;
 
     type_t t = (e2->topt == NULL) ? new TypeofType(e2) : Toc::typ_to_c((type_t)e2->topt);
-    stmt     = declare_stmt(v, t, e2, stmt, e->loc);
+    stmt = declare_stmt(v, t, e2, stmt, e->loc);
 
     // Update the expression to be the variable
     e1->r = ve->r;
@@ -513,8 +517,8 @@ static void stmt_to_seqc(stmt_t s) {
                       switch (vd->initializer->r) {
                         case &StmtExp_e(s3):
                           vd->initializer = initexp;
-                          laststmt->r     = s->r;
-                          s->r            = s3->r;
+                          laststmt->r = s->r;
+                          s->r = s3->r;
                           break;
                         default:
                           Warn::impos2("exps_to_seqc updated to non-stmt-exp |",

@@ -1,10 +1,7 @@
 # 2 "seqc.cyc"
 
-void memcpy(char *@fat @nozeroterm dest, const char *@fat @nozeroterm src, unsigned long n) {
-  unsigned long i;
-  if (n > numelts(src) || n > numelts(dest))
+void memcpy(char *@fat @nozeroterm dest, unsigned long n) {
+  if (n >= numelts(dest))
     return;
-  for (i = 0; i < n; i++) {
-    dest[i] = src[i];
-  }
+  dest[n] = 0;
 }
